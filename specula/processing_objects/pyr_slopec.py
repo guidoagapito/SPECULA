@@ -145,6 +145,8 @@ class PyrSlopec(Slopec):
         self.subap_counts.value = self.total_counts.value / self.pupdata.n_subap
         self.total_counts.generation_time = self.current_time
         self.subap_counts.generation_time = self.current_time
+        self.slopes.single_mask = self.pupdata.single_mask()
+        self.slopes.display_map = self.pupdata.display_map
         self.slopes.generation_time = self.current_time
 
 

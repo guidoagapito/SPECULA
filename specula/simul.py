@@ -83,6 +83,21 @@ class Simul():
             output_ref = self.objs[output_name]
         return output_ref
 
+    def input_ref(self, input_name, target_device_idx):
+        if ':' in input_name:
+            input_name = input_name.split(':')[0]
+        if '.' in input_name:
+            obj_name, attr_name = input_name.split('.')
+            if not obj_name in self.objs:
+                raise ValueError(f'Object {obj_name} does not exist')
+            if not attr_name in self.objs[obj_name].inputs:
+                raise ValueError(f'Object {obj_name} does not define an input with name {attr_name}')
+            input_ref = self.objs[obj_name].inputs[attr_name].get(target_device_idx)
+        else:
+            input_ref = self.objs[input_name].copyTo(target_device_idx)
+        return input_ref
+
+
     def output_delay(self, output_name):
         if ':' in output_name:
             return int(output_name.split(':')[1])
@@ -407,6 +422,25 @@ class Simul():
             if isinstance(obj, BaseProcessingObj):
                 loop.add(obj, idx)
 
+        #if 'display' in params['main'] and params['main']['display']:
+        if True:
+            import multiprocessing as mp
+            from specula.display_server import start_server, ProcessingDisplay
+
+            qin  = mp.Queue()
+            qout = mp.Queue()
+            p = mp.Process(target=start_server, args=(params, qin, qout))
+            p.start()
+            
+            def data_obj_getter(name):
+                if '.in_' in name:
+                    return self.input_ref(name, target_device_idx=-1)
+                else:
+                    return self.output_ref(name)
+
+            disp = ProcessingDisplay(qout, qin, data_obj_getter) # Reversed queue order
+            loop.add(disp, idx+1)
+
         # Run simulation loop
         loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
 
@@ -415,3 +449,6 @@ class Simul():
 
         for obj in self.objs.values():
             obj.finalize()
+
+        
+        

@@ -27,12 +27,13 @@ class PupData(BaseDataObj):
     @property
     def display_map(self):
         mask = self.single_mask()
-        return self.xp.where(mask.flat)[0]
+        return self.xp.ravel_multi_index(self.xp.where(mask), mask.shape)
 
     def single_mask(self):
-        f = self.xp.zeros(self.framesize, dtype=self.dtype)
-        f.flat[self.ind_pup[:, 0]] = 1
-        return f[:self.framesize[0]//2, self.framesize[1]//2:]
+        f = self.xp.zeros(self.framesize[0]*self.framesize[1], dtype=self.dtype)
+        self.xp.put(f, self.ind_pup[: 0], 1)
+        f2d = f.reshape(self.framesize)
+        return f2d[:self.framesize[0]//2, self.framesize[1]//2:]
 
     def complete_mask(self):
         f = self.xp.zeros(self.framesize, dtype=self.dtype)
