@@ -6,7 +6,6 @@ from astropy.io import fits
 from specula.base_processing_obj import BaseProcessingObj
 from specula.data_objects.ef import ElectricField
 from specula.base_value import BaseValue
-from specula.base_list import BaseList
 from specula.data_objects.layer import Layer
 from specula.data_objects.pupilstop import Pupilstop
 from specula.lib.phasescreen_manager import phasescreens_manager
@@ -67,7 +66,7 @@ class AtmoRandomPhase(BaseProcessingObj):
         self.verbose = verbose if verbose is not None else False
         
         # Initialize layer list with correct heights
-        self.layer_list = BaseList(target_device_idx=self.target_device_idx)
+        self.layer_list = []
         layer = Layer(self.pixel_pupil, self.pixel_pupil, pixel_pitch, 0, precision=self.precision, target_device_idx=self.target_device_idx)
         self.layer_list.append(layer)
         

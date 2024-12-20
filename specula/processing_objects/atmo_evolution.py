@@ -5,7 +5,6 @@ from astropy.io import fits
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
-from specula.base_list import BaseList
 from specula.data_objects.layer import Layer
 from specula.lib.cv_coord import cv_coord
 from specula.lib.phasescreen_manager import phasescreens_manager
@@ -99,7 +98,7 @@ class AtmoEvolution(BaseProcessingObj):
             self.user_defined_phasescreen = user_defined_phasescreen
         
         # Initialize layer list with correct heights
-        self.layer_list = BaseList(target_device_idx=self.target_device_idx)
+        self.layer_list = []
         for i in range(self.n_phasescreens):
             layer = Layer(self.pixel_layer[i], self.pixel_layer[i], pixel_pitch, heights[i], precision=self.precision, target_device_idx=self.target_device_idx)
             self.layer_list.append(layer)
@@ -281,7 +280,7 @@ class AtmoEvolution(BaseProcessingObj):
         # print(f'Phasescreen_shift: {new_position=}') # Verbose?
         # Update position output
         self.last_position = new_position
-        self.layer_list.generation_time = self.current_time
+#        self.layer_list.generation_time = self.current_time
         self.last_t = self.current_time
         
     def save(self, filename):

@@ -31,7 +31,7 @@ class PupData(BaseDataObj):
 
     def single_mask(self):
         f = self.xp.zeros(self.framesize[0]*self.framesize[1], dtype=self.dtype)
-        self.xp.put(f, self.ind_pup[: 0], 1)
+        self.xp.put(f, self.ind_pup[:, 0], 1)
         f2d = f.reshape(self.framesize)
         return f2d[:self.framesize[0]//2, self.framesize[1]//2:]
 

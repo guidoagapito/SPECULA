@@ -241,6 +241,7 @@ class Simul():
             
             for input_name, output_name in pars['inputs'].items():
 
+                # Special case for DataStore
                 if isinstance(output_name, list) and input_name=='input_list':
                     inputs = [x.split('-')[0] for x in output_name]
                     outputs = [self.output_ref(x.split('-')[1]) for x in output_name]
@@ -432,13 +433,7 @@ class Simul():
             p = mp.Process(target=start_server, args=(params, qin, qout))
             p.start()
             
-            def data_obj_getter(name):
-                if '.in_' in name:
-                    return self.input_ref(name, target_device_idx=-1)
-                else:
-                    return self.output_ref(name)
-
-            disp = ProcessingDisplay(qout, qin, data_obj_getter) # Reversed queue order
+            disp = ProcessingDisplay(qout, qin, self.input_ref, self.output_ref) # Reversed queue order
             loop.add(disp, idx+1)
 
         # Run simulation loop
