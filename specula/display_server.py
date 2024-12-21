@@ -1,36 +1,42 @@
 
-
 import io
+import threading
 import time
 import base64
 import queue
 import pickle
 import typing
 import multiprocessing as mp
+from contextlib import contextmanager
 
-import numpy as np
-
-from flask import Flask, render_template
-from flask_socketio import SocketIO
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, join_room
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.display.data_plotter import DataPlotter
+
+# Use a manager to create queues so that they can be
+# pickled between processes (ordinary mp.Queue cannot)
+manager = mp.Manager()
 
 
 class ProcessingDisplay(BaseProcessingObj):
     '''
     Forwards data objects to a separate process using multiprocessing queues.
+    
+    This object must *not* be run concurrently with any other in the simulation,
+    because it can in some cases temporarily modify the data objects (removing references
+    to the xp module to allow pickling)
     '''
     def __init__(self, params_dict: dict,
                  input_ref_getter: typing.Callable,
                  output_ref_getter: typing.Callable,
     ):
         super().__init__()
-        self.qin = mp.Queue()
-        self.qout = mp.Queue()
-        
+        self.qin = manager.Queue()    # Queue to receive dataobj requests from the Flask webserver
+    
         # Flask-SocketIO web server
-        p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin))  # Reversed queue order
+        p = mp.Process(target=start_server, args=(params_dict, self.qin))  # qin becomes qout for the server
         p.start()
 
         # Simulation speed calculation
@@ -69,35 +75,33 @@ class ProcessingDisplay(BaseProcessingObj):
 
         while True:
             try:
-                request = self.qin.get(block=False)
+                object_names, response_queue = self.qin.get(block=False)
             except queue.Empty:
                 return
 
-            if request is None:
-                self.qout.put((None, self.speed_report))
-                return
+            for name in object_names:
 
-            # Find the requested object, make sure it's on CPU,
-            # and remove xp/np modules to prepare for pickling
-            dataobj = self.data_obj_getter(request)
-            if isinstance(dataobj, list):
-                dataobj_cpu = [x.copyTo(-1) for x in dataobj]
-            else:
-                dataobj_cpu = dataobj.copyTo(-1)
+                # Find the requested object, make sure it's on CPU,
+                # and remove xp/np modules to prepare for pickling
+                dataobj = self.data_obj_getter(name)
+                if isinstance(dataobj, list):
+                    dataobj_cpu = [x.copyTo(-1) for x in dataobj]
+                else:
+                    dataobj_cpu = dataobj.copyTo(-1)
 
-            deleted = remove_xp_np(dataobj_cpu)
+                # Use an object copy without references to xp and np
+                with remove_xp_np(dataobj_cpu) as cleaned_dataobj:
 
-            # Double pickle trick (we pickle, and then qout will pickle again)
-            # to avoid some problems
-            # with serialization of modules, which apparently
-            # are still present even after the xp and np removal
+                    # Double pickle trick (we pickle, and then qout will pickle again)
+                    # to avoid some problems
+                    # with serialization of modules, which apparently
+                    # are still present even after the xp and np removal
 
-            obj_bytes = pickle.dumps(dataobj_cpu)
-            self.qout.put((request, obj_bytes))
+                    obj_bytes = pickle.dumps(cleaned_dataobj)
+                    response_queue.put((name, obj_bytes))
 
-            # Put xp and np back in case this was a reference
-            # and not a real copy
-            putback_xp_np((dataobj_cpu, deleted))
+            # Terminator
+            response_queue.put((None, self.speed_report))
 
 
 # Global variables used by Flask-SocketIO            
@@ -105,19 +109,19 @@ app = Flask('Specula_display_server')
 socketio = SocketIO(app)
 server = None
 
+
 class DisplayServer():
     '''
     Flask-SocketIO web server
     '''
     def __init__(self, params_dict: dict,
-                 qin: mp.Queue,
                  qout: mp.Queue
                  ):
         self.params_dict = params_dict
-        self.t0 = time.time()
-        self.qin = qin
+        self.t0 = {}
         self.qout = qout
         self.plotters = {}
+        self.display_lock = threading.Lock()
         
     def run(self):
         socketio.run(app, host='0.0.0.0', allow_unsafe_werkzeug=True)
@@ -129,44 +133,59 @@ class DisplayServer():
         2) Get back all data objects, plot them, and send them back to the browser
         '''
         print(args)
-        # Queue plot requests
-        for plot_name in args:
-            server.qout.put(plot_name)
-        server.qout.put(None)  # Terminator
+        client_id = request.sid
+        response_queue = manager.Queue() # Separate response queue for each client
+        
+        if client_id not in server.t0:
+            server.t0[client_id] = time.time()
+        
+        # Queue data object requests to the simulation Processing object
+        server.qout.put((args, response_queue))
 
-        # Get all data objects and send their plots back to browser
-        while True:
-            name, obj_bytes = server.qin.get()
-            if name is None: # Terminator
-                speed_report = obj_bytes
-                socketio.emit('speed_report', speed_report)
-                break
+        # Function to emit results back to the client
+        def emit_results():
+            while True:
+                try:
+                    name, obj_bytes = response_queue.get(timeout=30)
+                except queue.Empty:
+                    # Timeout. Problem in the processing object. We bail out
+                    break
 
-            if name not in server.plotters:
-                server.plotters[name] = DataPlotter()
+                if name is None: # Terminator
+                    speed_report = obj_bytes
+                    socketio.emit('speed_report', speed_report)
+                    break
 
-            dataobj = pickle.loads(obj_bytes)
-            if isinstance(dataobj, list):
-                for obj in dataobj:
-                    obj.xp = np
-                fig = server.plotters[name].multi_plot(dataobj)
-            else:
-                dataobj.xp = np  # Supply a numpy instance, sometimes it is needed
-                fig = server.plotters[name].multi_plot([dataobj])
+                dataobj = pickle.loads(obj_bytes)
 
-            socketio.emit('plot', {'name': name, 'imgdata': encode(fig) })
+                # We lock because multiple clients might be requesting
+                # the same plot and our plotting functions have a global state.
+                with server.display_lock:
+                    fig = DataPlotter.plot_best_effort(name, dataobj)
 
-        t1 = time.time()
-        t0 = server.t0
-        freq = 1.0 / (t1 - t0) if t1 != t0 else 0
-        socketio.emit('done', f'Display rate: {freq:.2f} Hz')
-        server.t0 = t1
+                socketio.emit('plot', {'name': name, 'imgdata': encode(fig) }, room=client_id)
+            done()
+
+        def done():
+            t1 = time.time()
+            t0 = server.t0[client_id]
+            freq = 1.0 / (t1 - t0) if t1 != t0 else 0
+            socketio.emit('done', f'Display rate: {freq:.2f} Hz', room=client_id)
+            server.t0[client_id] = t1
+
+        # Emit results in a separate thread so it doesn't block the event loop
+        join_room(client_id)
+        if len(args) > 0:
+            threading.Thread(target=emit_results).start()
+        else:
+            done()
 
     @socketio.on('connect')
     def handle_connect(*args):
         '''On connection, send the entire parameter dictionary
         so that the browser can refresh the view'''
-        
+        client_id = request.sid
+
         # Exclude DataStore since its input_list has a different format
         # and cannot be displayed at the moment
         display_params = {}
@@ -175,52 +194,53 @@ class DisplayServer():
                 if v['class'] == 'DataStore':
                     continue
             display_params[k] = v
-        socketio.emit('params', display_params)
+        socketio.emit('params', display_params, room=client_id)
 
     @app.route('/')
     def index():
         return render_template('specula_display.html')
         
     
-def start_server(params_dict, qin, qout):
+def start_server(params_dict, qout):
     global server
-    server = DisplayServer(params_dict, qin, qout)
+    server = DisplayServer(params_dict, qout)
     server.run()
 
 
+@contextmanager
 def remove_xp_np(obj):
-    '''Remove any instance of xp and np modules
-    and return the removed modules
-    
-    Removed modules are returned separately, so that
-    they can avoid the pickle stage
-    
+    '''Temporarily remove any instance of xp and np modules
+    The removed modules are put back when exiting the context manager.
+ 
     Works recursively on object lists
     '''
-    attrnames = ['xp', 'np']
-    if isinstance(obj, list):
-        return list(map(remove_xp_np, obj))
+    def _remove(obj):
+        attrnames = ['xp', 'np']
+        # Recurse into lists
+        if isinstance(obj, list):
+            return list(map(_remove, obj))
 
-    deleted = {}
-    for attrname in attrnames:
-        if hasattr(obj, attrname):
-            deleted[attrname] = getattr(obj, attrname)
-            delattr(obj, attrname)
-    return deleted
+        # Remove xp and np and return the deleted ones
+        deleted = {}
+        for attrname in attrnames:
+            if hasattr(obj, attrname):
+                deleted[attrname] = getattr(obj, attrname)
+                delattr(obj, attrname)
+        return deleted
 
+    def _putback(args):
+        obj, deleted = args
 
-def putback_xp_np(args):
-    '''Put back the removed modules, if any.
+        # Recurse into lists
+        if isinstance(obj, list):
+            _ = list(map(_putback, zip(obj, deleted)))
+            return
+        for k, v in deleted.items():
+            setattr(obj, k, v)
 
-    Works recursively on object lists
-    '''
-    obj, deleted = args
-    if isinstance(obj, list):
-        _ = list(map(putback_xp_np, zip(obj, deleted)))
-        return
-
-    for k, v in deleted.items():
-        setattr(obj, k, v)
+    deleted =_remove(obj)    
+    yield obj
+    _putback((obj, deleted))
 
 
 def encode(fig):

@@ -5,6 +5,7 @@ matplotlib.use('Agg') # Memory backend, no GUI
 
 from matplotlib.figure import Figure
 
+dataplotter_cache = {}
 
 class DataPlotter():
     '''
@@ -149,3 +150,24 @@ class DataPlotter():
             self.text = self.ax[0].text(0, 0, text, fontsize=14)
         self.fig.canvas.draw()
         return self.fig
+    
+
+    @staticmethod
+    def plot_best_effort(plot_name, dataobj_or_list):
+        '''
+        Plot a data object or a list of data objects as best as it can be done.
+        The plot_name is used to remember the DataPlotter instance and allow
+        plot updates instead of expensive re-plots from scratch
+        '''
+        
+        if plot_name not in dataplotter_cache:
+            dataplotter_cache[plot_name] = DataPlotter()
+
+        if isinstance(dataobj_or_list, list):
+            for obj in dataobj_or_list:
+                obj.xp = np
+            fig = dataplotter_cache[plot_name].multi_plot(dataobj_or_list)
+        else:
+            dataobj_or_list.xp = np  # Supply a numpy instance, sometimes it is needed
+            fig = dataplotter_cache[plot_name].multi_plot([dataobj_or_list])
+        return fig
