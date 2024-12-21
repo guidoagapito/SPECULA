@@ -20,9 +20,11 @@ from specula.display.data_plotter import DataPlotter
 manager = mp.Manager()
 
 
-class ProcessingDisplay(BaseProcessingObj):
+class DisplayServer(BaseProcessingObj):
     '''
-    Forwards data objects to a separate process using multiprocessing queues.
+    Copies data objects to a separate process using multiprocessing queues.
+    In this instance, the separate process is a Flask web server, but this class
+    could be easily made generic to support different kinds of export processes.
     
     This object must *not* be run concurrently with any other in the simulation,
     because it can in some cases temporarily modify the data objects (removing references
@@ -31,12 +33,14 @@ class ProcessingDisplay(BaseProcessingObj):
     def __init__(self, params_dict: dict,
                  input_ref_getter: typing.Callable,
                  output_ref_getter: typing.Callable,
+                 host: str='0.0.0.0',
+                 port: int=5000,
     ):
         super().__init__()
         self.qin = manager.Queue()    # Queue to receive dataobj requests from the Flask webserver
     
         # Flask-SocketIO web server
-        p = mp.Process(target=start_server, args=(params_dict, self.qin))  # qin becomes qout for the server
+        p = mp.Process(target=start_server, args=(params_dict, self.qin, host, port))  # qin becomes qout for the server
         p.start()
 
         # Simulation speed calculation
@@ -110,21 +114,25 @@ socketio = SocketIO(app)
 server = None
 
 
-class DisplayServer():
+class FlaskServer():
     '''
     Flask-SocketIO web server
     '''
     def __init__(self, params_dict: dict,
-                 qout: mp.Queue
+                 qout: mp.Queue,
+                 host: str='0.0.0.0',
+                 port: int=5000,
                  ):
         self.params_dict = params_dict
         self.t0 = {}
         self.qout = qout
         self.plotters = {}
         self.display_lock = threading.Lock()
+        self.host = host
+        self.port = port
         
     def run(self):
-        socketio.run(app, host='0.0.0.0', allow_unsafe_werkzeug=True)
+        socketio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.port)
 
     @socketio.on('newdata')
     def handle_newdata(args):
@@ -201,9 +209,9 @@ class DisplayServer():
         return render_template('specula_display.html')
         
     
-def start_server(params_dict, qout):
+def start_server(params_dict, qout, host, port):
     global server
-    server = DisplayServer(params_dict, qout)
+    server = FlaskServer(params_dict, qout, host=host, port=port)
     server.run()
 
 

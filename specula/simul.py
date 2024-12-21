@@ -221,6 +221,15 @@ class Simul():
             my_params = {k: main[k] for k in args if k in main}
             if 'data_dir' in args and 'data_dir' not in my_params:  # TODO special case
                 my_params['data_dir'] = cm.root_subdir(classname)
+                
+            if 'params_dict' in args:
+                my_params['params_dict'] = params
+                
+            if 'input_ref_getter' in args:
+                my_params['input_ref_getter'] = self.input_ref
+
+            if 'output_ref_getter' in args:
+                my_params['output_ref_getter'] = self.output_ref
 
             my_params.update(pars2)
             self.objs[key] = klass(**my_params)
@@ -423,10 +432,10 @@ class Simul():
             if isinstance(obj, BaseProcessingObj):
                 loop.add(obj, idx)
 
-        #if 'display' in params['main'] and params['main']['display']:
-        if True:
-            from specula.display_server import ProcessingDisplay
-            disp = ProcessingDisplay(params, self.input_ref, self.output_ref)
+        # Display web server
+        if 'display_server' in params['main'] and params['main']['display_server']:
+            from specula.processing_objects.display_server import DisplayServer
+            disp = DisplayServer(params, self.input_ref, self.output_ref)
             loop.add(disp, idx+1)
 
         # Run simulation loop
