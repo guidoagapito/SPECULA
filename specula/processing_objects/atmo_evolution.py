@@ -281,7 +281,6 @@ class AtmoEvolution(BaseProcessingObj):
         # print(f'Phasescreen_shift: {new_position=}') # Verbose?
         # Update position output
         self.last_position = new_position
-        self.layer_list.generation_time = self.current_time
         self.last_t = self.current_time
         
     def save(self, filename):
