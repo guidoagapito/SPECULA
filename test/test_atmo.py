@@ -7,11 +7,11 @@ import unittest
 
 from specula import cpuArray
 
-from specula.data_objects.layer import Layer
 from specula.data_objects.source import Source
 from specula.processing_objects.func_generator import FuncGenerator
 from specula.processing_objects.atmo_evolution import AtmoEvolution
 from specula.processing_objects.atmo_propagation import AtmoPropagation
+from specula.data_objects.layer import Layer
 
 from test.specula_testlib import cpu_and_gpu
 
@@ -116,4 +116,3 @@ class TestAtmo(unittest.TestCase):
         
         for layer in atmo.outputs['layer_list']:
             assert isinstance(layer, Layer)
-        
