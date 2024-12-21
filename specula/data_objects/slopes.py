@@ -146,3 +146,6 @@ class Slopes(BaseDataObj):
             s.pupdata_tag = str(hdr['PUPD_TAG']).strip()
         s.read(filename, hdr)
         return s
+
+    def array_for_display(self):
+        return self.xp.hstack(self.get2d())

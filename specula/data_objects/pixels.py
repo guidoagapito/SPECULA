@@ -96,4 +96,5 @@ class Pixels(BaseDataObj):
         pixels.read(filename, hdr)
         return pixels
 
-
+    def array_for_display(self):
+        return self.pixels

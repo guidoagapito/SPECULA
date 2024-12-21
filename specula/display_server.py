@@ -1,6 +1,7 @@
 
 import queue
 import pickle
+import multiprocessing as mp
 
 from specula import cpuArray
 from specula.base_processing_obj import BaseProcessingObj
@@ -9,52 +10,20 @@ from specula.data_objects.intensity import Intensity
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.slopes import Slopes
 from specula.data_objects.ef import ElectricField
-
-
-def remove_xp_np(obj):
-    '''Remove any instance of xp and np modules
-    and return the removed modules
-    
-    Removed modules are returned separately, so that
-    they can avoid the pickle stage
-    
-    Works recursively on object lists
-    '''
-    attrnames = ['xp', 'np']
-    if isinstance(obj, list):
-        return list(map(remove_xp_np, obj))
-
-    deleted = {}
-    for attrname in attrnames:
-        if hasattr(obj, attrname):
-            deleted[attrname] = getattr(obj, attrname)
-            delattr(obj, attrname)
-    return deleted
-
-
-def putback_xp_np(args):
-    '''Put back the removed modules, if any.
-
-    Works recursively on object lists
-    '''
-    obj, deleted = args
-    if isinstance(obj, list):
-        _ = list(map(putback_xp_np, zip(obj, deleted)))
-        return
-
-    for k, v in deleted.items():
-        setattr(obj, k, v)
-       
+from specula.display.data_plotter import DataPlotter
 
 class ProcessingDisplay(BaseProcessingObj):
     '''
     Forwards data objects to a separate process using multiprocessing queues.
     '''
-    def __init__(self, qin, qout, input_ref, output_ref):
+    def __init__(self, params_dict, input_ref_getter, output_ref_getter):
         super().__init__()
-        self.qin = qin
-        self.qout = qout
+        self.qin = mp.Queue()
+        self.qout = mp.Queue()
         
+        p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin))  # Reversed queue order
+        p.start()
+
         # Simulation speed calculation
         self.counter = 0
         self.t0 = time.time()
@@ -64,13 +33,13 @@ class ProcessingDisplay(BaseProcessingObj):
         # Heuristic to detect inputs: they usually start with "in_"
         def data_obj_getter(name):
             if '.in_' in name:
-                return input_ref(name, target_device_idx=-1)
+                return input_ref_getter(name, target_device_idx=-1)
             else:
                 try:
-                    return output_ref(name)     
+                    return output_ref_getter(name)     
                 except ValueError:
                     # Try inputs as well
-                    return input_ref(name, target_device_idx=-1)
+                    return input_ref_getter(name, target_device_idx=-1)
 
         self.data_obj_getter = data_obj_getter
 
@@ -129,9 +98,6 @@ import numpy as np
 import io
 import time
 import base64
-import matplotlib
-matplotlib.use('Agg') # Memory backend, no GUI
-from matplotlib.figure import Figure
 
 
 def encode(fig):
@@ -144,162 +110,6 @@ def encode(fig):
     imgB64 = base64.b64encode(buf.getvalue()).decode('utf-8')
     return imgB64
 
-
-class Plotter():
-    '''
-    Plot any kind of data
-    '''
-    def __init__(self, disp_factor=1, histlen=200, wsize=(600, 400), window=23, yrange=(-10, 10), oplot=False, color=1, psym=-4, title=''):
-        super().__init__()
-        
-        self._wsize = wsize
-        self._history = np.zeros(histlen)
-        self._count = 0
-        self._yrange = yrange
-        self._value = None
-        self._oplot = oplot
-        self._color = color
-        self._psym = psym
-        self._title = title
-        self._opened = False
-        self._first = True
-        self._disp_factor = disp_factor
-        
-    def set_w(self, size_frame=None, nframes=1):
-        if size_frame is None:
-            size_frame = self._wsize
-        self.fig = Figure(figsize=(size_frame[0] * self._disp_factor / 100 * nframes, size_frame[1] * self._disp_factor / 100))
-        self.ax = []
-        for i in range(nframes):
-            self.ax.append(self.fig.add_subplot(1, nframes, i+1))
-
-    def multi_plot(self, obj_list):
-        '''
-        Plot a list of data objects one next to the other
-        '''
-#        TODO: commented out because it does not work for prop.layer_list,
-#        since layers are of different types
-#
-#        for obj in objrefs[1:]:
-#            if type(obj) is not type(objrefs[0]):
-#                raise ValueError('All objects in multi_plot() must be of the same type')
-
-        if isinstance(obj_list[0], Intensity):
-            return self.imshow([x.i for x in obj_list])
-
-        elif isinstance(obj_list[0], Pixels):
-            return self.imshow([x.pixels for x in obj_list])
-
-        elif isinstance(obj_list[0], Slopes):
-            full = []
-            for obj in obj_list:
-                x, y = obj.get2d()
-                full.append(np.hstack((x,y)))
-            return self.imshow(full)
-
-        elif isinstance(obj_list[0], BaseValue):
-            if len(obj_list) > 1:
-                raise NotImplementedError('Cannot plot a list of BaseValue')
-
-            value = obj_list[0]._value
-            if value is None:
-                return self.plot_text(f'Value is None')
-            
-            if len(value.shape) == 2:
-                return self.imshow([value])
-
-            elif len(value.shape) == 1 and len(value) > 1:
-                return self.plot_vector(value)
-
-            # Scalar value: plot history
-            else:  
-                n = len(self._history)
-                if self._count >= n:
-                    self._history[:-1] = self._history[1:]
-                    self._count = n - 1
-
-                if not self._opened:
-                    self.set_w()
-                    self._opened = True
-
-                self._history[self._count] = value
-                self._count += 1
-
-                x = np.arange(self._count)
-                y = self._history[:self._count]
-                if self._first:
-                    self.fig.suptitle(self._title)
-                    self.line = self.ax[0].plot(x, y, marker='.')
-                    self._first = False
-                else:
-                    self.line[0].set_xdata(x)
-                    self.line[0].set_ydata(y)
-                    self.ax[0].set_xlim(x.min(), x.max())
-                    self.ax[0].set_ylim(y.min(), y.max())
-                self.fig.canvas.draw()
-                return self.fig
-        
-        elif isinstance(obj_list[0], ElectricField):
-            full = []
-            for ef in obj_list:
-                frame = cpuArray(ef.phaseInNm * (ef.A > 0).astype(float))
-                idx = np.where(cpuArray(ef.A) > 0)[0]
-                # Remove average phase
-                frame[idx] -= np.mean(frame[idx])
-                full.append(frame)
-
-            return self.imshow(full)
-
-        else:
-            return self.plot_text(f'Plot not implemented for class {obj_list[0].__class__.__name__}')
-
-    def plot_vector(self, vector):
-        if not self._opened and not self._oplot:
-            self.set_w()
-            self._opened = True
-
-        if self._first:
-            self._line = self.ax[0].plot(vector, '.-')
-            self.fig.suptitle(self._title)
-            self.ax[0].set_ylim([vector.min(), vector.max()])
-            self._first = False
-        else:
-            self._line[0].set_ydata(vector)
-        return self.fig
-    
-    def imshow(self, frames):
-        if np.sum(self._wsize) == 0:
-            size_frame = frames[0].shape[0]
-        else:
-            size_frame = self._wsize
-
-        if not self._opened:
-            self.set_w(size_frame, len(frames))
-            self._opened = True
-        if self._first:
-            self.img = []
-            for i, frame in enumerate(frames):
-                self.img.append(self.ax[i].imshow(frame))
-            self._first = False
-        else:
-            for i, frame in enumerate(frames):
-                self.img[i].set_data(frame)
-                self.img[i].set_clim(frame.min(), frame.max())
-        self.fig.canvas.draw()
-        return self.fig
-
-    def plot_text(self, text):
-        if not self._opened and not self._oplot:
-            self.set_w()
-            self._opened = True
-
-        if self._first:
-            self.text = self.ax[0].text(0, 0, text, fontsize=14)
-        else:
-            del self.text
-            self.text = self.ax[0].text(0, 0, text, fontsize=14)
-        self.fig.canvas.draw()
-        return self.fig
 
 # Global variables needed by Flask-SocketIO            
 app = Flask('Specula_display_server')
@@ -341,7 +151,7 @@ class DisplayServer():
                 break
 
             if name not in server.plotters:
-                server.plotters[name] = Plotter()
+                server.plotters[name] = DataPlotter()
 
             dataobj = pickle.loads(obj_bytes)
             if isinstance(dataobj, list):
@@ -385,3 +195,37 @@ def start_server(params_dict, qin, qout):
     server = DisplayServer(params_dict, qin, qout)
     server.run()
 
+
+def remove_xp_np(obj):
+    '''Remove any instance of xp and np modules
+    and return the removed modules
+    
+    Removed modules are returned separately, so that
+    they can avoid the pickle stage
+    
+    Works recursively on object lists
+    '''
+    attrnames = ['xp', 'np']
+    if isinstance(obj, list):
+        return list(map(remove_xp_np, obj))
+
+    deleted = {}
+    for attrname in attrnames:
+        if hasattr(obj, attrname):
+            deleted[attrname] = getattr(obj, attrname)
+            delattr(obj, attrname)
+    return deleted
+
+
+def putback_xp_np(args):
+    '''Put back the removed modules, if any.
+
+    Works recursively on object lists
+    '''
+    obj, deleted = args
+    if isinstance(obj, list):
+        _ = list(map(putback_xp_np, zip(obj, deleted)))
+        return
+
+    for k, v in deleted.items():
+        setattr(obj, k, v)

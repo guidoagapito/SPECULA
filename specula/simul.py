@@ -425,15 +425,8 @@ class Simul():
 
         #if 'display' in params['main'] and params['main']['display']:
         if True:
-            import multiprocessing as mp
-            from specula.display_server import start_server, ProcessingDisplay
-
-            qin  = mp.Queue()
-            qout = mp.Queue()
-            p = mp.Process(target=start_server, args=(params, qin, qout))
-            p.start()
-            
-            disp = ProcessingDisplay(qout, qin, self.input_ref, self.output_ref) # Reversed queue order
+            from specula.display_server import ProcessingDisplay
+            disp = ProcessingDisplay(params, self.input_ref, self.output_ref)
             loop.add(disp, idx+1)
 
         # Run simulation loop
