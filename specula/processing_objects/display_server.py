@@ -1,5 +1,6 @@
 
 import io
+import socket
 import threading
 import time
 import base64
@@ -11,6 +12,7 @@ from contextlib import contextmanager
 
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room
+import socketio as socketio_module
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.display.data_plotter import DataPlotter
@@ -33,14 +35,16 @@ class DisplayServer(BaseProcessingObj):
     def __init__(self, params_dict: dict,
                  input_ref_getter: typing.Callable,
                  output_ref_getter: typing.Callable,
+                 info_getter: typing.Callable,
                  host: str='0.0.0.0',
-                 port: int=5000,
+                 port: int=0,    # Autoselect
     ):
         super().__init__()
         self.qin = manager.Queue()    # Queue to receive dataobj requests from the Flask webserver
-    
+        self.qout = manager.Queue()   # Queue to send regular status updates
+
         # Flask-SocketIO web server
-        p = mp.Process(target=start_server, args=(params_dict, self.qin, host, port))  # qin becomes qout for the server
+        p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin, host, port))  # qin becomes qout for the server
         p.start()
 
         # Simulation speed calculation
@@ -61,15 +65,19 @@ class DisplayServer(BaseProcessingObj):
                     return input_ref_getter(name, target_device_idx=-1)
 
         self.data_obj_getter = data_obj_getter
+        self.info_getter = info_getter
 
     def trigger(self):
         t1 = time.time()
         self.counter += 1
         if t1 - self.t0 >= 1:
             niters = self.counter - self.c0
-            self.speed_report = f"Simulation speed: {niters / (t1-self.t0):.2f} Hz"
+            speed = niters / (t1-self.t0)
             self.c0 = self.counter
             self.t0 = t1
+            name, status = self.info_getter()
+            status_report = f"{status} - {speed:.2f} Hz"
+            self.qout.put((name, status_report))
 
         # Loop over data object requests
         # This loop is guaranteed to find an empty queue sooner or later,
@@ -119,20 +127,54 @@ class FlaskServer():
     Flask-SocketIO web server
     '''
     def __init__(self, params_dict: dict,
+                 qin: mp.Queue,
                  qout: mp.Queue,
                  host: str='0.0.0.0',
                  port: int=5000,
                  ):
         self.params_dict = params_dict
         self.t0 = {}
+        self.qin = qin
         self.qout = qout
         self.plotters = {}
         self.display_lock = threading.Lock()
         self.host = host
         self.port = port
+        self.actual_port = None  # Filled in later
         
     def run(self):
-        socketio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.port)
+        # Regular status update
+        def status_update():
+            sio = socketio_module.Client()
+            sio.connect('http://localhost:8080')  # TODO frontend port from os.environ
+            while True:
+                # Empty the queue and take the last result
+                try:
+                    name, data = self.qin.get(timeout=60)
+                except queue.Empty:
+                    # Timeout. Problem in the processing object. We bail out
+                    print('No updates from simulation after 60 seconds, stopping status updates')
+                    break
+                if data is None:
+                    break
+                sio.emit('simul_update', data={'name': name, 'status': data, 'port': self.actual_port})
+                
+        t = threading.Thread(target=status_update)
+        t.start()
+        
+        # If port == 0 (auto), we need to know which one is selected, but Flask won't tell us.
+        # Therefore, find one manually and then tell Flask to use it.
+        # There is a minor race condition here (it the port is re-used in the meantime).
+        if self.port == 0:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', 0))   # Auto-select one port
+                address, port = s.getsockname()
+                s.close()  # Release the port
+                self.actual_port = port
+        else:
+            self.actual_port = self.port
+                
+        socketio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.actual_port)
 
     @socketio.on('newdata')
     def handle_newdata(args):
@@ -203,15 +245,16 @@ class FlaskServer():
                     continue
             display_params[k] = v
         socketio.emit('params', display_params, room=client_id)
+        
 
     @app.route('/')
     def index():
         return render_template('specula_display.html')
         
     
-def start_server(params_dict, qout, host, port):
+def start_server(params_dict, qin, qout, host, port):
     global server
-    server = FlaskServer(params_dict, qout, host=host, port=port)
+    server = FlaskServer(params_dict, qin, qout, host=host, port=port)
     server.run()
 
 

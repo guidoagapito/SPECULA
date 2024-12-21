@@ -231,9 +231,13 @@ class Simul():
             if 'output_ref_getter' in args:
                 my_params['output_ref_getter'] = self.output_ref
 
+            if 'info_getter' in args:
+                my_params['info_getter'] = self.get_info
+
             my_params.update(pars2)
             self.objs[key] = klass(**my_params)
 
+            # TODO this could be more general like the getters above
             if type(self.objs[key]) is DataStore:
                 self.objs[key].setParams(params)
 
@@ -412,7 +416,7 @@ class Simul():
                 self.combine_params(params, additional_params)
 
         # Initialize housekeeping objects
-        loop = LoopControl(run_time=params['main']['total_time'], dt=params['main']['time_step'])        
+        self.loop = LoopControl(run_time=params['main']['total_time'], dt=params['main']['time_step'])        
 
         # Actual creation code
         self.apply_overrides(params)
@@ -430,16 +434,16 @@ class Simul():
         for name, idx in zip(trigger_order, trigger_order_idx):
             obj = self.objs[name]
             if isinstance(obj, BaseProcessingObj):
-                loop.add(obj, idx)
+                self.loop.add(obj, idx)
 
-        # Display web server
+        # Default display web server
         if 'display_server' in params['main'] and params['main']['display_server']:
             from specula.processing_objects.display_server import DisplayServer
-            disp = DisplayServer(params, self.input_ref, self.output_ref)
-            loop.add(disp, idx+1)
+            disp = DisplayServer(params, self.input_ref, self.output_ref, self.get_info)
+            self.loop.add(disp, idx+1)
 
         # Run simulation loop
-        loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
+        self.loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
 
 #        if data_store.has_key('sr'):
 #            print(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * params['main']['total_time'] / params['main']['time_step']])) * 100.}")
@@ -447,5 +451,10 @@ class Simul():
         for obj in self.objs.values():
             obj.finalize()
 
-        
-        
+    def get_info(self):
+        name= f'{self.param_files[0]}'
+        curtime= f'{self.loop._t / self.loop._time_resolution:.3f}'
+        stoptime= f'{self.loop._init_run_time:.3f}'
+
+        info = f'{curtime}/{stoptime}s'
+        return name, info
