@@ -1,26 +1,35 @@
 
+
+import io
+import time
+import base64
 import queue
 import pickle
+import typing
 import multiprocessing as mp
 
-from specula import cpuArray
+import numpy as np
+
+from flask import Flask, render_template
+from flask_socketio import SocketIO
+
 from specula.base_processing_obj import BaseProcessingObj
-from specula.base_value import BaseValue
-from specula.data_objects.intensity import Intensity
-from specula.data_objects.pixels import Pixels
-from specula.data_objects.slopes import Slopes
-from specula.data_objects.ef import ElectricField
 from specula.display.data_plotter import DataPlotter
+
 
 class ProcessingDisplay(BaseProcessingObj):
     '''
     Forwards data objects to a separate process using multiprocessing queues.
     '''
-    def __init__(self, params_dict, input_ref_getter, output_ref_getter):
+    def __init__(self, params_dict: dict,
+                 input_ref_getter: typing.Callable,
+                 output_ref_getter: typing.Callable,
+    ):
         super().__init__()
         self.qin = mp.Queue()
         self.qout = mp.Queue()
         
+        # Flask-SocketIO web server
         p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin))  # Reversed queue order
         p.start()
 
@@ -91,27 +100,7 @@ class ProcessingDisplay(BaseProcessingObj):
             putback_xp_np((dataobj_cpu, deleted))
 
 
-from flask import Flask, render_template
-from flask_socketio import SocketIO
-
-import numpy as np
-import io
-import time
-import base64
-
-
-def encode(fig):
-    '''
-    Encode a PNG image for web display
-    '''
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    imgB64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-    return imgB64
-
-
-# Global variables needed by Flask-SocketIO            
+# Global variables used by Flask-SocketIO            
 app = Flask('Specula_display_server')
 socketio = SocketIO(app)
 server = None
@@ -120,7 +109,10 @@ class DisplayServer():
     '''
     Flask-SocketIO web server
     '''
-    def __init__(self, params_dict, qin, qout):
+    def __init__(self, params_dict: dict,
+                 qin: mp.Queue,
+                 qout: mp.Queue
+                 ):
         self.params_dict = params_dict
         self.t0 = time.time()
         self.qin = qin
@@ -229,3 +221,14 @@ def putback_xp_np(args):
 
     for k, v in deleted.items():
         setattr(obj, k, v)
+
+
+def encode(fig):
+    '''
+    Encode a PNG image for web display
+    '''
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png')
+    buf.seek(0)
+    imgB64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return imgB64
