@@ -5,12 +5,12 @@ from astropy.io import fits
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
-from specula.base_list import BaseList
 from specula.data_objects.layer import Layer
 from specula.lib.cv_coord import cv_coord
 from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
 from specula import cpuArray
+
 
 class AtmoEvolution(BaseProcessingObj):
     def __init__(self, L0, pixel_pitch, heights, Cn2, pixel_pupil, data_dir, source_dict, wavelengthInNm: float=500.0,
@@ -99,7 +99,7 @@ class AtmoEvolution(BaseProcessingObj):
             self.user_defined_phasescreen = user_defined_phasescreen
         
         # Initialize layer list with correct heights
-        self.layer_list = BaseList(target_device_idx=self.target_device_idx)
+        self.layer_list = []
         for i in range(self.n_phasescreens):
             layer = Layer(self.pixel_layer[i], self.pixel_layer[i], pixel_pitch, heights[i], precision=self.precision, target_device_idx=self.target_device_idx)
             self.layer_list.append(layer)
