@@ -12,7 +12,8 @@ from contextlib import contextmanager
 
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room
-import socketio as socketio_module
+import socketio
+import socketio.exceptions
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.display.data_plotter import DataPlotter
@@ -118,7 +119,7 @@ class DisplayServer(BaseProcessingObj):
 
 # Global variables used by Flask-SocketIO            
 app = Flask('Specula_display_server')
-socketio = SocketIO(app)
+sio = SocketIO(app)
 server = None
 
 
@@ -141,30 +142,18 @@ class FlaskServer():
         self.host = host
         self.port = port
         self.actual_port = None  # Filled in later
+        self.frontend_connected = False
         
     def run(self):
-        # Regular status update
-        def status_update():
-            sio = socketio_module.Client()
-            sio.connect('http://localhost:8080')  # TODO frontend port from os.environ
-            while True:
-                # Empty the queue and take the last result
-                try:
-                    name, data = self.qin.get(timeout=60)
-                except queue.Empty:
-                    # Timeout. Problem in the processing object. We bail out
-                    print('No updates from simulation after 60 seconds, stopping status updates')
-                    break
-                if data is None:
-                    break
-                sio.emit('simul_update', data={'name': name, 'status': data, 'port': self.actual_port})
-                
-        t = threading.Thread(target=status_update)
+        '''
+        Run the main server and a regular status update in a separate thread
+        '''
+        t = threading.Thread(target=self.status_update)
         t.start()
         
         # If port == 0 (auto), we need to know which one is selected, but Flask won't tell us.
         # Therefore, find one manually and then tell Flask to use it.
-        # There is a minor race condition here (it the port is re-used in the meantime).
+        # There is a minor race condition here (if the port is re-used in the meantime).
         if self.port == 0:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(('127.0.0.1', 0))   # Auto-select one port
@@ -174,9 +163,35 @@ class FlaskServer():
         else:
             self.actual_port = self.port
                 
-        socketio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.actual_port)
+        sio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.actual_port)
 
-    @socketio.on('newdata')
+    def status_update(self):
+        sio_client = socketio.Client()
+        def connect():
+            if not self.frontend_connected:
+                sio_client.connect('http://localhost:8080')  # TODO frontend port from os.environ
+                self.frontend_connected = True
+            
+        while True:
+            try:
+                name, data = self.qin.get(timeout=60)
+            except queue.Empty:
+                # Timeout. Problem in the processing object. We bail out
+                print('No updates from simulation after 60 seconds, stopping status updates')
+                break
+            # Terminator
+            if data is None:
+                break
+            # Fault-tolerant publishing
+            try:
+                connect()
+                sio_client.emit('simul_update', data={'name': name, 'status': data, 'port': self.actual_port})
+            except (socketio.exceptions.ConnectionError, socketio.exceptions.BadNamespaceError):
+                # No frontend server running, will try again next time
+                self.frontend_connected = False
+                time.sleep(1)
+
+    @sio.on('newdata')
     def handle_newdata(args):
         '''Request for new data from the browser.
         1) Queue all requested object names
@@ -203,7 +218,7 @@ class FlaskServer():
 
                 if name is None: # Terminator
                     speed_report = obj_bytes
-                    socketio.emit('speed_report', speed_report)
+                    sio.emit('speed_report', speed_report)
                     break
 
                 dataobj = pickle.loads(obj_bytes)
@@ -213,14 +228,14 @@ class FlaskServer():
                 with server.display_lock:
                     fig = DataPlotter.plot_best_effort(name, dataobj)
 
-                socketio.emit('plot', {'name': name, 'imgdata': encode(fig) }, room=client_id)
+                sio.emit('plot', {'name': name, 'imgdata': encode(fig) }, room=client_id)
             done()
 
         def done():
             t1 = time.time()
             t0 = server.t0[client_id]
             freq = 1.0 / (t1 - t0) if t1 != t0 else 0
-            socketio.emit('done', f'Display rate: {freq:.2f} Hz', room=client_id)
+            sio.emit('done', f'Display rate: {freq:.2f} Hz', room=client_id)
             server.t0[client_id] = t1
 
         # Emit results in a separate thread so it doesn't block the event loop
@@ -230,7 +245,7 @@ class FlaskServer():
         else:
             done()
 
-    @socketio.on('connect')
+    @sio.on('connect')
     def handle_connect(*args):
         '''On connection, send the entire parameter dictionary
         so that the browser can refresh the view'''
@@ -244,7 +259,7 @@ class FlaskServer():
                 if v['class'] == 'DataStore':
                     continue
             display_params[k] = v
-        socketio.emit('params', display_params, room=client_id)
+        sio.emit('params', display_params, room=client_id)
         
 
     @app.route('/')
