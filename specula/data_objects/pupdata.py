@@ -1,3 +1,4 @@
+import numpy as np
 from astropy.io import fits
 
 from specula.base_data_obj import BaseDataObj
@@ -13,7 +14,7 @@ class PupData(BaseDataObj):
         self.cx = self.xp.zeros(4, dtype=self.dtype)
         self.cy = self.xp.zeros(4, dtype=self.dtype)
         self.ind_pup = self.xp.empty((0, 4), dtype=int)
-        self.framesize = self.xp.zeros(2, dtype=int)
+        self.framesize = np.zeros(2, dtype=int)
         
     @property
     def n_subap(self):
