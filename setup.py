@@ -87,7 +87,10 @@ setup(name=NAME,
                         "scipy",
                         "astropy",
                         "matplotlib",
-                        "numba; python_version<'3.13'"
+                        "numba; python_version<'3.13'",
+                        "flask-socketio",
+                        "python-socketio",
+                        "requests"
                         ],
       include_package_data=True,
       test_suite='test',
