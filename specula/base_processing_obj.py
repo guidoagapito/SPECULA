@@ -132,6 +132,9 @@ class BaseProcessingObj(BaseTimeObj):
 
     def capture_stream(self):
         with self.stream:
+            # First execution is needed to build the FFT plan cache
+            # See for example https://github.com/cupy/cupy/issues/7559
+            self.trigger_code()
             self.stream.begin_capture()
             self.trigger_code()
             self.cuda_graph = self.stream.end_capture()
