@@ -70,7 +70,6 @@ class SH(BaseProcessingObj):
         self._trigger_geometry_calculated = False
         self._extrapol_mat1 = None
         self._extrapol_mat2 = None
-        self._first = True
         self._do_interpolation = None 
 
         # TODO these are fixed but should become parameters 
@@ -222,7 +221,7 @@ class SH(BaseProcessingObj):
     
     def calc_trigger_geometry(self):
         
-        in_ef = self.local_inputs['in_ef']
+        in_ef = self.inputs['in_ef'].get(target_device_idx=self.target_device_idx)
 
         subap_wanted_fov = self._subap_wanted_fov
         sensor_pxscale = self._sensor_pxscale
@@ -264,9 +263,12 @@ class SH(BaseProcessingObj):
         self._fp_mask = make_mask(fft_size, diaratio=subap_wanted_fov / fov_complete, square=self._squaremask, xp=self.xp)
 
         # Remember a few things
+        self.in_ef = in_ef
         self._wf1 = wf1
         self._wf3 = wf3
-
+        self.planC2C = self.get_fft_plan(wf3, axes=(-2, -1), value_type='C2C')
+        self.planR2C = self.get_fft_plan(wf3, axes=(-2, -1), value_type='R2C')
+        
          # Kernel object initialization
         if self._kernelobj is not None:
             self._kernelobj.pxscale = fp4_pixel_pitch * rad2arcsec
@@ -286,67 +288,44 @@ class SH(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        
-        in_ef = self.local_inputs['in_ef']
-
-        if self._first is True:
-            self.set_in_ef(in_ef)
-            self.calc_trigger_geometry()
-
-            fov_oversample = self._fov_ovs
-            shape_ovs = (int(in_ef.size[0] * fov_oversample), int(in_ef.size[1] * fov_oversample))
-
-            self.interp = Interp2D(in_ef.size, shape_ovs, self._rotAnglePhInDeg, self._xyShiftPhInPixel[0], self._xyShiftPhInPixel[1], dtype=self.dtype, xp=self.xp)
-
-            if fov_oversample != 1 or self._rotAnglePhInDeg != 0 or np.sum(np.abs([self._xyShiftPhInPixel])) != 0:
-                sum_1pix_extra, sum_2pix_extra = extrapolate_edge_pixel_mat_define(cpuArray(in_ef.A), do_ext_2_pix=True)
-                self._extrapol_mat1 = self.xp.array(sum_1pix_extra)
-                self._extrapol_mat2 = self.xp.array(sum_2pix_extra)
-                self._do_interpolation = True
-            else:
-                self._do_interpolation = False
-
-            self._first = False
-
-    def trigger(self):
-        
-        in_ef = self.local_inputs['in_ef']
 
         # Interpolation of input array if needed
         with show_in_profiler('interpolation'):
 
             if self._do_interpolation:
-                phaseInNmNew = extrapolate_edge_pixel(in_ef.phaseInNm, self._extrapol_mat1, self._extrapol_mat2, xp=self.xp)
-                self.interp.interpolate(in_ef.A, out=self._wf1.A)
+                phaseInNmNew = extrapolate_edge_pixel(self.in_ef.phaseInNm, self._extrapol_mat1, self._extrapol_mat2, xp=self.xp)
+                self.interp.interpolate(self.in_ef.A, out=self._wf1.A)
                 self.interp.interpolate(phaseInNmNew, out=self._wf1.phaseInNm)
             else:
-                # wf1 already set to in_ef
+                # self._wf1 already set to in_ef
                 pass
 
         with show_in_profiler('ef_at_lambda'):
-            ef_whole = self._wf1.ef_at_lambda(self._wavelengthInNm)
+            self.ef_whole[:] = self._wf1.ef_at_lambda(self._wavelengthInNm)
+
+    def trigger_code(self):
 
         for i in range(self._lenslet.dimx):
             for j in range(self._lenslet.dimy):
 
-                ef = ef_whole[i * self._ovs_np_sub: (i+1) * self._ovs_np_sub, j * self._ovs_np_sub: (j+1)* self._ovs_np_sub]
+                self.ef_subap = self.ef_whole[i * self._ovs_np_sub: (i+1) * self._ovs_np_sub, j * self._ovs_np_sub: (j+1)* self._ovs_np_sub]
 
                 # Insert into padded array
-                self._wf3[:self._ovs_np_sub, :self._ovs_np_sub] = ef * self._tltf
+                self._wf3[:self._ovs_np_sub, :self._ovs_np_sub] = self.ef_subap  * self._tltf
 
                 # PSF generation
-                fp4 = self.xp.fft.fft2(self._wf3)
-                psf_shifted = abs2(fp4, xp=self.xp)
+                self.fp4[:] = self.xp.fft.fft2(self._wf3)
+                self.psf_shifted = abs2(self.fp4, xp=self.xp)
 
                 # Full resolution kernel
                 if self._kernelobj is not None:
                     idx = j * self._lenslet.dimx + i
                     subap_kern_fft = self._kernelobj.kernels[idx, :, :]
-                    psf_fft = self.xp.fft.fft2(psf_shifted)
+                    psf_fft = self.xp.fft.fft2(self.psf_shifted)
                     psf = self.xp.fft.ifft2(psf_fft * subap_kern_fft).real
                     psf *= self._fp_mask
                 else:
-                    psf = self.xp.fft.fftshift(psf_shifted)
+                    psf = self.xp.fft.fftshift(self.psf_shifted)
                     psf *= self._fp_mask
 
                 cutsize = self._cutsize
@@ -372,6 +351,31 @@ class SH(BaseProcessingObj):
 
     def setup(self, loop_dt, loop_niters):
         super().setup(loop_dt, loop_niters)
+
+        in_ef = self.inputs['in_ef'].get(target_device_idx=self.target_device_idx)
+
+        self.set_in_ef(in_ef)
+        self.calc_trigger_geometry()
+
+        fov_oversample = self._fov_ovs
+        shape_ovs = (int(in_ef.size[0] * fov_oversample), int(in_ef.size[1] * fov_oversample))
+
+        self.interp = Interp2D(in_ef.size, shape_ovs, self._rotAnglePhInDeg, self._xyShiftPhInPixel[0], self._xyShiftPhInPixel[1], dtype=self.dtype, xp=self.xp)
+
+        if fov_oversample != 1 or self._rotAnglePhInDeg != 0 or np.sum(np.abs([self._xyShiftPhInPixel])) != 0:
+            sum_1pix_extra, sum_2pix_extra = extrapolate_edge_pixel_mat_define(cpuArray(in_ef.A), do_ext_2_pix=True)
+            self._extrapol_mat1 = self.xp.array(sum_1pix_extra)
+            self._extrapol_mat2 = self.xp.array(sum_2pix_extra)
+            self._do_interpolation = True
+        else:
+            self._do_interpolation = False
+
+        ef_whole_size = int(in_ef.size[0] * self._fov_ovs)
+        self.ef_whole = self.xp.zeros((ef_whole_size, ef_whole_size), dtype=self.complex_dtype)
+        self.ef_subap = self.xp.zeros((self._ovs_np_sub, self._ovs_np_sub,), dtype=self.complex_dtype)
+        self.fp4 = self.xp.zeros((self._fft_size, self._fft_size), dtype=self.complex_dtype)
+        self.psf_shifted = self.xp.zeros((self._fft_size, self._fft_size), dtype=self.dtype)
+
         super().build_stream()
 
     def get_tlt_f(self, p, c):
