@@ -9,8 +9,8 @@ main:
 
 server:
   class:             'DisplayServer'
-  host:              '0.0.0.0'
-  port:              3000
+  host:              '0.0.0.0'              # Listen on all interfaces
+  port:              3000                   # Use zero for auto-selection
 
 seeing:
   class:             'FuncGenerator'
