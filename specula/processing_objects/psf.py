@@ -2,7 +2,7 @@
 from specula import fuse, show_in_profiler
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.data_objects.intensity import Intensity
 from specula.connections import InputValue
 

@@ -3,7 +3,7 @@ from astropy.io import fits
 from specula.lib.make_xy import make_xy
 from specula.base_processing_obj import BaseProcessingObj
 from specula.lib.interp2d import Interp2D
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.connections import InputList
 from specula.data_objects.layer import Layer
 from specula import show_in_profiler
