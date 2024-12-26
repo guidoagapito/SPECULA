@@ -18,6 +18,7 @@ class CalibManager():
             'phasescreen': 'phasescreens/',
             'AtmoRandomPhase': 'phasescreens/',
             'AtmoEvolution': 'phasescreens/',
+            'AtmoInfiniteEvolution': 'phasescreens/',
             'slopenull': 'slopenulls/',
             'sn': 'slopenulls/',
             'background': 'backgrounds/',

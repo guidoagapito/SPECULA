@@ -1,4 +1,4 @@
-from specula import fuse, show_in_profiler
+from specula import fuse, show_in_profiler, RAD2ASEC
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
@@ -174,9 +174,8 @@ class ModulatedPyramid(BaseProcessingObj):
             print(f"Error: ccd_side (px) = {ccd_side} is not enough to hold the pupil geometry. Minimum allowed side is {min_ccd_side}")
             return 0
 
-        RAD2ARCSEC = 206265
         D = DpupPix * pixel_pitch
-        Fov_internal = lambda_ * 1e-9 / D * (D / pixel_pitch) * RAD2ARCSEC
+        Fov_internal = lambda_ * 1e-9 / D * (D / pixel_pitch) * RAD2ASEC
 
         minfov = FoV * (1 - fov_errinf)
         maxfov = FoV * (1 + fov_errsup)

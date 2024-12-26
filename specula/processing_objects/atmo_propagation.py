@@ -6,13 +6,11 @@ from specula.lib.interp2d import Interp2D
 from specula.data_objects.electric_field import ElectricField
 from specula.connections import InputList
 from specula.data_objects.layer import Layer
-from specula import show_in_profiler
+from specula import show_in_profiler, ASEC2RAD
 
 import numpy as np
 
-sec2rad = 4.848e-6
 degree2rad = np.pi / 180.
-
 
 class AtmoPropagation(BaseProcessingObj):
     '''Atmospheric propagation'''

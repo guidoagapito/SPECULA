@@ -145,7 +145,7 @@ class AtmoEvolution(BaseProcessingObj):
             self.phasescreens_sizes.append(temp_screen.shape[1])
 
         else:
-            self.pixel_phasescreens = self.xp.max(self.pixel_layer)
+            self.pixel_phasescreens = int(self.xp.max(self.pixel_layer))
 
             if len(self.xp.unique(self.L0)) == 1:
                 # Number of rectangular phase screens from a single square phasescreen
@@ -222,8 +222,8 @@ class AtmoEvolution(BaseProcessingObj):
                                                            verbose=self.verbose, xp=self.xp)
 
                 for i in range(self.n_phasescreens):
-                    temp_screen = square_phasescreens[i][:, :self.pixel_phasescreens]
-                    temp_screen *= self.xp.sqrt(self.Cn2[i])
+                    temp_screen = square_phasescreens[i][:, :int(self.pixel_phasescreens)]
+                    temp_screen *= np.sqrt(self.Cn2[i])
                     temp_screen -= self.xp.mean(temp_screen)
                     # Convert to nm
                     temp_screen *= self.wavelengthInNm / (2 * self.xp.pi)
@@ -271,7 +271,8 @@ class AtmoEvolution(BaseProcessingObj):
             pos = int(new_position_quo[ii])
             ipli = int(self.pixel_layer[ii])
             ipli_p = int(pos + self.pixel_layer[ii])
-            layer_phase = (1.0 - new_position_rem[ii]) * p[0: ipli, pos: ipli_p] + new_position_rem[ii] * p[0: ipli, pos + 1: ipli_p + 1]
+            print('p.shape', p.shape)
+            layer_phase = (1.0 - new_position_rem[ii]) * p[0: ipli, pos: ipli_p] + new_position_rem[ii] * p[1: ipli+1, pos: ipli_p]
             layer_phase = self.xp.rot90(layer_phase, wdi[ii])
             if not wdf_full[ii]==0:
                 layer_phase = self.rotate(layer_phase, wdf_full[ii], reshape=False, order=1)

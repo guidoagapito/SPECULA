@@ -45,7 +45,7 @@ class AtmoRandomPhase(BaseProcessingObj):
             self.airmass = 1.0
 
         # Compute layers dimension in pixels
-        self.pixel_layer = pixel_pupil
+        self.pixel_layer_size = pixel_pupil
 
         self.L0 = L0
         self.pixel_pupil = pixel_pupil
@@ -58,7 +58,7 @@ class AtmoRandomPhase(BaseProcessingObj):
             self.pixel_square_phasescreens = pixel_phasescreens
 
         # Error if phase-screens dimension is smaller than maximum layer dimension
-        if self.pixel_square_phasescreens < self.pixel_layer:
+        if self.pixel_square_phasescreens < self.pixel_layer_size:
             raise ValueError('Error: phase-screens dimension must be greater than layer dimension!')
         
         self.verbose = verbose if verbose is not None else False
@@ -75,31 +75,21 @@ class AtmoRandomPhase(BaseProcessingObj):
 
         if seed < 1:
             raise ValueError('Seed must be >1')
-        self.seed = seed
+
+        self.initScreens()
 
         self.inputs['pupilstop'] = InputValue(type=Pupilstop)
     
-    @property
-    def seed(self):
-        return self._seed
 
-    @seed.setter
-    def seed(self, value):
-        self._seed = value
-        self.compute()
-
-
-    def compute(self):
-
+    def initScreens(self):
         # Seed
+        self.seed = seed
         seed = np.array([self.seed])
-
         # Square phasescreens
         square_phasescreens = phasescreens_manager(np.array([self.L0]), self.pixel_square_phasescreens,
                                                     self.pixel_pitch, self.data_dir,
                                                     seed=seed, precision=self.precision,
                                                     verbose=self.verbose, xp=self.xp)
-
         # number of slices to be cut from the 2D array
         num_slices = (self.pixel_square_phasescreens // self.pixel_pupil)
 
@@ -128,7 +118,7 @@ class AtmoRandomPhase(BaseProcessingObj):
         new_position = self.last_position
         if new_position+1 > self.phasescreens.shape[0]:
             self.seed += 1
-            self.compute()
+            self.initScreens()
             new_position = 0
 
         for name, source in self.source_dict.items():

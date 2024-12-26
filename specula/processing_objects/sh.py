@@ -1,6 +1,6 @@
 import numpy as np
 
-from specula import cpuArray, fuse, show_in_profiler
+from specula import cpuArray, fuse, show_in_profiler, RAD2ASEC
 from specula.lib.extrapolate_edge_pixel import extrapolate_edge_pixel
 from specula.lib.extrapolate_edge_pixel_mat_define import extrapolate_edge_pixel_mat_define
 from specula.lib.toccd import toccd
@@ -20,7 +20,7 @@ def abs2(u_fp, xp):
      psf = xp.real(u_fp * xp.conj(u_fp))
      return psf
  
-rad2arcsec = 180 / np.pi * 3600
+RAD2ASEC = 180 / np.pi * 3600
 
 class SH(BaseProcessingObj):
     def __init__(self,
@@ -48,8 +48,8 @@ class SH(BaseProcessingObj):
         super().__init__(target_device_idx=target_device_idx, precision=precision)        
         self._wavelengthInNm = wavelengthInNm
         self._lenslet = Lenslet(subap_on_diameter)
-        self._subap_wanted_fov = subap_wanted_fov / rad2arcsec
-        self._sensor_pxscale = sensor_pxscale / rad2arcsec
+        self._subap_wanted_fov = subap_wanted_fov / RAD2ASEC
+        self._sensor_pxscale = sensor_pxscale / RAD2ASEC
         self._subap_npx = subap_npx
         self._fov_ovs_coeff = fov_ovs_coeff
         self._squaremask = squaremask
@@ -93,8 +93,7 @@ class SH(BaseProcessingObj):
         self.outputs['out_i'] = self._out_i
 
     def set_in_ef(self, in_ef):
-        rad2arcsec = 180 / np.pi * 3600
-        arcsec2rad = 1.0 / rad2arcsec
+        RAD2ASEC = 180 / np.pi * 3600
 
         lens = self._lenslet.get(0, 0)
         n_lenses = self._lenslet.n_lenses
@@ -106,11 +105,11 @@ class SH(BaseProcessingObj):
 
         np_sub = (ef_size * lens[2]) / 2.0
 
-        sensor_pxscale_arcsec = self._sensor_pxscale * rad2arcsec
+        sensor_pxscale_arcsec = self._sensor_pxscale * RAD2ASEC
         dSubApInM = np_sub * in_ef.pixel_pitch
-        turbulence_pxscale = self._wavelengthInNm * 1e-9 / dSubApInM * rad2arcsec
-        subap_wanted_fov_arcsec = self._subap_wanted_fov * rad2arcsec
-        subap_real_fov_arcsec = self._sensor_pxscale * self._subap_npx * rad2arcsec
+        turbulence_pxscale = self._wavelengthInNm * 1e-9 / dSubApInM * RAD2ASEC
+        subap_wanted_fov_arcsec = self._subap_wanted_fov * RAD2ASEC
+        subap_real_fov_arcsec = self._sensor_pxscale * self._subap_npx * RAD2ASEC
 
         if self._fov_resolution_arcsec == 0:
             if not self._noprints:
@@ -142,7 +141,7 @@ class SH(BaseProcessingObj):
                 for i in range(nTry):
                     resTry[i] = turbulence_pxscale / (iMin + i + 2)
                     scaleTry[i] = round(turbulence_pxscale / resTry[i])
-                    fftScaleTry[i] = self._wavelengthInNm / 1e9 * self._lenslet.dimx / (ef_size * in_ef.pixel_pitch * scaleTry[i]) * rad2arcsec
+                    fftScaleTry[i] = self._wavelengthInNm / 1e9 * self._lenslet.dimx / (ef_size * in_ef.pixel_pitch * scaleTry[i]) * RAD2ASEC
                     subapRealTry[i] = round(subap_wanted_fov_arcsec / fftScaleTry[i] / 2.0) * 2
                     mcmxTry[i] = np.lcm(int(self._subap_npx), int(subapRealTry[i]))
 
@@ -171,7 +170,7 @@ class SH(BaseProcessingObj):
 
         dTelPaddedInM = ef_size * in_ef.pixel_pitch * scale_ovs
         dSubApPaddedInM = dTelPaddedInM / self._lenslet.dimx
-        fft_pxscale_arcsec = self._wavelengthInNm * 1e-9 / dSubApPaddedInM * rad2arcsec
+        fft_pxscale_arcsec = self._wavelengthInNm * 1e-9 / dSubApPaddedInM * RAD2ASEC
 
         # Compute real FoV
         subap_real_fov_pix = round(subap_real_fov_arcsec / fft_pxscale_arcsec / 2.0) * 2.0
@@ -199,7 +198,7 @@ class SH(BaseProcessingObj):
                 else:
                     self._fov_ovs = np.ceil(np_factor * ratio * self._fov_ovs_coeff) / float(np_factor)
 
-        self._sensor_pxscale = subap_real_fov_arcsec / self._subap_npx / rad2arcsec
+        self._sensor_pxscale = subap_real_fov_arcsec / self._subap_npx / RAD2ASEC
         self._congrid_np_sub = int(ef_size * self._fov_ovs * lens[2] * 0.5)
         self._fft_size = self._congrid_np_sub * scale_ovs
 
@@ -296,7 +295,7 @@ class SH(BaseProcessingObj):
 
          # Kernel object initialization
         if self._kernelobj is not None:
-            self._kernelobj.pxscale = fp4_pixel_pitch * rad2arcsec
+            self._kernelobj.pxscale = fp4_pixel_pitch * RAD2ASEC
             self._kernelobj.pupil_size_m = in_ef.pixel_pitch * in_ef.size[0]
             self._kernelobj.dimension = self._fft_size
             self._kernelobj.oversampling = 1
