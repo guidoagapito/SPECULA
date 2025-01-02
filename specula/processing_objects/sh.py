@@ -16,9 +16,8 @@ from specula.data_objects.gaussian_convolution_kernel import GaussianConvolution
 import os       
 
 @fuse(kernel_name='abs2')
-def abs2(u_fp, xp):
-     psf = xp.real(u_fp * xp.conj(u_fp))
-     return psf
+def abs2(u_fp, out, xp):
+     out[:] = xp.real(u_fp * xp.conj(u_fp))
  
 rad2arcsec = 180 / np.pi * 3600
 
@@ -243,8 +242,8 @@ class SH(BaseProcessingObj):
         # Reuse geometry calculated in set_in_ef
         fft_size = self._fft_size
 
-        # Subaperture extracted from full pupil
-        wf3 = self.xp.zeros((fft_size, fft_size), dtype=self.complex_dtype)
+        # Padded subaperture cube extracted from full pupil
+        self._wf3 = self.xp.zeros((self._lenslet.dimy, fft_size, fft_size), dtype=self.complex_dtype)
    
         # Focal plane result from FFT
         fp4_pixel_pitch = self._wavelengthInNm / 1e9 / (wf1.pixel_pitch * fft_size)
@@ -256,7 +255,8 @@ class SH(BaseProcessingObj):
         self._cutpixels = int(np.round(fov_cut / fp4_pixel_pitch) / 2 * 2)
         self._cutsize = fft_size - self._cutpixels
         self._psfimage = self.xp.zeros((self._cutsize * self._lenslet.dimx, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
-        
+        self._psf_reshaped_2d = self.xp.zeros((self._cutsize, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
+
         # 1/2 Px tilt
         self._tltf = self.get_tlt_f(self._ovs_np_sub, fft_size - self._ovs_np_sub)
 
@@ -265,11 +265,8 @@ class SH(BaseProcessingObj):
         # Remember a few things
         self.in_ef = in_ef
         self._wf1 = wf1
-        self._wf3 = wf3
-        self.planC2C = self.get_fft_plan(wf3, axes=(-2, -1), value_type='C2C')
-        self.planR2C = self.get_fft_plan(wf3, axes=(-2, -1), value_type='R2C')
-        
-         # Kernel object initialization
+
+        # Kernel object initialization
         if self._kernelobj is not None:
             self._kernelobj.pxscale = fp4_pixel_pitch * rad2arcsec
             self._kernelobj.pupil_size_m = in_ef.pixel_pitch * in_ef.size[0]
@@ -301,41 +298,67 @@ class SH(BaseProcessingObj):
                 pass
 
         with show_in_profiler('ef_at_lambda'):
-            self.ef_whole[:] = self._wf1.ef_at_lambda(self._wavelengthInNm)
+            self._wf1.ef_at_lambda(self._wavelengthInNm, out=self.ef_whole)
 
     def trigger_code(self):
 
+        # Work on SH rows (single-subap code is too inefficient)
+
         for i in range(self._lenslet.dimx):
-            for j in range(self._lenslet.dimy):
+    
+            # Extract 2D subap row
+            ef_subap_view = self.ef_whole[i * self._ovs_np_sub: (i+1) * self._ovs_np_sub, :]
 
-                self.ef_subap = self.ef_whole[i * self._ovs_np_sub: (i+1) * self._ovs_np_sub, j * self._ovs_np_sub: (j+1)* self._ovs_np_sub]
+            # Reshape to subap cube (nsubap, npix, npix)
+            subap_cube_view = ef_subap_view.reshape(self._ovs_np_sub, self._lenslet.dimy, self._ovs_np_sub).swapaxes(0, 1)
 
-                # Insert into padded array
-                self._wf3[:self._ovs_np_sub, :self._ovs_np_sub] = self.ef_subap  * self._tltf
+            # Insert into padded array
+            self._wf3[:, :self._ovs_np_sub, :self._ovs_np_sub] = subap_cube_view * self._tltf[self.xp.newaxis, :, :]
+            
+            # PSF generation. fp4 is allocated by the plan
+            with self.plan_wf3:
+                fp4 = self.xp.fft.fft2(self._wf3, axes=(1, 2))
+                abs2(fp4, self.psf_shifted, xp=self.xp)
 
-                # PSF generation
-                self.fp4[:] = self.xp.fft.fft2(self._wf3)
-                self.psf_shifted = abs2(self.fp4, xp=self.xp)
+            # Full resolution kernel
+            if self._kernelobj is not None:
+                first = i * self._lenslet.dimy
+                last = (i + 1) * self._lenslet.dimy
+                subap_kern_fft = self._kernelobj.kernels[first:last, :, :]
 
-                # Full resolution kernel
-                if self._kernelobj is not None:
-                    idx = j * self._lenslet.dimx + i
-                    subap_kern_fft = self._kernelobj.kernels[idx, :, :]
+                with self.plan_psf_shifted:
                     psf_fft = self.xp.fft.fft2(self.psf_shifted)
-                    psf = self.xp.fft.ifft2(psf_fft * subap_kern_fft).real
-                    psf *= self._fp_mask
-                else:
-                    psf = self.xp.fft.fftshift(self.psf_shifted)
-                    psf *= self._fp_mask
+                    psf_fft *= subap_kern_fft
+                
+                self._scipy_ifft2(psf_fft, overwrite_x=True, norm='forward')
+                self.psf = psf_fft.real
 
-                cutsize = self._cutsize
-                cutpixels = self._cutpixels
+                # Assert that our views are actually views and not temporary allocations
+                assert subap_kern_fft.base is not None
+            else:
+                self.psf[:] = self.xp.fft.fftshift(self.psf_shifted, axes=(1, 2))
 
-                # FoV cut
-                psf_cut = psf[cutpixels // 2: -cutpixels // 2, cutpixels // 2: -cutpixels // 2]
+            # Apply focal plane mask
+            self.psf *= self._fp_mask[self.xp.newaxis, :, :]
 
-                # Insert subap into overall PSF image
-                self._psfimage[i * cutsize: (i+1) * cutsize, j * cutsize: (j+1)* cutsize] = psf_cut
+            cutsize = self._cutsize
+            cutpixels = self._cutpixels
+
+            # FoV cut on each subap.
+            psf_cut_view = self.psf[:, cutpixels // 2: -cutpixels // 2, cutpixels // 2: -cutpixels // 2]
+
+            # Go back from a subap cube to a 2D frame row.
+            # This reshape is too complicated to produce a view,
+            # so we use a preallocated array
+            self._psf_reshaped_2d[:] = psf_cut_view.swapaxes(0, 1).reshape(-1, self._lenslet.dimy * cutsize)
+
+            # Insert 2D frame row into overall PSF image
+            self._psfimage[i * cutsize: (i+1) * cutsize, :] = self._psf_reshaped_2d
+
+            # Assert that our views are actually views and not temporary allocations
+            assert psf_cut_view.base is not None
+            assert ef_subap_view.base is not None
+            assert subap_cube_view.base is not None
 
         with show_in_profiler('toccd'):
             self._out_i.i[:] = toccd(self._psfimage, (self._ccd_side, self._ccd_side), xp=self.xp)
@@ -346,7 +369,6 @@ class SH(BaseProcessingObj):
         in_ef = self.local_inputs['in_ef']
         phot = in_ef.S0 * in_ef.masked_area()
         self._out_i.i *= (phot / self._out_i.i.sum())
-
         self._out_i.generation_time = self.current_time
 
     def setup(self, loop_dt, loop_niters):
@@ -372,11 +394,13 @@ class SH(BaseProcessingObj):
 
         ef_whole_size = int(in_ef.size[0] * self._fov_ovs)
         self.ef_whole = self.xp.zeros((ef_whole_size, ef_whole_size), dtype=self.complex_dtype)
-        self.ef_subap = self.xp.zeros((self._ovs_np_sub, self._ovs_np_sub,), dtype=self.complex_dtype)
-        self.fp4 = self.xp.zeros((self._fft_size, self._fft_size), dtype=self.complex_dtype)
-        self.psf_shifted = self.xp.zeros((self._fft_size, self._fft_size), dtype=self.dtype)
+        self.psf = self.xp.zeros((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
+        self.psf_shifted = self.xp.zeros((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
 
-        super().build_stream()
+        self.plan_wf3 = self._get_fft_plan(self._wf3, axes=(1, 2), value_type='C2C')
+        self.plan_psf_shifted = self._get_fft_plan(self.psf_shifted, axes=(1, 2))
+
+#        super().build_stream()
 
     def get_tlt_f(self, p, c):
         iu = complex(0, 1)
