@@ -1,5 +1,4 @@
 import numpy as np
-from specula import show_in_profiler
 
 from astropy.io import fits
 
@@ -239,7 +238,6 @@ class AtmoEvolution(BaseProcessingObj):
         super().prepare_trigger(t)
         self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time        
     
-    @show_in_profiler('atmo_evolution.trigger_code')
     def trigger_code(self):
         # if len(self.phasescreens) != len(wind_speed) or len(self.phasescreens) != len(wind_direction):
         #     raise ValueError('Error: number of elements of wind speed and/or direction does not match the number of phasescreens')
