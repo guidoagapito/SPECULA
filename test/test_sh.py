@@ -34,6 +34,7 @@ class TestSH(unittest.TestCase):
 
         sh.inputs['in_ef'].set(ef)
 
+        sh.setup(1, 1)
         sh.check_ready(t)
         sh.trigger()
         sh.post_trigger()
@@ -68,6 +69,7 @@ class TestSH(unittest.TestCase):
         ef.generation_time = t
         sh.inputs['in_ef'].set(ef)
 
+        sh.setup(1, 1)
         sh.check_ready(t)
         sh.trigger()
         sh.post_trigger()
