@@ -40,9 +40,11 @@ class ElectricField(BaseDataObj):
     def phi_at_lambda(self, wavelengthInNm):
         return self.phaseInNm * ((2 * self.xp.pi) / wavelengthInNm)
 
-    def ef_at_lambda(self, wavelengthInNm):
+    def ef_at_lambda(self, wavelengthInNm, out=None):
         phi = self.phi_at_lambda(wavelengthInNm)
-        return self.A * self.xp.exp(1j * phi, dtype=self.complex_dtype)
+        ef = self.xp.exp(1j * phi, dtype=self.complex_dtype, out=out)
+        ef *= self.A
+        return ef
 
     def product(self, ef2, subrect=None):
 #        subrect = self.checkOther(ef2, subrect=subrect)    # TODO check subrect from atmo_propagation, even in PASSATA it does not seem right
