@@ -164,6 +164,7 @@ class BaseProcessingObj(BaseTimeObj):
                 self._target_device.use()
             if self.target_device_idx>=0 and self.cuda_graph:
                 self.cuda_graph.launch(stream=self.stream)
+                self.stream.synchronize()
             else:
                 self.trigger_code()
             self.ready = False
