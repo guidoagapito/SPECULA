@@ -400,7 +400,7 @@ class SH(BaseProcessingObj):
         self.plan_wf3 = self._get_fft_plan(self._wf3, axes=(1, 2), value_type='C2C')
         self.plan_psf_shifted = self._get_fft_plan(self.psf_shifted, axes=(1, 2))
 
-#        super().build_stream()
+        super().build_stream(allow_parallel=False)
 
     def get_tlt_f(self, p, c):
         iu = complex(0, 1)

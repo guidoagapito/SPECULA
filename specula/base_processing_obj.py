@@ -48,6 +48,7 @@ class BaseProcessingObj(BaseTimeObj):
         self.stream  = None
         self.ready = False
         self.cuda_graph = None
+        self.allow_parallel = False
 
         # Will be populated by derived class
         self.inputs = {}
@@ -130,12 +131,13 @@ class BaseProcessingObj(BaseTimeObj):
 #            self.xp.cuda.runtime.deviceSynchronize()                
 #            cp.cuda.Stream.null.synchronize()
 
-    def build_stream(self):
+    def build_stream(self, allow_parallel=True):
         if self.target_device_idx>=0:
             self._target_device.use()
             self.stream = cp.cuda.Stream(non_blocking=False)
             self.capture_stream()
             default_target_device.use()
+            self.allow_parallel = allow_parallel
 
     def capture_stream(self):
         with self.stream:
@@ -164,7 +166,8 @@ class BaseProcessingObj(BaseTimeObj):
                 self._target_device.use()
             if self.target_device_idx>=0 and self.cuda_graph:
                 self.cuda_graph.launch(stream=self.stream)
-                self.stream.synchronize()
+                if not self.allow_parallel:
+                    self.stream.synchronize()
             else:
                 self.trigger_code()
             self.ready = False
