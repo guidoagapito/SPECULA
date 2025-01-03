@@ -220,10 +220,8 @@ class SH(BaseProcessingObj):
         elif not self._noprints:
             print(f'GOOD: interpolated input phase size {ef_size} * {round(self._fov_ovs)} is divisible by {self._lenslet.n_lenses} subapertures.')
     
-    def calc_trigger_geometry(self):
+    def calc_trigger_geometry(self, in_ef):
         
-        in_ef = self.inputs['in_ef'].get(target_device_idx=self.target_device_idx)
-
         subap_wanted_fov = self._subap_wanted_fov
         sensor_pxscale = self._sensor_pxscale
         subap_npx = self._subap_npx
@@ -364,7 +362,7 @@ class SH(BaseProcessingObj):
 
         with show_in_profiler('toccd'):
             self._out_i.i[:] = toccd(self._psfimage, (self._ccd_side, self._ccd_side), xp=self.xp)
-        
+
     def post_trigger(self):
         super().post_trigger()
 
@@ -379,7 +377,7 @@ class SH(BaseProcessingObj):
         in_ef = self.inputs['in_ef'].get(target_device_idx=self.target_device_idx)
 
         self.set_in_ef(in_ef)
-        self.calc_trigger_geometry()
+        self.calc_trigger_geometry(in_ef)
 
         fov_oversample = self._fov_ovs
         shape_ovs = (int(in_ef.size[0] * fov_oversample), int(in_ef.size[1] * fov_oversample))
