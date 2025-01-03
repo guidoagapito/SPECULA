@@ -69,6 +69,8 @@ class SH(BaseProcessingObj):
         self._trigger_geometry_calculated = False
         self._extrapol_mat1 = None
         self._extrapol_mat2 = None
+        self._idx_1pix = None
+        self._idx_2pix = None
         self._do_interpolation = None 
 
         # TODO these are fixed but should become parameters 
@@ -286,11 +288,13 @@ class SH(BaseProcessingObj):
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
 
+    def trigger_code(self):
+
         # Interpolation of input array if needed
         with show_in_profiler('interpolation'):
 
             if self._do_interpolation:
-                phaseInNmNew = extrapolate_edge_pixel(self.in_ef.phaseInNm, self._extrapol_mat1, self._extrapol_mat2, xp=self.xp)
+                phaseInNmNew = extrapolate_edge_pixel(self.in_ef.phaseInNm, self._extrapol_mat1, self._extrapol_mat2, self._idx_1pix, self._idx_2pix, xp=self.xp)
                 self.interp.interpolate(self.in_ef.A, out=self._wf1.A)
                 self.interp.interpolate(phaseInNmNew, out=self._wf1.phaseInNm)
             else:
@@ -299,8 +303,6 @@ class SH(BaseProcessingObj):
 
         with show_in_profiler('ef_at_lambda'):
             self._wf1.ef_at_lambda(self._wavelengthInNm, out=self.ef_whole)
-
-    def trigger_code(self):
 
         # Work on SH rows (single-subap code is too inefficient)
 
@@ -385,9 +387,11 @@ class SH(BaseProcessingObj):
         self.interp = Interp2D(in_ef.size, shape_ovs, self._rotAnglePhInDeg, self._xyShiftPhInPixel[0], self._xyShiftPhInPixel[1], dtype=self.dtype, xp=self.xp)
 
         if fov_oversample != 1 or self._rotAnglePhInDeg != 0 or np.sum(np.abs([self._xyShiftPhInPixel])) != 0:
-            sum_1pix_extra, sum_2pix_extra = extrapolate_edge_pixel_mat_define(cpuArray(in_ef.A), do_ext_2_pix=True)
+            sum_1pix_extra, sum_2pix_extra, idx_1pix, idx_2pix = extrapolate_edge_pixel_mat_define(cpuArray(in_ef.A), do_ext_2_pix=True)
             self._extrapol_mat1 = self.xp.array(sum_1pix_extra)
             self._extrapol_mat2 = self.xp.array(sum_2pix_extra)
+            self._idx_1pix = tuple(map(self.xp.array, idx_1pix))
+            self._idx_2pix = tuple(map(self.xp.array, idx_2pix))
             self._do_interpolation = True
         else:
             self._do_interpolation = False
