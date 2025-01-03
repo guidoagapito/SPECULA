@@ -119,6 +119,7 @@ class BaseProcessingObj(BaseTimeObj):
 
     def post_trigger(self):
         if self.target_device_idx>=0 and self.cuda_graph:
+            self._target_device.use()
             self.stream.synchronize()
 
 #        if self.checkInputTimes():
@@ -194,6 +195,8 @@ class BaseProcessingObj(BaseTimeObj):
         """
         self._loop_dt = loop_dt
         self._loop_niters = loop_niters
+        if self.target_device_idx >= 0:
+            self._target_device.use()
         for name, input in self.inputs.items():
             if input.get(self.target_device_idx) is None and not input.optional:
                 raise ValueError(f'Input {name} for object {self} has not been set')
