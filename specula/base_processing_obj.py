@@ -6,6 +6,9 @@ from specula.connections import InputValue, InputList
 from contextlib import nullcontext
 
 class BaseProcessingObj(BaseTimeObj):
+    
+    _streams = {}
+    
     def __init__(self, target_device_idx=None, precision=None):
         """
         Initialize the base processing object.
@@ -48,7 +51,6 @@ class BaseProcessingObj(BaseTimeObj):
         self.stream  = None
         self.ready = False
         self.cuda_graph = None
-        self.allow_parallel = False
 
         # Will be populated by derived class
         self.inputs = {}
@@ -132,13 +134,21 @@ class BaseProcessingObj(BaseTimeObj):
 #            self.xp.cuda.runtime.deviceSynchronize()                
 #            cp.cuda.Stream.null.synchronize()
 
+    @classmethod
+    def device_stream(cls, target_device_idx):
+        if not target_device_idx in cls._streams:
+            cls._streams[target_device_idx] = cp.cuda.Stream(non_blocking=False)
+        return cls._streams[target_device_idx]
+        
     def build_stream(self, allow_parallel=True):
         if self.target_device_idx>=0:
             self._target_device.use()
-            self.stream = cp.cuda.Stream(non_blocking=False)
+            if allow_parallel:
+                self.stream = cp.cuda.Stream(non_blocking=False)
+            else:
+                self.stream = self.device_stream(self.target_device_idx)
             self.capture_stream()
             default_target_device.use()
-            self.allow_parallel = allow_parallel
 
     def capture_stream(self):
         with self.stream:
@@ -167,8 +177,6 @@ class BaseProcessingObj(BaseTimeObj):
                 self._target_device.use()
             if self.target_device_idx>=0 and self.cuda_graph:
                 self.cuda_graph.launch(stream=self.stream)
-                if not self.allow_parallel:
-                    self.stream.synchronize()
             else:
                 self.trigger_code()
             self.ready = False
