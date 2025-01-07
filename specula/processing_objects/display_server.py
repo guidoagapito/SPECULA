@@ -45,8 +45,8 @@ class DisplayServer(BaseProcessingObj):
         self.qout = manager.Queue()   # Queue to send regular status updates
 
         # Flask-SocketIO web server
-        p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin, host, port))  # qin becomes qout for the server
-        p.start()
+        self.p = mp.Process(target=start_server, args=(params_dict, self.qout, self.qin, host, port))  # qin becomes qout for the server
+        self.p.start()
 
         # Simulation speed calculation
         self.counter = 0
@@ -116,6 +116,8 @@ class DisplayServer(BaseProcessingObj):
             # Terminator
             response_queue.put((None, self.speed_report))
 
+    def finalize(self):
+        self.p.terminate()
 
 # Global variables used by Flask-SocketIO            
 app = Flask('Specula_display_server')
@@ -162,7 +164,7 @@ class FlaskServer():
                 self.actual_port = port
         else:
             self.actual_port = self.port
-                
+
         sio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.actual_port)
 
     def status_update(self):
@@ -179,6 +181,10 @@ class FlaskServer():
                 # Timeout. Problem in the processing object. We bail out
                 print('No updates from simulation after 60 seconds, stopping status updates')
                 break
+            except EOFError:
+                print('Display server terminated, exiting web server')
+                break
+
             # Terminator
             if data is None:
                 break

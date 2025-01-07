@@ -440,6 +440,7 @@ class Simul():
         if 'display_server' in params['main'] and params['main']['display_server']:
             from specula.processing_objects.display_server import DisplayServer
             disp = DisplayServer(params, self.input_ref, self.output_ref, self.get_info)
+            self.objs['display_server'] = disp
             self.loop.add(disp, idx+1)
 
         # Run simulation loop
