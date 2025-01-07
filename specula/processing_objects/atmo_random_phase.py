@@ -1,16 +1,14 @@
 import numpy as np
-from specula import xp
-
 from astropy.io import fits
 
 from specula.base_processing_obj import BaseProcessingObj
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.base_value import BaseValue
 from specula.data_objects.layer import Layer
 from specula.data_objects.pupilstop import Pupilstop
 from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
-from specula import cpuArray
+
 
 class AtmoRandomPhase(BaseProcessingObj):
     def __init__(self,

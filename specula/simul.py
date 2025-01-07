@@ -1,19 +1,16 @@
 
-import re
-import typing
 import inspect
-import importlib
 from copy import deepcopy
 from specula.base_processing_obj import BaseProcessingObj
 
 from specula.loop_control import LoopControl
 from specula.lib.flatten import flatten
+from specula.lib.utils import import_class, get_type_hints
 from specula.calib_manager import CalibManager
 from specula.processing_objects.data_store import DataStore
-from specula.connections import InputValue, InputList
+from specula.connections import InputValue
 
 import yaml
-import io
 
 
 class Simul():
@@ -32,34 +29,6 @@ class Simul():
         else:
             self.overrides = overrides
 
-    def _camelcase_to_snakecase(self, s):
-        tokens = re.findall('[A-Z]+[0-9a-z]*', s)
-        return '_'.join([x.lower() for x in tokens])
-
-    def _import_class(self, classname):
-        modulename = self._camelcase_to_snakecase(classname)
-        try:
-            try:
-                mod = importlib.import_module(f'specula.processing_objects.{modulename}')
-            except ModuleNotFoundError:
-                try:
-                    mod = importlib.import_module(f'specula.data_objects.{modulename}')
-                except ModuleNotFoundError:
-                    mod = importlib.import_module(f'specula.display.{modulename}')
-        except ModuleNotFoundError:
-            raise ImportError(f'Class {classname} must be defined in a file called {modulename}.py but it cannot be found')
-
-        try:
-            return getattr(mod, classname)
-        except AttributeError:
-            raise AttributeError(f'Class {classname} not found in file {modulename}.py')
-
-    def _get_type_hints(self, type):
-        hints ={}
-        for x in type.__mro__:
-            hints.update(typing.get_type_hints(getattr(x, '__init__')))
-        return hints
-    
     def output_owner(self, output_name):
         if '-' in output_name:
             output_name = output_name.split('-')[1]
@@ -167,9 +136,9 @@ class Simul():
             except KeyError:
                 raise KeyError(f'Object {key} does not define the "class" parameter')
 
-            klass = self._import_class(classname)
+            klass = import_class(classname)
             args = inspect.getfullargspec(getattr(klass, '__init__')).args
-            hints = self._get_type_hints(klass)
+            hints = get_type_hints(klass)
 
             target_device_idx = pars.get('target_device_idx', None)
 
@@ -288,7 +257,6 @@ class Simul():
 
     def build_replay(self, params):
         self.replay_params = deepcopy(params)
-        skip_pars = 'class inputs outputs'.split()
         obj_to_remove = []
         data_source_outputs = {}
         for key, pars in params.items():

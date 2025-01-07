@@ -1,9 +1,9 @@
-from specula import fuse, show_in_profiler
+from specula import fuse
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.data_objects.ifunc import IFunc
 
 class ModalAnalysis(BaseProcessingObj):

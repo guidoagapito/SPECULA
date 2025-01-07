@@ -2,7 +2,7 @@
 from specula import fuse, show_in_profiler
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.data_objects.intensity import Intensity
 from specula.connections import InputValue
 
@@ -114,7 +114,6 @@ class PSF(BaseProcessingObj):
             self.ref = Intensity(self.out_size[0], self.out_size[1])
             self.ref.i = self.calc_psf(self.in_ef.A * 0.0, self.in_ef.A, imwidth=self.out_size[0], normalize=True)
 
-    @show_in_profiler('psf.trigger')
     def trigger_code(self):
         self.psf.value = self.calc_psf(self.in_ef.phi_at_lambda(self.wavelengthInNm), self.in_ef.A, imwidth=self.out_size[0], normalize=True)
         self.sr.value = self.psf.value[self.out_size[0] // 2, self.out_size[1] // 2] / self.ref.i[self.out_size[0] // 2, self.out_size[1] // 2]

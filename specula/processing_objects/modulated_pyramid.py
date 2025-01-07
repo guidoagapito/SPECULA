@@ -1,9 +1,9 @@
-from specula import fuse, show_in_profiler
+from specula import fuse
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
 from specula.connections import InputValue
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.lib.make_xy import make_xy
 from specula.data_objects.intensity import Intensity
 from specula.lib.make_mask import make_mask
@@ -395,7 +395,6 @@ class ModulatedPyramid(BaseProcessingObj):
 
         self.ef[:] = self.in_ef.ef_at_lambda(self.wavelength_in_nm)
 
-    @show_in_profiler('pyramid.trigger_code')
     def trigger_code(self):
         u_tlt_const = self.ef * self.tlt_f
         tmp = u_tlt_const[self.xp.newaxis, :, :] * self.ttexp

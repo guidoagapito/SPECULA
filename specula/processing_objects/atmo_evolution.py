@@ -1,5 +1,4 @@
 import numpy as np
-from specula import show_in_profiler
 
 from astropy.io import fits
 
@@ -10,6 +9,7 @@ from specula.lib.cv_coord import cv_coord
 from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
 from specula import cpuArray
+
 
 class AtmoEvolution(BaseProcessingObj):
     def __init__(self, L0, pixel_pitch, heights, Cn2, pixel_pupil, data_dir, source_dict, wavelengthInNm: float=500.0,
@@ -238,7 +238,6 @@ class AtmoEvolution(BaseProcessingObj):
         super().prepare_trigger(t)
         self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time        
     
-    @show_in_profiler('atmo_evolution.trigger_code')
     def trigger_code(self):
         # if len(self.phasescreens) != len(wind_speed) or len(self.phasescreens) != len(wind_direction):
         #     raise ValueError('Error: number of elements of wind speed and/or direction does not match the number of phasescreens')
@@ -280,7 +279,6 @@ class AtmoEvolution(BaseProcessingObj):
         # print(f'Phasescreen_shift: {new_position=}') # Verbose?
         # Update position output
         self.last_position = new_position
-#        self.layer_list.generation_time = self.current_time
         self.last_t = self.current_time
         
     def save(self, filename):

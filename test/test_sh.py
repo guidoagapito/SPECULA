@@ -8,7 +8,7 @@ import unittest
 from specula import cp, np
 from specula import cpuArray
 
-from specula.data_objects.ef import ElectricField
+from specula.data_objects.electric_field import ElectricField
 from specula.processing_objects.sh import SH
 from test.specula_testlib import cpu_and_gpu
 
