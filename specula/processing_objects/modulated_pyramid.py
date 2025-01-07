@@ -133,7 +133,6 @@ class ModulatedPyramid(BaseProcessingObj):
         self.ttexp_shape = None
         self.cache_ttexp()
         self.u_tlt = self.xp.zeros((self.mod_steps, self.fft_totsize, self.fft_totsize), dtype=self.complex_dtype)
-        self.plan1 = self.get_fft_plan(self.u_tlt[0], axes=(-2, -1), value_type='C2C')
         self.roll_array = [self.fft_padding//2, self.fft_padding//2]
         self.roll_axis = [0,1]
         self.ifft_norm = 1.0 / (self.fft_totsize * self.fft_totsize)
@@ -403,14 +402,13 @@ class ModulatedPyramid(BaseProcessingObj):
         self.pyr_image *=0
         self.fpsf *=0
 
-        with self.plan1:
-            for i in range(0, self.mod_steps):
-                u_fp = self.xp.fft.fft2(self.u_tlt[i], axes=(-2, -1))
-                u_fp_pyr = pyr1_fused(u_fp, self.ffv[i], self.fpsf, self.shifted_masked_exp, xp=self.xp)
+        for i in range(0, self.mod_steps):
+            u_fp = self.xp.fft.fft2(self.u_tlt[i], axes=(-2, -1))
+            u_fp_pyr = pyr1_fused(u_fp, self.ffv[i], self.fpsf, self.shifted_masked_exp, xp=self.xp)
 
-                # 'forward' normalization is faster and we normalize correctly later in pyr1_abs2()
-                pyr_ef = self.xp.fft.ifft2(u_fp_pyr, axes=(-2, -1), norm='forward')
-                self.pyr_image += pyr1_abs2(pyr_ef, self.ifft_norm , self.ffv[i], xp=self.xp)
+            # 'forward' normalization is faster and we normalize correctly later in pyr1_abs2()
+            pyr_ef = self.xp.fft.ifft2(u_fp_pyr, axes=(-2, -1), norm='forward')
+            self.pyr_image += pyr1_abs2(pyr_ef, self.ifft_norm , self.ffv[i], xp=self.xp)
 
         self.psf_bfm_arr[:] = self.xp.fft.fftshift(self.fpsf)
         self.psf_tot_arr[:] = self.psf_bfm_arr * self.fp_mask

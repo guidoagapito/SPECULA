@@ -1,9 +1,8 @@
 from astropy.io import fits
 
 from specula.base_time_obj import BaseTimeObj
-from specula import default_target_device, cp, DummyDecoratorAndContextManager
+from specula import default_target_device, cp
 from specula.connections import InputValue, InputList
-from contextlib import nullcontext
 
 class BaseProcessingObj(BaseTimeObj):
     
@@ -24,19 +23,15 @@ class BaseProcessingObj(BaseTimeObj):
             from cupyx.scipy.interpolate import RegularGridInterpolator
             from cupyx.scipy.fft import fft2 as scipy_fft2
             from cupyx.scipy.fft import ifft2 as scipy_ifft2
-            from cupyx.scipy.fft import get_fft_plan
             self._target_device.use()
         else:
             from scipy.ndimage import rotate
             from scipy.interpolate import RegularGridInterpolator
             from scipy.fft import fft2 as scipy_fft2
             from scipy.fft import ifft2 as scipy_ifft2
-            def get_fft_plan(*args, **kwargs):
-                return DummyDecoratorAndContextManager()
 
         self.rotate = rotate        
         self.RegularGridInterpolator = RegularGridInterpolator
-        self._get_fft_plan = get_fft_plan
         self._scipy_fft2 = scipy_fft2
         self._scipy_ifft2 = scipy_ifft2
 
@@ -57,12 +52,6 @@ class BaseProcessingObj(BaseTimeObj):
         self.local_inputs = {}
         self.last_seen = {}
         self.outputs = {}
-
-    def get_fft_plan(self, a, shape=None, axes=None, value_type='C2C'):
-        if self._get_fft_plan:
-            return self._get_fft_plan(a, shape, axes, value_type)
-        else:
-            return nullcontext()
 
     def checkInputTimes(self):        
         if len(self.inputs)==0:
