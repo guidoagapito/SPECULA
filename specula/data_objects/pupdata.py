@@ -7,6 +7,10 @@ class PupData(BaseDataObj):
     '''
     TODO change to have the pupil index in the second index
     (for compatibility with existing PASSATA data)
+
+    TODO change by passing all the initializing arguments as __init__ parameters,
+    to avoid the later initialization (see test/test_slopec.py for an example),
+    where things can be forgotten easily
     '''
     def __init__(self, target_device_idx=None, precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
