@@ -106,7 +106,7 @@ class BaseProcessingObj(BaseTimeObj):
 
     def trigger_code(self):
         '''
-        Any code implemented by derived classed must:
+        Any code implemented by derived classes must:
         1) only perform GPU operations using the xp module
            on arrays allocated with self.xp
         2) avoid any explicity numpy or normal python operation.
