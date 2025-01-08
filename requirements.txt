@@ -3,3 +3,6 @@ scipy
 astropy
 matplotlib
 numba; python_version < "3.13"
+flask-socketio
+python-socketio
+requests
