@@ -136,3 +136,9 @@ class ElectricField(BaseDataObj):
             ef.set_property(A=hdul[0].data, phaseInNm=hdul[1].data, S0=S0)
             return ef
 
+    def array_for_display(self):
+        frame = self.phaseInNm * (self.A > 0).astype(float)
+        idx = self.xp.where(self.A > 0)[0]
+        # Remove average phase
+        frame[idx] -= self.xp.mean(frame[idx])
+        return frame

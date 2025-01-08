@@ -52,6 +52,21 @@ class Simul():
             output_ref = self.objs[output_name]
         return output_ref
 
+    def input_ref(self, input_name, target_device_idx):
+        if ':' in input_name:
+            input_name = input_name.split(':')[0]
+        if '.' in input_name:
+            obj_name, attr_name = input_name.split('.')
+            if not obj_name in self.objs:
+                raise ValueError(f'Object {obj_name} does not exist')
+            if not attr_name in self.objs[obj_name].inputs:
+                raise ValueError(f'Object {obj_name} does not define an input with name {attr_name}')
+            input_ref = self.objs[obj_name].inputs[attr_name].get(target_device_idx)
+        else:
+            input_ref = self.objs[input_name].copyTo(target_device_idx)
+        return input_ref
+
+
     def output_delay(self, output_name):
         if ':' in output_name:
             return int(output_name.split(':')[1])
@@ -175,10 +190,23 @@ class Simul():
             my_params = {k: main[k] for k in args if k in main}
             if 'data_dir' in args and 'data_dir' not in my_params:  # TODO special case
                 my_params['data_dir'] = cm.root_subdir(classname)
+                
+            if 'params_dict' in args:
+                my_params['params_dict'] = params
+                
+            if 'input_ref_getter' in args:
+                my_params['input_ref_getter'] = self.input_ref
+
+            if 'output_ref_getter' in args:
+                my_params['output_ref_getter'] = self.output_ref
+
+            if 'info_getter' in args:
+                my_params['info_getter'] = self.get_info
 
             my_params.update(pars2)
             self.objs[key] = klass(**my_params)
 
+            # TODO this could be more general like the getters above
             if type(self.objs[key]) is DataStore:
                 self.objs[key].setParams(params)
 
@@ -195,6 +223,7 @@ class Simul():
             
             for input_name, output_name in pars['inputs'].items():
 
+                # Special case for DataStore
                 if isinstance(output_name, list) and input_name=='input_list':
                     inputs = [x.split('-')[0] for x in output_name]
                     outputs = [self.output_ref(x.split('-')[1]) for x in output_name]
@@ -355,7 +384,7 @@ class Simul():
                 self.combine_params(params, additional_params)
 
         # Initialize housekeeping objects
-        loop = LoopControl(run_time=params['main']['total_time'], dt=params['main']['time_step'])        
+        self.loop = LoopControl(run_time=params['main']['total_time'], dt=params['main']['time_step'])        
 
         # Actual creation code
         self.apply_overrides(params)
@@ -373,13 +402,29 @@ class Simul():
         for name, idx in zip(trigger_order, trigger_order_idx):
             obj = self.objs[name]
             if isinstance(obj, BaseProcessingObj):
-                loop.add(obj, idx)
+                self.loop.add(obj, idx)
+
+        # Default display web server
+        if 'display_server' in params['main'] and params['main']['display_server']:
+            from specula.processing_objects.display_server import DisplayServer
+            disp = DisplayServer(params, self.input_ref, self.output_ref, self.get_info)
+            self.objs['display_server'] = disp
+            self.loop.add(disp, idx+1)
 
         # Run simulation loop
-        loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
+        self.loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
 
 #        if data_store.has_key('sr'):
 #            print(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * params['main']['total_time'] / params['main']['time_step']])) * 100.}")
 
         for obj in self.objs.values():
             obj.finalize()
+
+    def get_info(self):
+        '''Quick info string intended for web interfaces'''
+        name= f'{self.param_files[0]}'
+        curtime= f'{self.loop._t / self.loop._time_resolution:.3f}'
+        stoptime= f'{self.loop._init_run_time:.3f}'
+
+        info = f'{curtime}/{stoptime}s'
+        return name, info

@@ -7,6 +7,10 @@ main:
   total_time:        0.050                  # [s] Total simulation running time
   time_step:         0.001                  # [s] Simulation time step
 
+server:
+  class:             'DisplayServer'
+  host:              '0.0.0.0'              # Listen on all interfaces
+  port:              3000                   # Use zero for auto-selection
 
 seeing:
   class:             'FuncGenerator'
