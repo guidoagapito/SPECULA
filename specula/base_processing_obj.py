@@ -2,6 +2,7 @@ from astropy.io import fits
 
 from specula.base_time_obj import BaseTimeObj
 from specula import default_target_device, cp
+from specula import show_in_profiler
 from specula.connections import InputValue, InputList
 
 class BaseProcessingObj(BaseTimeObj):
@@ -162,12 +163,13 @@ class BaseProcessingObj(BaseTimeObj):
     
     def trigger(self):        
         if self.ready:
-            if self.target_device_idx>=0:
-                self._target_device.use()
-            if self.target_device_idx>=0 and self.cuda_graph:
-                self.cuda_graph.launch(stream=self.stream)
-            else:
-                self.trigger_code()
+            with show_in_profiler(self.__class__.__name__+'.trigger'):
+                if self.target_device_idx>=0:
+                    self._target_device.use()
+                if self.target_device_idx>=0 and self.cuda_graph:
+                    self.cuda_graph.launch(stream=self.stream)
+                else:
+                    self.trigger_code()
             self.ready = False
                     
     @property
