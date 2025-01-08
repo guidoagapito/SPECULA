@@ -23,6 +23,18 @@ rad2arcsec = 180 / np.pi * 3600
 
 
 class SH(BaseProcessingObj):
+
+    __zeros_cache = {}
+
+    def _zeros_common(self, *args, **kwargs):
+        '''
+        Wrapper around self.xp.zeros to enable the reuse cache
+        '''
+        key = (self.target_device_idx, *args, *kwargs.items())
+        if key not in self.__zeros_cache:
+            self.__zeros_cache[key] = self.xp.zeros(*args, **kwargs)
+        return self.__zeros_cache[key]
+
     def __init__(self,
                  wavelengthInNm: float,
                  subap_wanted_fov: float,
@@ -243,8 +255,8 @@ class SH(BaseProcessingObj):
         fft_size = self._fft_size
 
         # Padded subaperture cube extracted from full pupil
-        self._wf3 = self.xp.zeros((self._lenslet.dimy, fft_size, fft_size), dtype=self.complex_dtype)
-   
+        self._wf3 = self._zeros_common((self._lenslet.dimy, fft_size, fft_size), dtype=self.complex_dtype)
+
         # Focal plane result from FFT
         fp4_pixel_pitch = self._wavelengthInNm / 1e9 / (wf1.pixel_pitch * fft_size)
         fov_complete = fft_size * fp4_pixel_pitch
@@ -254,8 +266,8 @@ class SH(BaseProcessingObj):
         
         self._cutpixels = int(np.round(fov_cut / fp4_pixel_pitch) / 2 * 2)
         self._cutsize = fft_size - self._cutpixels
-        self._psfimage = self.xp.zeros((self._cutsize * self._lenslet.dimx, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
-        self._psf_reshaped_2d = self.xp.zeros((self._cutsize, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
+        self._psfimage = self._zeros_common((self._cutsize * self._lenslet.dimx, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
+        self._psf_reshaped_2d = self._zeros_common((self._cutsize, self._cutsize * self._lenslet.dimy), dtype=self.dtype)
 
         # 1/2 Px tilt
         self._tltf = self.get_tlt_f(self._ovs_np_sub, fft_size - self._ovs_np_sub)
@@ -395,9 +407,9 @@ class SH(BaseProcessingObj):
             self._do_interpolation = False
 
         ef_whole_size = int(in_ef.size[0] * self._fov_ovs)
-        self.ef_whole = self.xp.zeros((ef_whole_size, ef_whole_size), dtype=self.complex_dtype)
-        self.psf = self.xp.zeros((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
-        self.psf_shifted = self.xp.zeros((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
+        self.ef_whole = self._zeros_common((ef_whole_size, ef_whole_size), dtype=self.complex_dtype)
+        self.psf = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
+        self.psf_shifted = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
 
         self.plan_wf3 = self._get_fft_plan(self._wf3, axes=(1, 2), value_type='C2C')
         self.plan_psf_shifted = self._get_fft_plan(self.psf_shifted, axes=(1, 2))
@@ -405,6 +417,9 @@ class SH(BaseProcessingObj):
         super().build_stream(allow_parallel=False)
 
     def get_tlt_f(self, p, c):
+        '''
+        Half-pixel tilt
+        '''
         iu = complex(0, 1)
         xx, yy = self.xp.meshgrid(self.xp.arange(-p // 2, p // 2), self.xp.arange(-p // 2, p // 2))
         tlt_g = xx + yy

@@ -97,4 +97,51 @@ class TestSH(unittest.TestCase):
         np.testing.assert_array_almost_equal(cpuArray(tilted), cpuArray(flat_shifted), decimal=3) 
         
 
- 
+    @cpu_and_gpu
+    def test_zeros_cache(self, target_device_idx, xp):
+        '''
+        Test that arrays are re-used between SH instances on the same target
+        '''
+        t = 1
+        pxscale_arcsec = 0.5
+        pixel_pupil = 120
+        pixel_pitch = 0.05
+        sh_npix = 6
+
+        sh1 = SH(wavelengthInNm=500,
+                subap_wanted_fov= sh_npix * pxscale_arcsec,
+                sensor_pxscale=pxscale_arcsec,
+                subap_on_diameter=20,
+                subap_npx=sh_npix,
+                convolGaussSpotSize=1.0,
+                target_device_idx=target_device_idx)
+
+        sh2 = SH(wavelengthInNm=500,
+                subap_wanted_fov= sh_npix * pxscale_arcsec,
+                sensor_pxscale=pxscale_arcsec,
+                subap_on_diameter=20,
+                subap_npx=sh_npix,
+                convolGaussSpotSize=1.0,
+                target_device_idx=target_device_idx)
+
+        sh3 = SH(wavelengthInNm=500,
+                subap_wanted_fov= sh_npix * pxscale_arcsec,
+                sensor_pxscale=pxscale_arcsec,
+                subap_on_diameter=30,  # Different
+                subap_npx=sh_npix,
+                convolGaussSpotSize=1.0,
+                target_device_idx=target_device_idx)
+
+        # Flat wavefront
+        ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=1, target_device_idx=target_device_idx)
+        ef.generation_time = t
+        sh1.inputs['in_ef'].set(ef)
+        sh2.inputs['in_ef'].set(ef)
+        sh3.inputs['in_ef'].set(ef)
+
+        sh1.setup(1, 1)
+        sh2.setup(1, 1)
+        sh3.setup(1, 1)
+        
+        assert id(sh1._wf3) == id(sh2._wf3) 
+        assert id(sh1._wf3) != id(sh3._wf3) 
