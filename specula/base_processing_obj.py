@@ -80,7 +80,7 @@ class BaseProcessingObj(BaseTimeObj):
         self.current_time_seconds = self.t_to_seconds(self.current_time)
         for input_name, input_obj in self.inputs.items():
             if type(input_obj) is InputValue:
-                self.local_inputs[input_name] =  input_obj.get(self.target_device_idx)
+                self.local_inputs[input_name] = input_obj.get(self.target_device_idx)
                 if self.local_inputs[input_name] is not None:
                     self.last_seen[input_name] = self.local_inputs[input_name].generation_time
             elif type(input_obj) is InputList:
