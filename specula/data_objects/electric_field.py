@@ -15,12 +15,23 @@ class ElectricField(BaseDataObj):
         self.phaseInNm = self.xp.zeros((dimx, dimy), dtype=self.dtype)
 
     def set_value(self, v):
-        self.A = v[0]
-        self.phaseInNm = v[1]
+        '''
+        Set new values for phase and amplitude
+        
+        Arrays are not reallocated
+        '''
+        self.A[:]= self.xp.array(v[0], dtype=self.dtype)
+        self.phaseInNm[:] = self.xp.array(v[1], dtype=self.dtype)
 
     def reset(self):
-        self.A = self.xp.ones_like(self.A)
-        self.phaseInNm = self.xp.zeros_like(self.phaseInNm)
+        '''
+        Reset to zero phase and unitary amplitude
+        
+        Arrays are not reallocated
+        '''
+        self.A *= 0
+        self.A += 1
+        self.phaseInNm *= 0
 
     @property
     def size(self):
@@ -40,9 +51,11 @@ class ElectricField(BaseDataObj):
     def phi_at_lambda(self, wavelengthInNm):
         return self.phaseInNm * ((2 * self.xp.pi) / wavelengthInNm)
 
-    def ef_at_lambda(self, wavelengthInNm):
+    def ef_at_lambda(self, wavelengthInNm, out=None):
         phi = self.phi_at_lambda(wavelengthInNm)
-        return self.A * self.xp.exp(1j * phi, dtype=self.complex_dtype)
+        ef = self.xp.exp(1j * phi, dtype=self.complex_dtype, out=out)
+        ef *= self.A
+        return ef
 
     def product(self, ef2, subrect=None):
 #        subrect = self.checkOther(ef2, subrect=subrect)    # TODO check subrect from atmo_propagation, even in PASSATA it does not seem right

@@ -73,12 +73,12 @@ class BaseDataObj(BaseTimeObj):
                 elif self.target_device_idx==-1:
                     if aType==np.ndarray:
                         #print(f'transferDataTo: {attr} to GPU')
-                        setattr(destobj, attr, cp.asarray( concrete_attr ) )                            
+                        setattr(destobj, attr, cp.asarray( concrete_attr ) )
+        destobj.generation_time = self.generation_time
         return destobj
 
 
     def copyTo(self, target_device_idx):
-        cloned = self
         excluded = ['_tag']
         if target_device_idx==self.target_device_idx:
             return self
