@@ -4,7 +4,7 @@ specula.init(0)  # Default target device
 
 import unittest
 
-from specula import cpuArray
+from specula import cpuArray, np
 from specula.processing_objects.base_operation import BaseOperation
 from specula.base_value import BaseValue
 
@@ -92,6 +92,28 @@ class TestBaseOperation(unittest.TestCase):
 
         assert cpuArray(op.outputs['out_value'].value) == 2
 
+    @cpu_and_gpu
+    def test_concat(self, target_device_idx, xp):
+        
+        value1 = BaseValue(value=xp.array([1,2]), target_device_idx=target_device_idx)
+        value2 = BaseValue(value=xp.array([3]), target_device_idx=target_device_idx)
+        value1.generation_time = 1
+        value2.generation_time = 1
+        
+        op = BaseOperation(concat=True, target_device_idx=target_device_idx)
+        op.inputs['in_value1'].set(value1)
+        op.inputs['in_value2'].set(value2)
+        
+        op.setup(1, 1)
+        op.check_ready(1)
+        op.prepare_trigger(1)
+        op.trigger()
+        op.post_trigger()
+
+        output_value = cpuArray(op.outputs['out_value'].value)
+                                
+        np.testing.assert_array_almost_equal(output_value, [1,2,3])
+        
     @cpu_and_gpu
     def test_const_sum(self, target_device_idx, xp):
         

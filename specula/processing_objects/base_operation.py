@@ -112,7 +112,7 @@ class BaseOperation(BaseProcessingObj):
 
         # Pre-allocate output value
         if self.concat:
-            self.out_value.value = np.concatenate((v1, v2))
+            self.out_value.value = self.xp.concatenate((v1, v2))
         else:
             self.out_value.value = v1.copy()
 
