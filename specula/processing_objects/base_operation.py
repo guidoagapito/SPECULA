@@ -1,4 +1,3 @@
-from astropy.io import fits
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
@@ -22,7 +21,7 @@ class BaseOperation(BaseProcessingObj):
     ''''Simple operations with base value(s)'''
 
     def __init__(self, constant_mul=None, constant_div=None, constant_sum=None, constant_sub=None, mul=False, div=False, sum=False, sub=False,
-                 concat=False, target_device_idx=None, precision=None):
+                 concat=False, value2_is_shorter=False, target_device_idx=None, precision=None):
         """
         Initialize the base operation object.
 
@@ -53,6 +52,7 @@ class BaseOperation(BaseProcessingObj):
         self.sub = sub
         self.concat = concat
         self.out_value = BaseValue(target_device_idx=target_device_idx)
+        self.value2_is_shorter = value2_is_shorter
 
         self.inputs['in_value1'] = InputValue(type=BaseValue)
         self.inputs['in_value2'] = InputValue(type=BaseValue, optional=True)
@@ -60,60 +60,43 @@ class BaseOperation(BaseProcessingObj):
         
     def trigger_code(self):
         value1 = self.local_inputs['in_value1'].value
-        out = self.out_value.value
-
-        if self.constant_mul:
-            out[:] = value1 * self.constant_mul
-            return
-        if self.constant_sum:
-            out[:] = value1 + self.constant_sum
-            return
-
         value2 = self.local_inputs['in_value2'].value
 
-        if self.mul:
-            out[:] = value1
-            out *= value2
-        elif self.div:
-            out[:] = value1
-            out /= value2
-        elif self.sum:
-            out[:] = value1
-            out += value2
-        elif self.sub:
-            out[:] = value1
-            out -= value2
+        if self.constant_mul:
+            self.out_value.value = value1 * self.constant_mul
+            return
+        if self.constant_sum:
+            self.out_value.value = value1 + self.constant_sum
+            return
+
+        out = value1
+        if value2 is None:
+            print('Warning: skippping BaseOperation because value2 is None')
         elif self.concat:
+            out = self.xp.empty(len(value1) + len(value2))
             out[:len(value1)] = value1
             out[len(value1):] = value2
         else:
-            raise ValueError('No operation defined')
+            if self.value2_is_shorter:
+                if self.div:
+                    v2 = self.xp.ones_like(value1)
+                else:
+                    v2 = self.xp.zeros_like(value1)
+                v2[:len(value2)] = value2
+            else:
+                v2 = value2
+            if self.mul:
+                out *= v2
+            elif self.div:
+                out /= v2
+            elif self.sum:
+                out += v2
+            elif self.sub:
+                out -= v2
+            else:
+                raise ValueError('No operation defined')
 
-    def post_trigger(self):
-        super().post_trigger()
+        self.out_value.value = out
         self.out_value.generation_time = self.current_time
-
-    def setup(self, loop_dt, loop_niters):
-        '''
-        Convert eventual input scalars to self.xp arrays
-        and preallocate output value
-        
-        TODO: the scalar-to-array conversion for inputs
-        could be done in prepare_trigger() by the base class
-        or even better in InputValue.get() while transferring inputs
-        '''
-        super().setup(loop_dt, loop_niters)
-
-        value1 = self.inputs['in_value1'].get(target_device_idx=self.target_device_idx)
-        value2 = self.inputs['in_value2'].get(target_device_idx=self.target_device_idx)
-        
-        v1 = convert_to_xp_array(value1, self.xp, self.dtype)
-        v2 = convert_to_xp_array(value2, self.xp, self.dtype)
-
-        # Pre-allocate output value
-        if self.concat:
-            self.out_value.value = self.xp.concatenate((v1, v2))
-        else:
-            self.out_value.value = v1.copy()
 
 

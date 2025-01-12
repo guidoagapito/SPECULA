@@ -8,6 +8,7 @@ main:
   total_time:        1.000                  # [s] Total simulation running time
   time_step:         0.001                  # [s] Simulation time step
   zenithAngleInDeg:  30.0                   # [deg] Airmass correction
+  display_server:    true                   # Display server on auto-selected port
 
 
 seeing:
