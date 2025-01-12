@@ -259,10 +259,16 @@ class FlaskServer():
 
         # Exclude DataStore since its input_list has a different format
         # and cannot be displayed at the moment
+        
+        # TODO .inf values cannot be parsed by the Javascript client
+        # For the moment, these are only present in the Source object,
+        # which is not a processing object and so is skipped.
         display_params = {}
         for k, v in server.params_dict.items():
             if 'class' in v:
                 if v['class'] == 'DataStore':
+                    continue
+                if 'inputs' not in v and 'outputs' not in v:
                     continue
             display_params[k] = v
         sio.emit('params', display_params, room=client_id)
