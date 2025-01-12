@@ -150,7 +150,7 @@ class FlaskServer():
         '''
         Run the main server and a regular status update in a separate thread
         '''
-        t = threading.Thread(target=self.status_update)
+        t = threading.Thread(target=self.status_update, args=(sio,))
         t.start()
         
         # If port == 0 (auto), we need to know which one is selected, but Flask won't tell us.
@@ -164,10 +164,15 @@ class FlaskServer():
                 self.actual_port = port
         else:
             self.actual_port = self.port
-
+            
         sio.run(app, host=self.host, allow_unsafe_werkzeug=True, port=self.actual_port)
 
-    def status_update(self):
+    def shutdown(self):
+        '''Force process stop'''
+        import os
+        os._exit(0)
+        
+    def status_update(self, sio):
         sio_client = socketio.Client()
         def connect():
             if not self.frontend_connected:
@@ -180,10 +185,10 @@ class FlaskServer():
             except queue.Empty:
                 # Timeout. Problem in the processing object. We bail out
                 print('No updates from simulation after 60 seconds, stopping status updates')
-                break
+                self.shutdown()
             except EOFError:
                 print('Display server terminated, exiting web server')
-                break
+                self.shutdown()
 
             # Terminator
             if data is None:
