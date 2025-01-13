@@ -56,8 +56,6 @@ class BaseTimeObj:
             def get_fft_plan(*args, **kwargs):
                 return DummyDecoratorAndContextManager()
 
-            get_fft_plan = None
-
         self.rotate = rotate
         self.shift = shift
         self.RegularGridInterpolator = RegularGridInterpolator
