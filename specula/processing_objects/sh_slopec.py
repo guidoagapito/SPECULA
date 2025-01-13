@@ -2,7 +2,8 @@
 import numpy as np
 
 from specula import fuse
-from specula.lib import make_mask
+from specula.lib.make_mask import make_mask
+from specula.lib.utils import unravel_index_2d
 from specula.data_objects.slopes import Slopes
 from specula.data_objects.subap_data import SubapData
 from specula.base_value import BaseValue
@@ -286,8 +287,8 @@ class ShSlopec(Slopec):
 
             self.slopes.xslopes = sx
             self.slopes.yslopes = sy
-            if self.slopes.pupdata_tag != self.subapdata.tag:
-                self.slopes.pupdata_tag = self.subapdata.tag
+            self.slopes.single_mask = self.subapdata.single_mask()
+            self.slopes.display_map = self.subapdata.display_map
             self.slopes.generation_time = self.current_time
 
             self.flux_per_subaperture_vector.value = flux_per_subaperture
@@ -300,7 +301,6 @@ class ShSlopec(Slopec):
         if self.verbose:
             print(f"Slopes min, max and rms : {self.xp.min(sx)}, {self.xp.max(sx)}, {self.xp.sqrt(self.xp.mean(sx ** 2))}")
 
-    
     def calc_slopes_nofor(self, accumulated=False):
         """
         Calculate slopes without a for-loop over subapertures.
@@ -323,7 +323,7 @@ class ShSlopec(Slopec):
             raise ValueError("Only one between _thr_value and _thr_ratio_value can be set.")
 
         # Reform pixels based on the subaperture index
-        idx2d = self.xp.unravel_index(self.subap_idx, orig_pixels.shape)
+        idx2d = unravel_index_2d(self.subap_idx, orig_pixels.shape, self.xp)
         pixels = orig_pixels[idx2d].T
         
         if self.weight_from_accumulated:
@@ -416,6 +416,8 @@ class ShSlopec(Slopec):
 
             self.slopes.xslopes = sx
             self.slopes.yslopes = sy
+            self.slopes.single_mask = self.subapdata.single_mask()
+            self.slopes.display_map = self.subapdata.display_map
             self.slopes.generation_time = self.current_time
 
             self.flux_per_subaperture_vector.value = flux_per_subaperture_vector

@@ -392,9 +392,8 @@ class ModulatedPyramid(BaseProcessingObj):
         #                        self.xp.rebin(self.in_ef.phi_at_lambda(self.wavelength_in_nm), (self.ef_size[0] * self.fov_res, self.ef_size[1] * self.fov_res)) * 1j)
         #else:
 
-        self.ef[:] = self.in_ef.ef_at_lambda(self.wavelength_in_nm)
+        self.in_ef.ef_at_lambda(self.wavelength_in_nm, out=self.ef)
 
-    @show_in_profiler('pyramid.trigger_code')
     def trigger_code(self):
         u_tlt_const = self.ef * self.tlt_f
         tmp = u_tlt_const[self.xp.newaxis, :, :] * self.ttexp

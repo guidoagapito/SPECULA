@@ -1,11 +1,15 @@
 from astropy.io import fits
 
 from specula.base_time_obj import BaseTimeObj
-from specula import default_target_device, cp
+from specula import default_target_device, cp, DummyDecoratorAndContextManager
+from specula import show_in_profiler
 from specula.connections import InputValue, InputList
 from contextlib import nullcontext
 
 class BaseProcessingObj(BaseTimeObj):
+    
+    _streams = {}
+    
     def __init__(self, target_device_idx=None, precision=None):
         """
         Initialize the base processing object.
@@ -81,7 +85,7 @@ class BaseProcessingObj(BaseTimeObj):
 
     def trigger_code(self):
         '''
-        Any code implemented by derived classed must:
+        Any code implemented by derived classes must:
         1) only perform GPU operations using the xp module
            on arrays allocated with self.xp
         2) avoid any explicity numpy or normal python operation.
@@ -97,6 +101,7 @@ class BaseProcessingObj(BaseTimeObj):
 
     def post_trigger(self):
         if self.target_device_idx>=0 and self.cuda_graph:
+            self._target_device.use()
             self.stream.synchronize()
 
 #        if self.checkInputTimes():
@@ -109,15 +114,27 @@ class BaseProcessingObj(BaseTimeObj):
 #            self.xp.cuda.runtime.deviceSynchronize()                
 #            cp.cuda.Stream.null.synchronize()
 
-    def build_stream(self):
+    @classmethod
+    def device_stream(cls, target_device_idx):
+        if not target_device_idx in cls._streams:
+            cls._streams[target_device_idx] = cp.cuda.Stream(non_blocking=False)
+        return cls._streams[target_device_idx]
+        
+    def build_stream(self, allow_parallel=True):
         if self.target_device_idx>=0:
             self._target_device.use()
-            self.stream = cp.cuda.Stream(non_blocking=False)
+            if allow_parallel:
+                self.stream = cp.cuda.Stream(non_blocking=False)
+            else:
+                self.stream = self.device_stream(self.target_device_idx)
             self.capture_stream()
             default_target_device.use()
 
     def capture_stream(self):
         with self.stream:
+            # First execution is needed to build the FFT plan cache
+            # See for example https://github.com/cupy/cupy/issues/7559
+            self.trigger_code()
             self.stream.begin_capture()
             self.trigger_code()
             self.cuda_graph = self.stream.end_capture()
@@ -136,12 +153,13 @@ class BaseProcessingObj(BaseTimeObj):
     
     def trigger(self):        
         if self.ready:
-            if self.target_device_idx>=0:
-                self._target_device.use()
-            if self.target_device_idx>=0 and self.cuda_graph:
-                self.cuda_graph.launch(stream=self.stream)
-            else:
-                self.trigger_code()
+            with show_in_profiler(self.__class__.__name__+'.trigger'):
+                if self.target_device_idx>=0:
+                    self._target_device.use()
+                if self.target_device_idx>=0 and self.cuda_graph:
+                    self.cuda_graph.launch(stream=self.stream)
+                else:
+                    self.trigger_code()
             self.ready = False
                     
     @property
@@ -166,6 +184,8 @@ class BaseProcessingObj(BaseTimeObj):
         """
         self._loop_dt = loop_dt
         self._loop_niters = loop_niters
+        if self.target_device_idx >= 0:
+            self._target_device.use()
         for name, input in self.inputs.items():
             if input.get(self.target_device_idx) is None and not input.optional:
                 raise ValueError(f'Input {name} for object {self} has not been set')
