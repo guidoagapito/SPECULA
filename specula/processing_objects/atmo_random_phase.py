@@ -88,7 +88,7 @@ class AtmoRandomPhase(BaseProcessingObj):
         # Square phasescreens
         square_phasescreens = phasescreens_manager(np.array([self.L0]), self.pixel_square_phasescreens,
                                                     self.pixel_pitch, self.data_dir,
-                                                    seed=seed, precision=self.precision,
+                                                    seed=self.seed, precision=self.precision,
                                                     verbose=self.verbose, xp=self.xp)
         # number of slices to be cut from the 2D array
         num_slices = (self.pixel_square_phasescreens // self.pixel_pupil)
