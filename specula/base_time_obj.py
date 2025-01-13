@@ -40,6 +40,8 @@ class BaseTimeObj:
             from cupyx.scipy.ndimage import rotate
             from cupyx.scipy.ndimage import shift
             from cupyx.scipy.interpolate import RegularGridInterpolator
+            from cupyx.scipy.fft import fft2 as scipy_fft2
+            from cupyx.scipy.fft import ifft2 as scipy_ifft2
             from cupyx.scipy.fft import get_fft_plan
             from cupyx.scipy.linalg import lu_factor, lu_solve
 
@@ -49,6 +51,10 @@ class BaseTimeObj:
             from scipy.ndimage import shift
             from scipy.interpolate import RegularGridInterpolator
             from scipy.linalg import lu_factor, lu_solve
+            from scipy.fft import fft2 as scipy_fft2
+            from scipy.fft import ifft2 as scipy_ifft2
+            def get_fft_plan(*args, **kwargs):
+                return DummyDecoratorAndContextManager()
 
             get_fft_plan = None
 
