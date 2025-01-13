@@ -34,6 +34,7 @@ class AtmoRandomPhase(BaseProcessingObj):
         self.airmass = 1
         self.wavelengthInNm = wavelengthInNm
         self.pixel_pitch = pixel_pitch         
+        self.seed = seed
         
         self.inputs['seeing'] = InputValue(type=BaseValue)
         
@@ -73,7 +74,7 @@ class AtmoRandomPhase(BaseProcessingObj):
             ef.S0 = source.phot_density()
             self.outputs['out_'+name+'_ef'] = ef
 
-        if seed < 1:
+        if self.seed < 1:
             raise ValueError('Seed must be >1')
 
         self.initScreens()
@@ -88,7 +89,7 @@ class AtmoRandomPhase(BaseProcessingObj):
         # Square phasescreens
         square_phasescreens = phasescreens_manager(np.array([self.L0]), self.pixel_square_phasescreens,
                                                     self.pixel_pitch, self.data_dir,
-                                                    seed=seed, precision=self.precision,
+                                                    seed=self.seed, precision=self.precision,
                                                     verbose=self.verbose, xp=self.xp)
         # number of slices to be cut from the 2D array
         num_slices = (self.pixel_square_phasescreens // self.pixel_pupil)
