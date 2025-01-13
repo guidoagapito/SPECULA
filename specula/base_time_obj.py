@@ -62,6 +62,9 @@ class BaseTimeObj:
         self._get_fft_plan = get_fft_plan
         self._lu_factor = lu_factor
         self._lu_solve = lu_solve
+        self._scipy_fft2 = scipy_fft2
+        self._scipy_ifft2 = scipy_ifft2
+        self._get_fft_plan = get_fft_plan
 
     def t_to_seconds(self, t):
         return float(t) / float(self._time_resolution)
