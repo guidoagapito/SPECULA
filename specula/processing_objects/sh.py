@@ -18,8 +18,6 @@ import os
 @fuse(kernel_name='abs2')
 def abs2(u_fp, out, xp):
      out[:] = xp.real(u_fp * xp.conj(u_fp))
- 
-RAD2ASEC = 180 / np.pi * 3600
 
 
 class SH(BaseProcessingObj):
