@@ -20,27 +20,6 @@ class BaseProcessingObj(BaseTimeObj):
         """
         BaseTimeObj.__init__(self, target_device_idx=target_device_idx, precision=precision)
 
-        if self.target_device_idx >= 0:
-            from cupyx.scipy.ndimage import rotate
-            from cupyx.scipy.interpolate import RegularGridInterpolator
-            from cupyx.scipy.fft import fft2 as scipy_fft2
-            from cupyx.scipy.fft import ifft2 as scipy_ifft2
-            from cupyx.scipy.fft import get_fft_plan
-            self._target_device.use()
-        else:
-            from scipy.ndimage import rotate
-            from scipy.interpolate import RegularGridInterpolator
-            from scipy.fft import fft2 as scipy_fft2
-            from scipy.fft import ifft2 as scipy_ifft2
-            def get_fft_plan(*args, **kwargs):
-                return DummyDecoratorAndContextManager()
-
-        self.rotate = rotate        
-        self.RegularGridInterpolator = RegularGridInterpolator
-        self._get_fft_plan = get_fft_plan
-        self._scipy_fft2 = scipy_fft2
-        self._scipy_ifft2 = scipy_ifft2
-
         self.current_time = 0
         self.current_time_seconds = 0
 

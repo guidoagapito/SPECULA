@@ -19,6 +19,8 @@ float_dtype = None
 complex_dtype = None
 default_target_device_idx = None
 default_target_device = None
+ASEC2RAD = np.pi / (3600 * 180)
+RAD2ASEC = 1.0 / ASEC2RAD
 
 # precision = 0 -> double precision
 # precision = 1 -> single precision
