@@ -16,29 +16,6 @@ class BaseProcessingObj(BaseTimeObj):
         """
         BaseTimeObj.__init__(self, target_device_idx=target_device_idx, precision=precision)
 
-        if self.target_device_idx>=0:
-            from cupyx.scipy.ndimage import rotate
-            from cupyx.scipy.ndimage import shift
-            from cupyx.scipy.interpolate import RegularGridInterpolator
-            from cupyx.scipy.fft import get_fft_plan
-            from cupyx.scipy.linalg import lu_factor, lu_solve
-
-            self._target_device.use()
-        else:
-            from scipy.ndimage import rotate
-            from scipy.ndimage import shift
-            from scipy.interpolate import RegularGridInterpolator
-            from scipy.linalg import lu_factor, lu_solve
-
-            get_fft_plan = None
-
-        self.rotate = rotate
-        self.shift = shift
-        self.RegularGridInterpolator = RegularGridInterpolator
-        self._get_fft_plan = get_fft_plan
-        self._lu_factor = lu_factor
-        self._lu_solve = lu_solve
-
         self.current_time = 0
         self.current_time_seconds = 0
 

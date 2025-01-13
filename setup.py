@@ -81,7 +81,9 @@ setup(name=NAME,
                         "scipy",
                         "astropy",
                         "matplotlib",
-                        "numba; python_version<'3.13'"
+                        "numba; python_version<'3.13'",
+                        "astro-seeing>='1.1'",
+                        "symao>='1.0.1'"
                         ],
       include_package_data=True,
       test_suite='test',

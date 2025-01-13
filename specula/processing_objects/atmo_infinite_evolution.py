@@ -4,6 +4,7 @@ from specula import show_in_profiler
 from astropy.io import fits
 
 from specula.base_processing_obj import BaseProcessingObj
+from specula.base_data_obj import BaseDataObj
 from specula.base_value import BaseValue
 from specula.data_objects.layer import Layer
 from specula.lib.cv_coord import cv_coord
@@ -11,44 +12,39 @@ from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
 from specula import cpuArray, ASEC2RAD, RAD2ASEC
 
-#atmo:
-#  class:                'AtmoEvolution'
-#  L0:                   40                   # [m] Outer scale
-#  heights:              [119.] #,837,3045,12780]), # [m] layer heights at 0 zenith angle
-#  Cn2:                  [1.0] #,0.06,0.14,0.10]), # Cn2 weights (total must be eq 1)
-#  source_dict_ref:      ['on_axis_source']
-#  inputs:
-#    seeing: 'seeing.output'
-#    wind_speed: 'wind_speed.output'
-#    wind_direction: 'wind_direction.output'
-#  outputs: ['layer_list']
+from seeing.sympyHelpers import *
+from seeing.formulary import *
+from seeing.integrator import *
 
 
 from scipy.special import gamma, kv
-from symao.turbolence import createTurbolenceFormulary, ft_phase_screen, ft_ft2
+from symao.turbolence import createTurbolenceFormulary, ft_phase_screen0, ft_ft2
 
 turbolenceFormulas = createTurbolenceFormulary()
 
-def seeing_to_r0(seeing, wvl=500.E-9):
+def seeing_to_r0(seeing, wvl=500.e-9):
     return 0.9759*wvl/(seeing* ASEC2RAD)
 
-def cn2_to_r0(cn2, wvl=500.E-9):
+def cn2_to_r0(cn2, wvl=500.e-9):
     r0=(0.423*(2*np.pi/wvl)**2*cn2)**(-3./5.)
     return r0
 
-def r0_to_seeing(r0, wvl=500.E-9):
+def r0_to_seeing(r0, wvl=500.e-9):
     return (0.9759*wvl/r0)*RAD2ASEC
 
-def cn2_to_seeing(cn2, wvl=500.E-9):
+def cn2_to_seeing(cn2, wvl=500.e-9):
     r0 = cn2_to_r0(cn2,wvl)
     seeing = r0_to_seeing(r0,wvl)
     return seeing
 
 
-class InfinitePhaseScreen(BaseProcessingObj):
+class InfinitePhaseScreen(BaseDataObj):
 
     def __init__(self, mx_size, pixel_scale, r0, L0, l0, xp=np, random_seed=None, stencil_size_factor=1, target_device_idx=0, precision=0):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
+        
+        self.random_data_col = None
+        self.random_data_row = None
         self.requested_mx_size = mx_size
         self.mx_size = 2 ** (int( np.ceil(np.log2(mx_size)))) + 1
         self.pixel_scale = pixel_scale
@@ -65,18 +61,22 @@ class InfinitePhaseScreen(BaseProcessingObj):
         self.setup()
 
     def phase_covariance(self, r, r0, L0):
-        # Make sure everything is a float to avoid nasty surprises in division!
         r = self.xp.asnumpy(r)
         r0 = float(r0)
         L0 = float(L0)
         # Get rid of any zeros
         r += 1e-40
-        A = (L0 / r0) ** (5. / 3)
-        B1 = (2 ** (-5. / 6)) * gamma(11. / 6) / (self.xp.pi ** (8. / 3))
-        B2 = ((24. / 5) * gamma(6. / 5)) ** (5. / 6)
-        C = (((2 * self.xp.pi * r) / L0) ** (5. / 6)) * kv(5. / 6, (2 * self.xp.pi * r) / L0)
-        cov = A * B1 * B2 * C
-        cov = self.xp.asarray(cov)
+        exprCf = turbolenceFormulas['phaseVarianceVonKarman0'].rhs
+        (_, cov) = evaluateFormula( exprCf, {'r_0': r0, 'L_0': L0}, ['r'] , [r], cpulib)
+
+#        A = (L0 / r0) ** (5. / 3)
+#        B1 = (2 ** (-5. / 6)) * gamma(11. / 6) / (self.xp.pi ** (8. / 3))
+#        B2 = ((24. / 5) * gamma(6. / 5)) ** (5. / 6)
+#        C = (((2 * self.xp.pi * r) / L0) ** (5. / 6)) * kv(5. / 6, (2 * self.xp.pi * r) / L0)
+#        cov = A * B1 * B2 * C / 2
+        
+        cov = self.xp.asarray(cov) / 2
+
         return cov
 
     def set_stencil_coords_basic(self):
@@ -154,19 +154,39 @@ class InfinitePhaseScreen(BaseProcessingObj):
         self.A_mat.append(self.xp.fliplr(self.xp.flipud(A_mat)))
         self.B_mat.append(B_mat)
         # make initial screen
-        self.full_scrn = self.xp.asarray(ft_phase_screen( turbolenceFormulas, self.r0, self.stencil_size, self.pixel_scale, self.L0, self.l0 ))
+        tmp, _, _ = ft_phase_screen0( turbolenceFormulas, self.r0, self.stencil_size, self.pixel_scale, self.L0)
+        self.full_scrn = self.xp.asarray(tmp) / 2
+        self.full_scrn -= self.xp.mean(self.full_scrn)
         # print(self.full_scrn.shape)  
 
-    def get_new_line(self, row, after):
-        random_data = self.xp.random.normal(size=self.stencil_size) / ((2*self.xp.pi)**2)
-        if row:
-            stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 1], self.stencil_coords[after][:, 0]])
+    def prepare_random_data_col(self):
+        if self.random_data_col is None:
+#            print('generating new random data col')
+            self.random_data_col = self.xp.random.normal(size=self.stencil_size)            
         else:
+            pass
+#            print('using old random data col')
+
+    def prepare_random_data_row(self):
+        if self.random_data_row is None:
+#            print('generating new random data row')            
+            self.random_data_row = self.xp.random.normal(size=self.stencil_size)
+        else:
+            pass
+#            print('using old random data row')
+
+    def get_new_line(self, row, after):
+        if row:
+            self.prepare_random_data_row()
+            stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 1], self.stencil_coords[after][:, 0]])
+            new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(self.random_data_row)  
+        else:
+            self.prepare_random_data_col()
             stencil_data = self.xp.asarray(self.full_scrn[self.stencil_coords[after][:, 0], self.stencil_coords[after][:, 1]])            
-        new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(random_data)        
+            new_line = self.A_mat[after].dot(stencil_data) + self.B_mat[after].dot(self.random_data_col)
         return new_line
 
-    def add_line(self, row, after):
+    def add_line(self, row, after, flush=True):
         new_line = self.get_new_line(row, after)
         if row:
             new_line = new_line[:,self.xp.newaxis]
@@ -188,6 +208,9 @@ class InfinitePhaseScreen(BaseProcessingObj):
                 self.full_scrn = self.xp.concatenate((new_line, self.full_scrn), axis=row)[:self.stencil_size, :self.stencil_size]
             #    self.shift(self.full_scrn, [0, 1], self.full_scrn, order=0, mode='constant', cval=0.0, prefilter=False)
             #    self.full_scrn[:, 0] = new_line
+        if flush:
+            self.random_data_col = None
+            self.random_data_row = None
 
     @property
     def scrn(self):
@@ -215,7 +238,7 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         self.last_t = 0
         self.delta_time = 1
         # fixed at generation time, then is a input -> rescales the screen?
-        self.seeing = 1
+        self.seeing = 0.8
         self.l0 = 0.005
         self.wind_speed = 1
         self.wind_direction = 1
@@ -262,7 +285,6 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         self.Cn2 = np.array(Cn2, dtype=self.dtype)
         self.pixel_pupil = pixel_pupil
         self.data_dir = data_dir
-        self.seeing = None
         self.wind_speed = None
         self.wind_direction = None
 
@@ -291,15 +313,23 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         seed = self.seed + self.xp.arange(self.n_infinite_phasescreens)
         if len(seed) != len(self.L0):
             raise ValueError('Number of elements in seed and L0 must be the same!')
+
+
+        self.acc_rows = np.zeros((self.n_infinite_phasescreens))
+        self.acc_cols = np.zeros((self.n_infinite_phasescreens))
+
         # Square infinite_phasescreens
         for i in range(self.n_infinite_phasescreens):
             print('Creating phase screen..')
-            self.ref_r0 = cn2_to_r0(self.Cn2[i], self.ref_wavelengthInNm*1e-3) # fattore 1e-3 messo a caso per aver un valore decente
+            self.ref_r0 = 0.9759 * 0.5 / (self.seeing * 4.848) * self.airmass**(-3./5.) # if seeing > 0 else 0.0
+#            self.ref_r0 *= (self.ref_wavelengthInNm / 500.0 / ((2*np.pi)))**(6./5.) 
+            self.ref_r0 *= (self.ref_wavelengthInNm / 500.0 )**(6./5.) 
             print('self.ref_r0:', self.ref_r0)
             temp_infinite_screen = InfinitePhaseScreen(self.pixel_layer_size[i], self.pixel_pitch, 
                                                        self.ref_r0,
                                                        self.L0[i], self.l0, xp=self.xp, target_device_idx=self.target_device_idx, precision=self.precision )
             self.infinite_phasescreens.append(temp_infinite_screen)
+
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
@@ -311,29 +341,17 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         wind_speed = cpuArray(self.local_inputs['wind_speed'].value)
         wind_direction = cpuArray(self.local_inputs['wind_direction'].value)
 
-        #seeing = 0.75
         r0 = 0.9759 * 0.5 / (seeing * 4.848) * self.airmass**(-3./5.)
-        #print('r0', r0)
-        # # r0wavelength = r0 * (self.wavelengthInNm*1e-9 / self.ref_wavelengthInNm)**(6./5.)        
+        r0 *= (self.ref_wavelengthInNm / 500)**(6./5.)        
         scale_r0 = (self.ref_r0 / r0)**(5./6.) 
-        scale_wvl = self.ref_wavelengthInNm  / np.pi
-        scale_coeff = scale_r0 * scale_wvl
-        # print('scale_coeff', scale_coeff)
-        # ascreen = temp_infinite_screen.scrn
-        # print('mean', np.mean(ascreen))
-        # print('std', np.std(ascreen))
-        # print('power', np.sqrt(np.mean(ascreen**2)))
-        # temp_infinite_screen.full_scrn += np.pi/2
-        # temp_infinite_screen.full_scrn *= scale_coeff*8
-        # self.infinite_phasescreens.append(temp_infinite_screen)
-        # from matplotlib import pyplot as plt
-        # ascreen = temp_infinite_screen.scrn
-        # print('mean', np.mean(ascreen))
-        # print('std', np.std(ascreen))
-        # print('power', np.sqrt(np.mean(ascreen**2)))
-        # psd_stat = np.absolute(ft_ft2(ascreen, 1))**2
-        # plt.plot( np.log( psd_stat[160//2, 160//2+1:] ) )
-        # plt.show()
+
+        scale_wvl = ( self.ref_wavelengthInNm / (2 * np.pi) )
+        scale_coeff = scale_wvl
+
+#        print('scale_r0', scale_r0)
+#        print('scale_coeff', scale_coeff)
+
+        ascreen = scale_coeff * self.infinite_phasescreens[0].scrn
         
         # Compute the delta position in pixels
         delta_position =  wind_speed * self.delta_time / self.pixel_pitch  # [pixel]
@@ -341,29 +359,40 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         eps = 1e-4
 
         for ii, phaseScreen in enumerate(self.infinite_phasescreens):
-            w_y_comp = np.sin(2*np.pi*wind_direction[ii]/360.0)
-            w_x_comp = np.cos(2*np.pi*wind_direction[ii]/360.0)
-            frac_rows, rows_to_add = np.modf( delta_position[ii] * w_y_comp )
-            sr = int( (np.sign(rows_to_add) + 1) / 2 )
-            frac_cols, cols_to_add = np.modf( delta_position[ii] * w_x_comp )
-            sc = int( (-np.sign(cols_to_add) + 1) / 2 )
+            w_y_comp = np.cos(2*np.pi*(wind_direction[ii])/360.0)
+            w_x_comp = np.sin(2*np.pi*(wind_direction[ii])/360.0)
+            frac_rows, rows_to_add = np.modf( delta_position[ii] * w_y_comp + self.acc_rows[ii])            
+            #sr = int( (np.sign(rows_to_add) + 1) / 2 )
+            sr = int(np.sign(rows_to_add) )
+            frac_cols, cols_to_add = np.modf( delta_position[ii] * w_x_comp + self.acc_cols[ii] )
+            #sc = int( (-np.sign(cols_to_add) + 1) / 2 )
+            sc = int(np.sign(cols_to_add) )
+            # print('rows_to_add, cols_to_add', rows_to_add, cols_to_add)            
             if np.abs(w_y_comp)>eps:
                 for r in range(int(np.abs(rows_to_add))):
                     phaseScreen.add_line(1, sr)
             if np.abs(w_x_comp)>eps:
                 for r in range(int(np.abs(cols_to_add))):
                     phaseScreen.add_line(0, sc)
-            phaseScreen0 = phaseScreen.scrnRawAll
+            phaseScreen0 = phaseScreen.scrnRawAll.copy()
+            # print('w_y_comp, w_x_comp', w_y_comp, w_x_comp)
+            # print('frac_rows, frac_cols', frac_rows, frac_cols)
+            srf = int(np.sign(frac_rows) )
+            scf = int(np.sign(frac_cols) )
+
             if np.abs(frac_rows)>eps:
-                phaseScreen.add_line(1, sr)
+                phaseScreen.add_line(1, srf, False)
             if np.abs(frac_cols)>eps:
-                phaseScreen.add_line(0, sc)
-            phaseScreen1 = phaseScreen.scrnRawAll
+                phaseScreen.add_line(0, scf, False)
+            phaseScreen1 = phaseScreen.scrnRawAll.copy()
             interpfactor = np.sqrt(frac_rows**2 + frac_cols**2 )
             layer_phase = interpfactor * phaseScreen1 + (1.0-interpfactor) * phaseScreen0
-            phaseScreen.full_scrn = layer_phase
-            layer_phase += np.pi/2
-            self.layer_list[ii].phaseInNm = layer_phase * scale_coeff * 8
+            phaseScreen.full_scrn = phaseScreen0
+            self.acc_rows[ii] = frac_rows
+            self.acc_cols[ii] = frac_cols
+            # print('acc_rows', self.acc_rows)
+            # print('acc_cols', self.acc_cols)
+            self.layer_list[ii].phaseInNm = layer_phase * scale_coeff
             self.layer_list[ii].generation_time = self.current_time
         self.last_position = new_position
         self.last_t = self.current_time
