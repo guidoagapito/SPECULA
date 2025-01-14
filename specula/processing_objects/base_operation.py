@@ -71,7 +71,7 @@ class BaseOperation(BaseProcessingObj):
 
         out = value1
         if value2 is None:
-            print('Warning: skippping BaseOperation because value2 is None')
+            print('Warning: skipping BaseOperation because value2 is None')
         elif self.concat:
             out = self.xp.empty(len(value1) + len(value2))
             out[:len(value1)] = value1
