@@ -194,7 +194,7 @@ modalrec_truth:
 integrator_truth:
   class:        'Integrator'
   delay:             2                      # Total temporal delay in time steps
-  int_gain_data:     'g0.40_10'            # TODO  
+  int_gain_data:     'g0.004_8'            # TODO  
   inputs:
       delta_comm: 'modalrec_truth.out_modes'     
   outputs:  ['out_comm']
@@ -231,14 +231,14 @@ modal_combination:
   class:        'BaseOperation'
   concat:       true
   inputs:
-    in_value1: 'integrator_lgs.out_comm'
-    in_value2: 'integrator_lo.out_comm'
+    in_value1: 'integrator_lo.out_comm'
+    in_value2: 'integrator_lgs.out_comm'
   outputs:     ['out_value']
 
 dm:
   class:             'DM'
   ifunc_object:      'VLT_ifunc'
-  nmodes:            702
+  nmodes:            2
   height:            0                        # DM height [m]
   inputs:
       in_command: 'modal_combination.out_value'

@@ -28,6 +28,7 @@ detector_lgs_override:
 calibrator:
   class: 'ImRecCalibrator'
   nmodes: 700
+  first_mode: 2
   rec_tag:     'eris_rec_lgs'
   #tag_template:    'subap_{main.tag}_n{modes}'
   inputs:
