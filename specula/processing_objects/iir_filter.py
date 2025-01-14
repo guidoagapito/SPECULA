@@ -144,7 +144,7 @@ class IIRFilter(BaseProcessingObj):
         self._ist = self.xp.zeros_like(iir_filter_data.num)
         self._ost = self.xp.zeros_like(iir_filter_data.den)
 
-        self.out_comm = BaseValue(target_device_idx=target_device_idx)
+        self.out_comm = BaseValue(value=self.xp.zeros(self._n, dtype=self.dtype), target_device_idx=target_device_idx)
         self.inputs['delta_comm'] = InputValue(type=BaseValue)
         self.outputs['out_comm'] = self.out_comm
 
@@ -266,7 +266,7 @@ class IIRFilter(BaseProcessingObj):
         for the CPU case it can be jit-compiled with NUMBA.
         For GPU the graph is not implemented yet.
         '''
-        self.out_comm.value, self.state = self.trigger_function(self.delta_comm, self._outFinite, self._ist, self._ost, 
+        self.out_comm.value[:], self.state = self.trigger_function(self.delta_comm, self._outFinite, self._ist, self._ost, 
                                                        self.iir_filter_data.num, self.iir_filter_data.den, self.delay, 
                                                        self.state, self._total_length)
 
