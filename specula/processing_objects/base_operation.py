@@ -57,10 +57,19 @@ class BaseOperation(BaseProcessingObj):
         self.inputs['in_value1'] = InputValue(type=BaseValue)
         self.inputs['in_value2'] = InputValue(type=BaseValue, optional=True)
         self.outputs['out_value'] = self.out_value
+    
+    def setup(self, loop_dt, loop_niters):
+        super().setup(loop_dt, loop_niters)
+ 
+        # Check that both inputs have been set for
+        # operations that need them
+        if self.mul or self.div or self.sum or self.sub or self.concat:
+            if self.inputs['in_value2'].get(-1) is None:
+                raise ValueError('in_value2 has not been set')
         
     def trigger_code(self):
+
         value1 = self.local_inputs['in_value1'].value
-        value2 = self.local_inputs['in_value2'].value
 
         if self.constant_mul:
             self.out_value.value = value1 * self.constant_mul
@@ -69,10 +78,10 @@ class BaseOperation(BaseProcessingObj):
             self.out_value.value = value1 + self.constant_sum
             return
 
+        value2 = self.local_inputs['in_value2'].value
         out = value1
-        if value2 is None:
-            print('Warning: skipping BaseOperation because value2 is None')
-        elif self.concat:
+        
+        if self.concat:
             out = self.xp.empty(len(value1) + len(value2))
             out[:len(value1)] = value1
             out[len(value1):] = value2

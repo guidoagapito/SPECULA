@@ -182,5 +182,35 @@ class TestBaseOperation(unittest.TestCase):
 
         assert cpuArray(op.outputs['out_value'].value) == 3
 
+    @cpu_and_gpu
+    def test_missing_value2(self, target_device_idx, xp):
+        '''Test that setup() raises ValueError when input2 has not been set'''
+
+        value1 = BaseValue(value=6.0, target_device_idx=target_device_idx)
+        value1.generation_time = 1
+        
+        # All these must raise an exception in setup() with a single input
+        ops = []
+        ops.append(BaseOperation(sum=True, target_device_idx=target_device_idx))
+        ops.append(BaseOperation(sub=True, target_device_idx=target_device_idx))
+        ops.append(BaseOperation(mul=True, target_device_idx=target_device_idx))
+        ops.append(BaseOperation(div=True, target_device_idx=target_device_idx))
+        ops.append(BaseOperation(concat=True, target_device_idx=target_device_idx))
+        
+        for op in ops:
+            op.inputs['in_value1'].set(value1)
+            with self.assertRaises(ValueError):
+                op.setup(1, 1)
+
+        # constant mul/div do not raise any exception in setup() with a single input
+        ops = []
+        ops.append(BaseOperation(constant_mul=True, target_device_idx=target_device_idx))
+        ops.append(BaseOperation(constant_div=True, target_device_idx=target_device_idx))
+          
+        for op in ops:
+            op.inputs['in_value1'].set(value1)
+            # Does not raise
+            op.setup(1, 1)  
+
 if __name__ == '__main__':
     unittest.main()
