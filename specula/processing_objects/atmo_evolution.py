@@ -144,7 +144,7 @@ class AtmoEvolution(BaseProcessingObj):
             self.phasescreens_sizes.append(temp_screen.shape[1])
 
         else:
-            self.pixel_phasescreens = self.xp.max(self.pixel_layer)
+            self.pixel_phasescreens = int(self.xp.max(self.pixel_layer))
 
             if len(self.xp.unique(self.L0)) == 1:
                 # Number of rectangular phase screens from a single square phasescreen
@@ -221,8 +221,8 @@ class AtmoEvolution(BaseProcessingObj):
                                                            verbose=self.verbose, xp=self.xp)
 
                 for i in range(self.n_phasescreens):
-                    temp_screen = square_phasescreens[i][:, :self.pixel_phasescreens]
-                    temp_screen *= self.xp.sqrt(self.Cn2[i])
+                    temp_screen = square_phasescreens[i][:, :int(self.pixel_phasescreens)]
+                    temp_screen *= np.sqrt(self.Cn2[i])
                     temp_screen -= self.xp.mean(temp_screen)
                     # Convert to nm
                     temp_screen *= self.wavelengthInNm / (2 * self.xp.pi)
@@ -239,6 +239,7 @@ class AtmoEvolution(BaseProcessingObj):
         self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time        
     
     def trigger_code(self):
+
         # if len(self.phasescreens) != len(wind_speed) or len(self.phasescreens) != len(wind_direction):
         #     raise ValueError('Error: number of elements of wind speed and/or direction does not match the number of phasescreens')
         seeing = cpuArray(self.local_inputs['seeing'].value)
@@ -251,14 +252,14 @@ class AtmoEvolution(BaseProcessingObj):
         delta_position =  wind_speed * self.delta_time / self.pixel_pitch  # [pixel]
         new_position = self.last_position + delta_position
         # Get quotient and remainder
-        new_position_quo = np.floor(new_position).astype(np.int64)
-        new_position_rem = (new_position - new_position_quo).astype(self.dtype)
         wdf, wdi = np.modf(wind_direction/90.0)
         wdf_full, wdi_full = np.modf(wind_direction)
         # Check if we need to cycle the screens
         # print(ii, new_position[ii], self.pixel_layer[ii], p.shape[1]) # Verbose?
         if self.cycle_screens:
-            new_position = np.where(new_position + self.pixel_layer > self.phasescreens_sizes_array,  0, new_position)
+            new_position = np.where(new_position + self.pixel_layer >= self.phasescreens_sizes_array,  0, new_position)
+        new_position_quo = np.floor(new_position).astype(np.int64)
+        new_position_rem = (new_position - new_position_quo).astype(self.dtype)
 #        for ii, p in enumerate(self.phasescreens):
         #    print(f'phasescreens size: {np.around(p.shape[0], 2)}')
         #    print(f'requested position: {np.around(new_position[ii], 2)}')
@@ -269,7 +270,7 @@ class AtmoEvolution(BaseProcessingObj):
             pos = int(new_position_quo[ii])
             ipli = int(self.pixel_layer[ii])
             ipli_p = int(pos + self.pixel_layer[ii])
-            layer_phase = (1.0 - new_position_rem[ii]) * p[0: ipli, pos: ipli_p] + new_position_rem[ii] * p[0: ipli, pos + 1: ipli_p + 1]
+            layer_phase = (1.0 - new_position_rem[ii]) * p[0: ipli, pos: ipli_p] + new_position_rem[ii] * p[0: ipli, pos+1: ipli_p+1]
             layer_phase = self.xp.rot90(layer_phase, wdi[ii])
             if not wdf_full[ii]==0:
                 layer_phase = self.rotate(layer_phase, wdf_full[ii], reshape=False, order=1)

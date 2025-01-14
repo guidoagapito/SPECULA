@@ -1517,12 +1517,12 @@ class Factory:
             chrom_photo = chrom_photo[0]
         chrom = {'_lambdas': chrom_lambdas, '_lambda0': chrom_lambda0, '_photo': chrom_photo}
 
-        rad2asec = 3600.0 * 360.0 / (2 * xp.pi)
+        RAD2ASEC = 3600.0 * 360.0 / (2 * xp.pi)
         wavelengthInM = params_lens['wavelengthInNm'] * 1e-9
         if isinstance(wavelengthInM, (list, xp.ndarray)) and len(wavelengthInM) == 1:
             wavelengthInM = wavelengthInM[0]
         diameterInM = self._main['pixel_pupil'] * self._main['pixel_pitch'] / params_lens['subap_on_diameter']
-        oversamp = (wavelengthInM / diameterInM * rad2asec) / (2 * params_lens['sensor_fov'] / params_lens['sensor_npx'])
+        oversamp = (wavelengthInM / diameterInM * RAD2ASEC) / (2 * params_lens['sensor_fov'] / params_lens['sensor_npx'])
         nmodes_mb = max(nmodes_est, len(params_ref['constant']))
 
         if pup_mask is None:

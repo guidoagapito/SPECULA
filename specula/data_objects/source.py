@@ -2,8 +2,8 @@ import numpy as np
 
 from specula.base_data_obj import BaseDataObj
 from specula.lib.n_phot import n_phot
+from specula import ASEC2RAD
 
-sec2rad = 4.848e-6
 degree2rad = np.pi / 180.
 
 class Source(BaseDataObj):
@@ -49,7 +49,7 @@ class Source(BaseDataObj):
 
     @property
     def r(self):
-        return self._polar_coordinate[0] * sec2rad
+        return self._polar_coordinate[0] * ASEC2RAD
 
     @property
     def r_arcsec(self):
