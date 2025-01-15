@@ -209,4 +209,3 @@ class AtmoPropagation(BaseProcessingObj):
         super().read(filename)
         self.phasescreens = fits.getdata(filename, ext=1)
 
-

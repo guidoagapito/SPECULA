@@ -175,7 +175,9 @@ class Simul():
                 # while its type is infered from the constructor of the current class                
                 elif name.endswith('_object'):
                     parname = name[:-7]
-                    if parname in hints:
+                    if value is None:
+                        pars2[parname] = None
+                    elif parname in hints:
                         partype = hints[parname]
                         filename = cm.filename(parname, value)  # TODO use partype instead of parname?
                         parobj = partype.restore(filename, target_device_idx=target_device_idx)

@@ -325,10 +325,8 @@ class SH(BaseProcessingObj):
             # Insert into padded array
             self._wf3[:, :self._ovs_np_sub, :self._ovs_np_sub] = subap_cube_view * self._tltf[self.xp.newaxis, :, :]
             
-            # PSF generation. fp4 is allocated by the plan
-            with self.plan_wf3:
-                fp4 = self.xp.fft.fft2(self._wf3, axes=(1, 2))
-                abs2(fp4, self.psf_shifted, xp=self.xp)
+            fp4 = self.xp.fft.fft2(self._wf3, axes=(1, 2))
+            abs2(fp4, self.psf_shifted, xp=self.xp)
 
             # Full resolution kernel
             if self._kernelobj is not None:
@@ -336,9 +334,8 @@ class SH(BaseProcessingObj):
                 last = (i + 1) * self._lenslet.dimy
                 subap_kern_fft = self._kernelobj.kernels[first:last, :, :]
 
-                with self.plan_psf_shifted:
-                    psf_fft = self.xp.fft.fft2(self.psf_shifted)
-                    psf_fft *= subap_kern_fft
+                psf_fft = self.xp.fft.fft2(self.psf_shifted)
+                psf_fft *= subap_kern_fft
                 
                 self._scipy_ifft2(psf_fft, overwrite_x=True, norm='forward')
                 self.psf = psf_fft.real
@@ -408,9 +405,6 @@ class SH(BaseProcessingObj):
         self.ef_whole = self._zeros_common((ef_whole_size, ef_whole_size), dtype=self.complex_dtype)
         self.psf = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
         self.psf_shifted = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
-
-        self.plan_wf3 = self._get_fft_plan(self._wf3, axes=(1, 2), value_type='C2C')
-        self.plan_psf_shifted = self._get_fft_plan(self.psf_shifted, axes=(1, 2))
 
         super().build_stream(allow_parallel=False)
 

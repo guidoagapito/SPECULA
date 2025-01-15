@@ -1,10 +1,9 @@
 from astropy.io import fits
 
 from specula.base_time_obj import BaseTimeObj
-from specula import default_target_device, cp, DummyDecoratorAndContextManager
+from specula import default_target_device, cp
 from specula import show_in_profiler
 from specula.connections import InputValue, InputList
-from contextlib import nullcontext
 
 class BaseProcessingObj(BaseTimeObj):
     
@@ -38,12 +37,6 @@ class BaseProcessingObj(BaseTimeObj):
         self.last_seen = {}
         self.outputs = {}
 
-    def get_fft_plan(self, a, shape=None, axes=None, value_type='C2C'):
-        if self._get_fft_plan:
-            return self._get_fft_plan(a, shape, axes, value_type)
-        else:
-            return nullcontext()
-
     def checkInputTimes(self):        
         if len(self.inputs)==0:
             return True
@@ -70,7 +63,7 @@ class BaseProcessingObj(BaseTimeObj):
         self.current_time_seconds = self.t_to_seconds(self.current_time)
         for input_name, input_obj in self.inputs.items():
             if type(input_obj) is InputValue:
-                self.local_inputs[input_name] =  input_obj.get(self.target_device_idx)
+                self.local_inputs[input_name] = input_obj.get(self.target_device_idx)
                 if self.local_inputs[input_name] is not None:
                     self.last_seen[input_name] = self.local_inputs[input_name].generation_time
             elif type(input_obj) is InputList:

@@ -82,11 +82,16 @@ class Modalrec(BaseProcessingObj):
         self.outputs['out_modes'] = self.modes
         self.outputs['out_pseudo_ol_modes'] = self.pseudo_ol_modes
         
+        # TODO static allocation but polc not supported (should use projmat)
+        self.modes.value = self.xp.zeros(self.recmat.recmat.shape[0], dtype=self.dtype)
+        self.pseudo_ol_modes.value = self.xp.zeros(self.recmat.recmat.shape[0], dtype=self.dtype)
         
         if self.polc:
             self.out_comm = BaseValue('output commands from modal reconstructor', target_device_idx=target_device_idx)
             self.inputs['in_commands'] = InputValue(type=BaseValue, optional=True)
             self.inputs['in_commands_list'] = InputList(type=BaseValue, optional=True)            
+            # TODO complete static allocation above
+            raise NotImplementedError
 
     def trigger_code(self):
         if self.recmat.recmat is None:
@@ -147,7 +152,7 @@ class Modalrec(BaseProcessingObj):
         slopes = self.inputs['in_slopes'].get(self.target_device_idx)
         slopes_list = self.inputs['in_slopes_list'].get(self.target_device_idx)
 
-        if not slopes and not all(slopes_list):
+        if not slopes and (not slopes_list or not all(slopes_list)):
             raise ValueError("Either 'slopes' or 'slopes_list' must be given as an input")
         if not self.recmat:
             raise ValueError("Recmat object not valid")

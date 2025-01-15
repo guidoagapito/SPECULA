@@ -24,7 +24,7 @@ class CalibManager():
             'background': 'backgrounds/',
             'pupils': 'pupils/',
             'pupdata': 'pupils',
-            'subapdata': 'subaps/',
+            'subapdata': 'subapdata/',
             'ShSubapCalibrator': 'subapdata/',
             'rec': 'rec/',
             'recmat': 'rec/',
