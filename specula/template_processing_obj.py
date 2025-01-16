@@ -25,7 +25,7 @@ class ProcessingObjName(BaseProcessingObj):
         self.interalParam = self.xp.array(parameter1 * parameter2.recmat)
 
         # BaseValue is just an example, could be any data object 
-        self.result_data1 = BaseValue('some output for this processing oibject', target_device_idx=target_device_idx)
+        self.result_data1 = BaseValue('some output for this processing object', target_device_idx=target_device_idx)
         # self.result_data2 = BaseValue('some other output for this processing oibject', target_device_idx=target_device_idx)        
 
         # allocate the inputs dictionary
@@ -61,7 +61,7 @@ class ProcessingObjName(BaseProcessingObj):
         # self.result_data1.value = d1                
         # or the following:
         self.result_data1.value[:] = d1
-        # this way the objset is not reallocate, necessary when using a stream!!!
+        # this way the objset is not reallocated, necessary when using a stream!!!
 
 
     def post_trigger(self):
@@ -73,7 +73,7 @@ class ProcessingObjName(BaseProcessingObj):
     def setup(self, loop_dt, loop_niters):
         super().setup(loop_dt, loop_niters)
         
-        # when using stream capture shoudl do:
+        # when using stream capture should do:
         # super().build_stream()
 
         # check some initial conditions
