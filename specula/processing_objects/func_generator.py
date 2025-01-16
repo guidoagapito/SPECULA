@@ -15,6 +15,7 @@ class FuncGenerator(BaseProcessingObj):
     def __init__(self, func_type='SIN', nmodes=None, time_hist=None, psd=None, fr_psd=None, continuous_psd=None, 
                 constant=None, amp=None, freq=None, offset=None, vect_amplitude=None, 
                 seed=None, ncycles=1,
+                vsize=1,
                 target_device_idx=None, 
                 precision=None
                 ):
@@ -34,12 +35,13 @@ class FuncGenerator(BaseProcessingObj):
         else:
             self.seed = 0
 
+        self.vsize = vsize
         self.constant = self.xp.array(constant, dtype=self.dtype) if constant is not None else 0.0
         self.amp = self.xp.array(amp, dtype=self.dtype) if amp is not None else 0.0
         self.freq = self.xp.array(freq, dtype=self.dtype) if freq is not None else 0.0
         self.offset = self.xp.array(offset, dtype=self.dtype) if offset is not None else 0.0
         self.vect_amplitude = self.xp.array(vect_amplitude, dtype=self.dtype) if vect_amplitude is not None else 0.0
-        self.output = BaseValue(target_device_idx=target_device_idx, value=self.xp.array(0))
+        self.output = BaseValue(target_device_idx=target_device_idx, value=self.xp.zeros(self.vsize, dtype=self.dtype))
         self.vib = None
 
         if seed is not None:
@@ -126,7 +128,12 @@ class FuncGenerator(BaseProcessingObj):
             raise ValueError(f'Unknown function generator type: {self.type}')
 
     def post_trigger(self):
-        self.output.value = self.output_value
+        
+        if self.vsize>1:
+            self.output.value[:] = self.output_value * self.xp.ones(self.vsize, dtype=self.dtype)
+        else:
+            self.output.value = self.output_value
+
         self.output.generation_time = self.current_time
 
     def get_time_hist_at_current_time(self):

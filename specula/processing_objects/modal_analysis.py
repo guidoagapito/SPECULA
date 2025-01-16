@@ -44,7 +44,7 @@ class ModalAnalysis(BaseProcessingObj):
 
 
     def trigger_code(self):
-        if self.ifunc.zeroPad:
+        if self.ifunc._doZeroPad:
             m = self.xp.dot(self.in_ef.phaseInNm, self.phase2modes)
         else:
             if self.wavelengthInNm > 0:
