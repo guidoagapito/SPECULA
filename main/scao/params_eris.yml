@@ -174,13 +174,6 @@ slopec_lo:
     in_pixels:        'detector_lo.out_pixels'
   outputs:  ['out_slopes']
 
-modalrec_lo:
-  class:              'Modalrec'
-  recmat_object:      'eris_rec_lo'              # reconstruction matrix tag
-  inputs:
-    in_slopes:        'slopec_lo.out_slopes'
-  outputs:  ['out_modes']
-
 # ------------------------------
 # Truth sensing (without average)
 
@@ -190,6 +183,14 @@ modalrec_truth:
   inputs:
     in_slopes:        'slopec_lo.out_slopes'
   outputs:  ['out_modes']
+
+modalrec_lo:
+  class:              'Modalrec'
+  recmat_object:      'eris_rec_lo'              # reconstruction matrix tag
+  inputs:
+    in_slopes:        'slopec_lo.out_slopes'
+  outputs:  ['out_modes']
+
 
 integrator_truth:
   class:        'Integrator'
