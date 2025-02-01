@@ -380,7 +380,7 @@ class Simul():
             params = yaml.safe_load(stream)
                 
         for filename in self.param_files[1:]:
-            print('Reading additional parameters from', self.param_files[0])
+            print('Reading additional parameters from', filename)
             with open(filename, 'r') as stream:
                 additional_params = yaml.safe_load(stream)
                 self.combine_params(params, additional_params)
