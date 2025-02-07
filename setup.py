@@ -93,6 +93,7 @@ setup(name=NAME,
                         "flask-socketio",
                         "python-socketio",
                         "requests",
+                        "pycairo",
                         "othogram"
                         ],
       include_package_data=True,
