@@ -8,4 +8,5 @@ astro-seeing>=1.1
 flask-socketio
 python-socketio
 requests
+pycairo
 orthogram
