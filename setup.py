@@ -92,7 +92,8 @@ setup(name=NAME,
                         "symao>='1.0.1'",
                         "flask-socketio",
                         "python-socketio",
-                        "requests"
+                        "requests",
+                        "othogram"
                         ],
       include_package_data=True,
       test_suite='test',
