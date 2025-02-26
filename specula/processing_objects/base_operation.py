@@ -69,12 +69,12 @@ class BaseOperation(BaseProcessingObj):
         
     def trigger_code(self):
 
-        value1 = self.local_inputs['in_value1'].value
+        value1 = self.local_inputs['in_value1'].value.copy()
 
-        if self.constant_mul:
+        if self.constant_mul is not None:
             self.out_value.value = value1 * self.constant_mul
             return
-        if self.constant_sum:
+        if self.constant_sum is not None:
             self.out_value.value = value1 + self.constant_sum
             return
 
@@ -107,5 +107,4 @@ class BaseOperation(BaseProcessingObj):
 
         self.out_value.value = out
         self.out_value.generation_time = self.current_time
-
 
