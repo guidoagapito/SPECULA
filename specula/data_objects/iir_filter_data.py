@@ -283,4 +283,49 @@ class IIRFilterData(BaseDataObj):
         
         return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
+    @staticmethod
+    def from_fc_and_ampl(fc, ampl, fs, target_device_idx=None):
+        '''Build an IIRFilterData object from a cut off frequency value/vector
+        and amplification    value/vector'''
 
+        fc = np.array(fc)
+        n = len(fc)
+
+        if len(ampl) != n:
+            ampl = np.full(n, ampl)
+        else:
+            ampl = np.array(ampl)
+
+        omega = 2 * np.pi * fc / fs
+        alpha = np.sin(omega) / (2 * ampl)
+
+        a0 = (1 - np.cos(omega)) / 2
+        a1 = 1 - np.cos(omega)
+        a2 = (1 - np.cos(omega)) / 2
+        b0 = 1 + alpha
+        b1 = -2 * np.cos(omega)
+        b2 = 1 - alpha
+
+        a0 /= b0
+        a1 /= b0
+        a2 /= b0
+        b1 /= b0
+        b2 /= b0
+
+        # Filter initialization
+        num = np.zeros((n, 3))
+        ord_num = np.zeros(n)
+        den = np.zeros((n, 3))
+        ord_den = np.zeros(n)
+        
+        for i in range(n):
+            num[i, 0] = a2
+            num[i, 1] = a1
+            num[i, 2] = a0
+            ord_num[i] = 3
+            den[i, 0] = b2
+            den[i, 1] = b1
+            den[i, 2] = 1
+            ord_den[i] = 3
+
+        return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
