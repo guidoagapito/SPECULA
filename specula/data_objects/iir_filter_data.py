@@ -314,10 +314,9 @@ class IIRFilterData(BaseDataObj):
             if n_ord == 1:
                 # Butterworth filter of order 1
                 a0 = omega / (1 + omega)
-                a1 = 0
                 b1 = -(1 - a0)
 
-                num_total = np.asarray([a1.item(), a0.item()], dtype=float)
+                num_total = np.asarray([0, a0.item()], dtype=float)
                 den_total = np.asarray([b1.item(), 1], dtype=float)
             else:
                 #Butterworth filter of order >=2
@@ -332,7 +331,7 @@ class IIRFilterData(BaseDataObj):
                     a2 = a0
                     
                     b1 = 2 * (omega**2 - 1) / ck
-                    b2 = (1 - 2 * np.cos(np.pi * (2*k+1) / (2*N)) * omega + omega**2) / ck
+                    b2 = (1 - 2 * np.cos(np.pi * (2*k+1) / (2*n_ord)) * omega + omega**2) / ck
                     
                     # coefficients of the single filter of order 2
                     num_k = np.asarray([a2.item(), a1.item(), a0.item()], dtype=float)
