@@ -284,7 +284,73 @@ class IIRFilterData(BaseDataObj):
         return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
     @staticmethod
-    def from_fc_and_ampl(fc, ampl, fs, target_device_idx=None):
+    def lpf_from_fc(fc, fs, n_ord=2, target_device_idx=None):
+        '''Build an IIRFilterData object from a cut off frequency value/vector
+        and a filter order value (must be even)'''
+
+        if n_ord != 1 and (n_ord % 2) != 0:
+            raise ValueError('Filter order must be 1 or even')
+
+        fc = np.array(fc)
+        n = len(fc)
+        
+        if n_ord == 1:
+            n_coeff = 2
+        else:
+            n_coeff = 2*n_ord + 1
+        
+        # Filter initialization
+        num = np.zeros((n, n_coeff))
+        ord_num = np.zeros(n)
+        den = np.zeros((n, n_coeff))
+        ord_den = np.zeros(n)
+
+        for i in range(n):
+            if fc[i] >= fs / 2:
+                raise ValueError('Cut-off frequency must be less than half the sampling frequency')
+            fr = fc[i] / fs  # Normalized frequency
+            omega = np.tan(np.pi * fr)
+        
+            if n_ord == 1:
+                # Butterworth filter of order 1
+                a0 = omega / (1 + omega)
+                a1 = 0
+                b1 = -(1 - a0)
+
+                num_total = np.asarray([a1.item(), a0.item()], dtype=float)
+                den_total = np.asarray([b1.item(), 1], dtype=float)
+            else:
+                #Butterworth filter of order >=2
+                num_total = np.array([1.0])
+                den_total = np.array([1.0])
+                
+                for k in range(n_ord // 2):  # Iterations on poles
+                    ck = 1 + 2 * np.cos(np.pi * (2*k+1) / (2*n_ord)) * omega + omega**2
+                    
+                    a0 = omega**2 / ck
+                    a1 = 2 * a0
+                    a2 = a0
+                    
+                    b1 = 2 * (omega**2 - 1) / ck
+                    b2 = (1 - 2 * np.cos(np.pi * (2*k+1) / (2*N)) * omega + omega**2) / ck
+                    
+                    # coefficients of the single filter of order 2
+                    num_k = np.asarray([a2.item(), a1.item(), a0.item()], dtype=float)
+                    den_k = np.asarray([b2.item(), b1.item(), 1], dtype=float)
+                    
+                    # ploynomials convolution to get total filter
+                    num_total = np.convolve(num_total, num_k)
+                    den_total = np.convolve(den_total, den_k)
+                    
+            num[i, :] = num_total
+            den[i, :] = den_total
+            ord_num[i] = len(num_total)
+            ord_den[i] = len(den_total)
+
+        return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
+
+    @staticmethod
+    def lpf_from_fc_and_ampl(fc, ampl, fs, target_device_idx=None):
         '''Build an IIRFilterData object from a cut off frequency value/vector
         and amplification    value/vector'''
 
@@ -296,36 +362,40 @@ class IIRFilterData(BaseDataObj):
         else:
             ampl = np.array(ampl)
 
-        omega = 2 * np.pi * fc / fs
-        alpha = np.sin(omega) / (2 * ampl)
-
-        a0 = (1 - np.cos(omega)) / 2
-        a1 = 1 - np.cos(omega)
-        a2 = (1 - np.cos(omega)) / 2
-        b0 = 1 + alpha
-        b1 = -2 * np.cos(omega)
-        b2 = 1 - alpha
-
-        a0 /= b0
-        a1 /= b0
-        a2 /= b0
-        b1 /= b0
-        b2 /= b0
-
-        # Filter initialization
-        num = np.zeros((n, 3))
-        ord_num = np.zeros(n)
-        den = np.zeros((n, 3))
-        ord_den = np.zeros(n)
+        n_coeff = 3
         
+        # Filter initialization
+        num = np.zeros((n, n_coeff))
+        ord_num = np.zeros(n)
+        den = np.zeros((n, n_coeff))
+        ord_den = np.zeros(n)
+
         for i in range(n):
-            num[i, 0] = a2
-            num[i, 1] = a1
-            num[i, 2] = a0
-            ord_num[i] = 3
-            den[i, 0] = b2
-            den[i, 1] = b1
-            den[i, 2] = 1
-            ord_den[i] = 3
+            if fc[i] >= fs / 2:
+                raise ValueError('Cut-off frequency must be less than half the sampling frequency')
+            fr = fc[i] / fs
+            omega = 2 * np.pi * fr
+            alpha = np.sin(omega) / (2 * ampl[i])
+
+            a0 = (1 - np.cos(omega)) / 2
+            a1 = 1 - np.cos(omega)
+            a2 = (1 - np.cos(omega)) / 2
+            b0 = 1 + alpha
+            b1 = -2 * np.cos(omega)
+            b2 = 1 - alpha
+
+            a0 /= b0
+            a1 /= b0
+            a2 /= b0
+            b1 /= b0
+            b2 /= b0
+            
+            num_total = np.asarray([a2.item(), a1.item(), a0.item()], dtype=float)
+            den_total = np.asarray([b2.item(), b1.item(), 1], dtype=float)
+            
+            num[i, :] = num_total
+            den[i, :] = den_total
+            ord_num[i] = len(num_total)
+            ord_den[i] = len(den_total)
 
         return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
