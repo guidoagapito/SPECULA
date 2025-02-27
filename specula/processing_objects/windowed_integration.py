@@ -28,7 +28,7 @@ class WindowedIntegration(BaseProcessingObj):
     def dt(self, value):
         self._dt = self.seconds_to_t(value)
 
-    def trigger_code(self):
+    def trigger(self):
         if self._start_time <= 0 or self.current_time >= self._start_time:
             input = self.local_inputs['input']
             if input.generation_time == self.current_time:
