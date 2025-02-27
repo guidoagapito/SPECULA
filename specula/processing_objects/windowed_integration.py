@@ -6,7 +6,7 @@ from specula.base_value import BaseValue
 
 class WindowedIntegration(BaseProcessingObj):
     '''Simple windowed integration of a signal'''
-    def __init__(self, nmodes, dt,
+    def __init__(self, n_elem, dt,
                  target_device_idx=None, precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
@@ -15,10 +15,10 @@ class WindowedIntegration(BaseProcessingObj):
 
         self.inputs['input'] = InputValue(type=BaseValue)
 
-        self.nmodes = nmodes
-        self.output = BaseValue(target_device_idx=target_device_idx, value=self.xp.zeros(self.nmodes, dtype=self.dtype))
+        self.n_elem = n_elem
+        self.output = BaseValue(target_device_idx=target_device_idx, value=self.xp.zeros(self.n_elem, dtype=self.dtype))
         self.outputs['output'] = self.output
-        self.output_value = self.xp.zeros(self.nmodes, dtype=self.dtype)
+        self.output_value = self.xp.zeros(self.n_elem, dtype=self.dtype)
         
     @property
     def dt(self):
@@ -33,7 +33,7 @@ class WindowedIntegration(BaseProcessingObj):
             input = self.local_inputs['input']
             if input.generation_time == self.current_time:
                 self.output.value *= 0.0
-                self.output.generation_time = self.current_time * 0.0
+                self.output.generation_time = self.current_time
                 self.output_value += input.value * self._loop_dt / self._dt
 
             if (self.current_time + self._loop_dt - self._dt - self._start_time) % self._dt == 0:
