@@ -90,6 +90,7 @@ class PlotDisplay(BaseProcessingObj):
                 else:
                     self.ax.set_ylim(np.min(ymin), np.max(ymax))
 
+            self.ax.axhline(y=0, color='grey', linestyle='--', dashes=(4, 8), linewidth=0.5, ) # add a horizontal line at 0
             self.fig.canvas.draw()
             plt.pause(0.001)
             self._count += 1
@@ -119,6 +120,7 @@ class PlotDisplay(BaseProcessingObj):
                     self.ax.set_ylim(self._yrange[0], self._yrange[1])
                 else:
                     self.ax.set_ylim(y.min(), y.max())
+            self.ax.axhline(y=0, color='grey', linestyle='--', dashes=(4, 8), linewidth=0.5) # add a horizontal line at 0
             self.fig.canvas.draw()
             plt.pause(0.001)
 
