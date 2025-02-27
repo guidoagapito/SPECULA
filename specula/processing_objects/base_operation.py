@@ -69,7 +69,10 @@ class BaseOperation(BaseProcessingObj):
         
     def trigger_code(self):
 
-        value1 = self.local_inputs['in_value1'].value.copy()
+        if isinstance(self.local_inputs['in_value1'].value, (self.xp.ndarray, list)):  
+            value1 = self.local_inputs['in_value1'].value.copy()  
+        else:
+            value1 = self.local_inputs['in_value1'].value
 
         if self.constant_mul is not None:
             self.out_value.value = value1 * self.constant_mul
