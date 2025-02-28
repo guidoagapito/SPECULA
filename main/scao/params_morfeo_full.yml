@@ -113,8 +113,8 @@ prop:
   class:                'AtmoPropagation'
   source_dict_ref:      *ALL_SOURCES 
   inputs:
-    layer_list: ['atmo.layer_list',
-                  'pupilstop',
+    atmo_layer_list: 'atmo.layer_list'
+    common_layer_list: [ 'pupilstop',
                   'dm1.out_layer:-1',
                   'dm2.out_layer:-1',
                   'dm3.out_layer:-1',

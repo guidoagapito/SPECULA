@@ -56,8 +56,8 @@ prop:
   class:                'AtmoPropagation'
   source_dict_ref:      ['on_axis_source']
   inputs:
-    layer_list: ['atmo.layer_list',
-                  'pupilstop',
+    atmo_layer_list: 'atmo.layer_list'
+    common_layer_list: ['pupilstop',
                   'dm.out_layer:-1']
   
 pyramid:

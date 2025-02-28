@@ -61,14 +61,14 @@ propF:
   class:                'AtmoPropagation'
   source_dict_ref:      ['on_axis_source']
   inputs:
-    layer_list: ['atmoF.layer_list']
+    atmo_layer_list: 'atmoF.layer_list'
   outputs: ['out_on_axis_source_ef']
 
 propI:
   class:                'AtmoPropagation'
   source_dict_ref:      ['on_axis_source']
   inputs:
-    layer_list: ['atmoI.layer_list']
+    atmo_layer_list: 'atmoI.layer_list'
   outputs: ['out_on_axis_source_ef']
 
 ph_disp:
