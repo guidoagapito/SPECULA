@@ -67,12 +67,9 @@ class BaseOperation(BaseProcessingObj):
             if self.inputs['in_value2'].get(-1) is None:
                 raise ValueError('in_value2 has not been set')
         
-    def trigger_code(self):
+    def trigger(self):
 
-        if isinstance(self.local_inputs['in_value1'].value, (self.xp.ndarray, list)):  
-            value1 = self.local_inputs['in_value1'].value.copy()  
-        else:
-            value1 = self.local_inputs['in_value1'].value
+        value1 = self.local_inputs['in_value1'].value
 
         if self.constant_mul is not None:
             self.out_value.value = value1 * self.constant_mul
@@ -82,7 +79,6 @@ class BaseOperation(BaseProcessingObj):
             return
 
         value2 = self.local_inputs['in_value2'].value
-        out = value1
         
         if self.concat:
             out = self.xp.empty(len(value1) + len(value2))
@@ -97,14 +93,15 @@ class BaseOperation(BaseProcessingObj):
                 v2[:len(value2)] = value2
             else:
                 v2 = value2
+
             if self.mul:
-                out *= v2
+                out = value1 * v2
             elif self.div:
-                out /= v2
+                out = value1 / v2
             elif self.sum:
-                out += v2
+                out = value1 + v2
             elif self.sub:
-                out -= v2
+                out = value1 - v2
             else:
                 raise ValueError('No operation defined')
 
