@@ -38,92 +38,67 @@ class PlotDisplay(BaseProcessingObj):
 #        plt.figure(self._window, figsize=(self._wsize[0] / 100, self._wsize[1] / 100))
 #        plt.title(self._title)
 
-    def trigger_code(self):
+    def trigger(self):
         if not self._opened:
             self.set_w()
             self._opened = True
+
+        # Unify the cases by creating a list with a single element if value_list is empty
         if len(self.local_inputs['value_list']) > 0:
-            value = self.local_inputs['value_list']
-            nValues = len(value)
-            n = self._history.shape[0]
-
-            if self._history.ndim == 1:
-                self._history = np.zeros((n,nValues))
-
-            if self._count >= n:
-                self._history[:-1,:] = self._history[1:,:]
-                self._count = n - 1
-            
-            x = np.arange(self._count)
-
-            plt.figure(self._window)
-
-            if self._first:
-                self.fig.suptitle(self._title)
-
-            xmin = np.zeros(nValues)
-            xmax = np.zeros(nValues)
-            ymin = np.zeros(nValues)
-            ymax = np.zeros(nValues)
-
-            for i in range(nValues):
-                v = value[i]
-                self._history[self._count,i] = v.value               
-                y = self._history[:self._count,i]
-    
-                if self._first:
-                    self.line.append(self.ax.plot(x, y, marker='.'))
-                else:
-                    self.line[i][0].set_xdata(x)
-                    self.line[i][0].set_ydata(y)
-                    xmin[i] = x.min()
-                    xmax[i] = x.max()
-                    ymin[i] = y.min()
-                    ymax[i] = y.max()
-
-            if self._first:
-                self._first = False
-            else:
-                self.ax.set_xlim(np.min(xmin), np.max(xmax))
-                if np.sum(np.abs(self._yrange)) > 0:
-                    self.ax.set_ylim(self._yrange[0], self._yrange[1])
-                else:
-                    self.ax.set_ylim(np.min(ymin), np.max(ymax))
-
-            self.ax.axhline(y=0, color='grey', linestyle='--', dashes=(4, 8), linewidth=0.5, ) # add a horizontal line at 0
-            self.fig.canvas.draw()
-            plt.pause(0.001)
-            self._count += 1
+            value_list = self.local_inputs['value_list']
         else:
-            value = self.local_inputs['value']
+            value_list = [self.local_inputs['value']]
 
-            n = len(self._history)
-            if self._count >= n:
-                self._history[:-1] = self._history[1:]
-                self._count = n - 1
+        nValues = len(value_list)
+        n = self._history.shape[0]
 
-            self._history[self._count] = value.value
-            self._count += 1
+        if self._history.ndim == 1:
+            self._history = np.zeros((n, nValues))
 
-            x = np.arange(self._count)
-            y = self._history[:self._count]
-            plt.figure(self._window)
+        if self._count >= n:
+            self._history[:-1, :] = self._history[1:, :]
+            self._count = n - 1
+
+        x = np.arange(self._count)
+
+        plt.figure(self._window)
+
+        if self._first:
+            self.fig.suptitle(self._title)
+
+        xmin = np.zeros(nValues)
+        xmax = np.zeros(nValues)
+        ymin = np.zeros(nValues)
+        ymax = np.zeros(nValues)
+
+        for i in range(nValues):
+            v = value_list[i]
+            self._history[self._count, i] = v.value
+            y = self._history[:self._count, i]
+
             if self._first:
-                self.fig.suptitle(self._title)
-                self.line = self.ax.plot(x, y, marker='.')
-                self._first = False
+                self.line.append(self.ax.plot(x, y, marker='.'))
             else:
-                self.line[0].set_xdata(x)
-                self.line[0].set_ydata(y)
-                self.ax.set_xlim(x.min(), x.max())
-                if np.sum(np.abs(self._yrange)) > 0:
-                    self.ax.set_ylim(self._yrange[0], self._yrange[1])
-                else:
-                    self.ax.set_ylim(y.min(), y.max())
-            self.ax.axhline(y=0, color='grey', linestyle='--', dashes=(4, 8), linewidth=0.5) # add a horizontal line at 0
-            self.fig.canvas.draw()
-            plt.pause(0.001)
+                self.line[i][0].set_xdata(x)
+                self.line[i][0].set_ydata(y)
+                xmin[i] = x.min()
+                xmax[i] = x.max()
+                ymin[i] = y.min()
+                ymax[i] = y.max()
 
+        if self._first:
+            self._first = False
+        else:
+            self.ax.set_xlim(np.min(xmin), np.max(xmax))
+            if np.sum(np.abs(self._yrange)) > 0:
+                self.ax.set_ylim(self._yrange[0], self._yrange[1])
+            else:
+                self.ax.set_ylim(np.min(ymin), np.max(ymax))
+
+        self.ax.axhline(y=0, color='grey', linestyle='--', dashes=(4, 8), linewidth=0.5)  # add a horizontal line at 0
+        self.fig.canvas.draw()
+        plt.pause(0.001)
+        self._count += 1
         # if self._oplot:
         #     plt.plot(xp.arange(self._count), self._history[:self._count], marker='.', color=self._color)
         # else:
