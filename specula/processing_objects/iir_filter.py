@@ -1,9 +1,10 @@
 import numpy as np
 
 import sys
-if sys.version_info < (3, 13):
+try:
     from numba import jit
-else:
+except ImportError:
+    print("WARNING: numba not found, using non-jitted version of IIRFilter")
     def jit(x, *args, **kwargs):
         return x
 
