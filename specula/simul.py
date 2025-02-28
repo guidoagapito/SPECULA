@@ -12,8 +12,16 @@ from specula.connections import InputValue
 
 import yaml
 
-from orthogram import Color, DiagramDef, write_png, Side, FontWeight, TextOrientation
-from collections import Counter
+doBlockDiagram = False
+
+try:
+    import orthogram
+    doBlockDiagram = True
+    from orthogram import Color, DiagramDef, write_png, Side, FontWeight, TextOrientation
+    from collections import Counter
+except ImportError as e:
+    print('Optional package orthogram not installed, block diagram of the simulation will not be produced.')
+
 
 class Simul():
     '''
@@ -487,7 +495,8 @@ class Simul():
         print(f'{self.trigger_order=}')
         print(f'{self.trigger_order_idx=}')
 
-        self.buildDiagram()
+        if doBlockDiagram:
+            self.buildDiagram()
 
         # Build loop
         for name, idx in zip(self.trigger_order, self.trigger_order_idx):
