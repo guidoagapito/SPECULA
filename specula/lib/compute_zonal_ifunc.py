@@ -59,47 +59,57 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
 
     for i in range(n_act_tot):
         z = xp.zeros(n_act_tot)
-        distance = xp.sqrt((x - x[i]) ** 2 + (y - y[i]) ** 2)
+
         z[i] = 1.0  # Set the central actuator
-
-        # Always keep very close points
-        min_distance = min_distance_norm * distance.max()
-        idx_close_near = xp.where(distance <= min_distance)[0]
-
-        # Randomly select additional points with weighted probability based on distance
-        mask_far = distance > min_distance  # Consider only far points
-        prob = xp.exp(-distance[mask_far] / (0.3 * distance.max()))  # Exponential decay
-        prob /= prob.sum()  # Normalize probability
-
-        if n_act <= 10:
-            num_points = (len(distance) // 3)  # Maintain a balanced number of total points
-        elif n_act <= 20:
-            num_points = (len(distance) // 4)
+        
+        if n_act <= 20:
+            x_close, y_close, z_close = x, y, z
         else:
-            num_points = (len(distance) // 6)
-        num_points = max(num_points, 0)  # Avoid negative values
+            # reduce the set of points to improve performance
+            distance = xp.sqrt((x - x[i]) ** 2 + (y - y[i]) ** 2)
+            
+            # Always keep very close points
+            min_distance = min_distance_norm * distance.max()
+            idx_close_near = xp.where(distance <= min_distance)[0]
 
-        idx_far = xp.where(mask_far)[0]  # Indices of far points
-        idx_close_far = xp.random.choice(idx_far, size=num_points, replace=False, p=prob) if num_points > 0 else xp.array([])
+            # Randomly select additional points with weighted probability based on distance
+            mask_far = distance > min_distance  # Consider only far points
+            prob = xp.exp(-distance[mask_far] / (0.3 * distance.max()))  # Exponential decay
+            prob /= prob.sum()  # Normalize probability
 
-        # Merge selected points
-        idx_close = xp.concatenate((idx_close_near, idx_close_far))
+            if n_act <= 10:
+                num_points = (len(distance) // 3)  # Maintain a balanced number of total points
+            elif n_act <= 20:
+                num_points = (len(distance) // 4)
+            else:
+                num_points = (len(distance) // 6)
+            num_points = max(num_points, 0)  # Avoid negative values
 
-        if circ_geom:
-            idx_border = xp.where(xp.abs(xp.sqrt((x - x_c)**2 + (y - y_c)**2) - R) < step / 2)[0]
-            idx_close = xp.unique(xp.concatenate((idx_close, idx_border)))
+            idx_far = xp.where(mask_far)[0]  # Indices of far points
+            idx_close_far = xp.random.choice(idx_far, size=num_points, replace=False, p=prob) if num_points > 0 else xp.array([])
 
-        x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]
+            # Merge selected points
+            idx_close = xp.concatenate((idx_close_near, idx_close_far))
 
-        if not circ_geom:
-            # Add corner points if they are not already included
-            corner_points = xp.array([[0, 0], [0, dim-1], [dim-1, 0], [dim-1, dim-1]])
-            existing_corners = xp.array([xp.all((x == cx) & (y == cy)) for cx, cy in corner_points])
-            new_corners = corner_points[~existing_corners]
-            if new_corners.size > 0:
-                x_close = xp.append(x_close, new_corners[:, 0])
-                y_close = xp.append(y_close, new_corners[:, 1])
-                z_close = xp.append(z_close, xp.zeros(new_corners.shape[0]))  # Assign 0 to corner points
+            if circGeom:
+                idx_border = np.where(np.abs(np.sqrt((x - x_c)**2 + (y - y_c)**2) - R) < step / 2)[0]
+                idx_close = np.unique(np.concatenate((idx_close, idx_border)))
+            else:
+                # Define corner points
+                corner_points = np.array([[0, 0], [0, dim-1], [dim-1, 0], [dim-1, dim-1]])
+
+                # Find indices of x and y that correspond to corner points
+                corner_indices = []
+                for cx, cy in corner_points:
+                    indices = np.where((x == cx) & (y == cy))[0]
+                    corner_indices.extend(indices)
+
+                corner_indices = np.array(corner_indices)
+                idx_close = np.unique(np.concatenate((idx_close, corner_indices)))
+
+                x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]
+
+            x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]
 
         # Interpolation using Thin Plate Splines
         rbf = Rbf(x_close, y_close, z_close, function='thin_plate')
