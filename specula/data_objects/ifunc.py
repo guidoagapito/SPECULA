@@ -93,7 +93,7 @@ class IFunc(BaseDataObj):
     @mask_inf_func.setter
     def mask_inf_func(self, mask_inf_func):
         self._mask_inf_func = self.xp.array(mask_inf_func, dtype=self.dtype)
-        self._idx_inf_func = self.xp.where(mask_inf_func)
+        self._idx_inf_func = self.xp.where(self._mask_inf_func)
 
     @property
     def idx_inf_func(self):
