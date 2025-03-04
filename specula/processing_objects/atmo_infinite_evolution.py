@@ -40,7 +40,17 @@ def cn2_to_seeing(cn2, wvl=500.e-9):
 
 class InfinitePhaseScreen(BaseDataObj):
 
-    def __init__(self, mx_size, pixel_scale, r0, L0, l0, xp=np, random_seed=None, stencil_size_factor=1, target_device_idx=0, precision=0):
+    def __init__(self, 
+                 mx_size, 
+                 pixel_scale, 
+                 r0, 
+                 L0, 
+                 l0, 
+                 xp=np, 
+                 random_seed=None, 
+                 stencil_size_factor=1, 
+                 target_device_idx=0, 
+                 precision=0):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         
         self.random_data_col = None
@@ -226,10 +236,25 @@ class InfinitePhaseScreen(BaseDataObj):
 
 
 class AtmoInfiniteEvolution(BaseProcessingObj):
-    def __init__(self, L0, pixel_pitch, heights, Cn2, pixel_pupil, data_dir, source_dict,
-                 zenithAngleInDeg=None, mcao_fov=None, seed: int=1, target_device_idx=None, precision=None,
-                 verbose=None, force_mcao_fov=False, make_cycle=None,
-                 fov_in_m=None, pupil_position=None):
+    def __init__(self,
+                 L0: list,
+                 pixel_pitch: float,
+                 heights: list,
+                 Cn2: list,
+                 pixel_pupil: float,
+                 data_dir: str,
+                 source_dict: dict,
+                 wavelengthInNm: float=500.0,
+                 zenithAngleInDeg: float=0.0,
+                 mcao_fov: float=None,
+                 seed: int=1,
+                 verbose: bool=False,
+                 user_defined_phasescreen: str='',
+                 force_mcao_fov: bool=False,
+                 fov_in_m: float=None,
+                 pupil_position:list =[0,0],
+                 target_device_idx: int=None,
+                 precision: int=None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         
@@ -243,22 +268,17 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         self.wind_speed = 1
         self.wind_direction = 1
         self.airmass = 1
-        self.ref_wavelengthInNm = 500
+        self.ref_wavelengthInNm = wavelengthInNm
         self.pixel_pitch = pixel_pitch         
         
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
-        self.inputs['wind_direction'] = InputValue(type=BaseValue)
-
-        if pupil_position is None:
-            pupil_position = [0, 0]
+        self.inputs['wind_direction'] = InputValue(type=BaseValue)        
         
-        if zenithAngleInDeg is not None:
-            self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
-            print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
-            print(f'Atmo_Evolution: airmass is: {self.airmass}')
-        else:
-            self.airmass = np.array(1.0, dtype=self.dtype)
+        self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
+        # print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
+        # print(f'Atmo_Evolution: airmass is: {self.airmass}')
+    
         self.heights = np.array(heights, dtype=self.dtype) * self.airmass
 
         if force_mcao_fov:

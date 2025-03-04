@@ -15,14 +15,15 @@ degree2rad = np.pi / 180.
 class AtmoPropagation(BaseProcessingObj):
     '''Atmospheric propagation'''
     def __init__(self,
-                 source_dict,
+                 source_dict: dict,
                  pixel_pupil: int,
                  pixel_pitch: float,
-                 target_device_idx=None, 
-                 precision=None,
                  doFresnel: bool=False,
                  wavelengthInNm: float=500.0,
-                 pupil_position=None):
+                 pupil_position: list=None,
+                 target_device_idx: int=None, 
+                 precision: int=None):
+    
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         if doFresnel and wavelengthInNm is None:

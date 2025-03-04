@@ -12,11 +12,27 @@ from specula import cpuArray
 
 
 class AtmoEvolution(BaseProcessingObj):
-    def __init__(self, L0, pixel_pitch, heights, Cn2, pixel_pupil, data_dir, source_dict, wavelengthInNm: float=500.0,
-                 zenithAngleInDeg=None, mcao_fov=None, pixel_phasescreens=None, seed: int=1, target_device_idx=None, precision=None,
-                 verbose=None, user_defined_phasescreen: str='', force_mcao_fov=False, make_cycle=None,
-                 fov_in_m=None, pupil_position=None):
-
+    def __init__(self,
+                 L0: list,
+                 pixel_pitch: float,
+                 heights: list,
+                 Cn2: list,
+                 pixel_pupil: float,
+                 data_dir: str,
+                 source_dict: dict,
+                 wavelengthInNm: float=500.0,
+                 zenithAngleInDeg: float=0.0,
+                 mcao_fov: float=None,
+                 pixel_phasescreens: int=8192,
+                 seed: int=1,
+                 verbose: bool=False,
+                 user_defined_phasescreen: str='',
+                 force_mcao_fov: bool=False,
+                 make_cycle: bool=False,
+                 fov_in_m: float=None,
+                 pupil_position:list =[0,0],
+                 target_device_idx: int=None,
+                 precision: int=None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         
@@ -37,16 +53,11 @@ class AtmoEvolution(BaseProcessingObj):
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
         self.inputs['wind_direction'] = InputValue(type=BaseValue)
-
-        if pupil_position is None:
-            pupil_position = [0, 0]
-        
-        if zenithAngleInDeg is not None:
-            self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
-            print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
-            print(f'Atmo_Evolution: airmass is: {self.airmass}')
-        else:
-            self.airmass = np.array(1.0, dtype=self.dtype)
+                
+        self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
+        # print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
+        # print(f'Atmo_Evolution: airmass is: {self.airmass}')
+    
         heights = np.array(heights, dtype=self.dtype) * self.airmass
 
         # Conversion coefficient from arcseconds to radians
@@ -82,16 +93,13 @@ class AtmoEvolution(BaseProcessingObj):
         self.wind_speed = None
         self.wind_direction = None
 
-        if pixel_phasescreens is None:
-            self.pixel_square_phasescreens = 8192
-        else:
-            self.pixel_square_phasescreens = pixel_phasescreens
+        self.pixel_square_phasescreens = pixel_phasescreens
 
         # Error if phase-screens dimension is smaller than maximum layer dimension
         if self.pixel_square_phasescreens < max(self.pixel_layer):
             raise ValueError('Error: phase-screens dimension must be greater than layer dimension!')
         
-        self.verbose = verbose if verbose is not None else False
+        self.verbose = verbose
 
         # Use a specific user-defined phase screen if provided
         if user_defined_phasescreen is not None:

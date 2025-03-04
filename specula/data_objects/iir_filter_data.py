@@ -6,7 +6,13 @@ from astropy.io import fits
 
 
 class IIRFilterData(BaseDataObj):
-    def __init__(self, ordnum, ordden, num, den, target_device_idx=None, precision=None):
+    def __init__(self,
+                 ordnum: list,
+                 ordden: list, 
+                 num, 
+                 den, 
+                 target_device_idx: int=None, 
+                 precision: int=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         self.ordnum = self.xp.array(ordnum, dtype=int)
         self.ordden = self.xp.array(ordden, dtype=int) 

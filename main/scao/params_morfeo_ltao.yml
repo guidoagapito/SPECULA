@@ -38,48 +38,48 @@ wind_direction:
 
 on_axis_source:
   class:             'Source'
-  polar_coordinate:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
   magnitude:         8                    # source magnitude
   wavelengthInNm:    750                   # [nm] wavelength
 
 ngs1_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
 ngs2_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 60.0]          # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 60.0]          # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
 ngs3_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 120.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 120.0]         # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
 ngs4_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 180.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 180.0]         # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
 ngs5_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 240.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 240.0]         # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
 ngs6_source:
   class:             'Source'
-  polar_coordinate:  [45.0, 300.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 300.0]         # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength

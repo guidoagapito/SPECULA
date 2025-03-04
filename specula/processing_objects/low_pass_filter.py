@@ -4,10 +4,16 @@ from specula.data_objects.iir_filter_data import IIRFilterData
 
     
 class LowPassFilter(IIRFilter):
-    def __init__(self, cutoff_freq, time_step, amplif_fact=None, n_ord=None,
-                delay=0, offset=None, og_shaper=None,                 
-                target_device_idx=None, 
-                precision=None
+    def __init__(self,
+                 cutoff_freq: float,
+                 time_step: int,
+                 amplif_fact: float=None,
+                 n_ord: int=None,
+                 delay: float=0,
+                 offset: list=None,
+                 og_shaper=None,
+                 target_device_idx: int=None,
+                 precision: int=None
                 ):
         
         samp_freq = 1 / time_step

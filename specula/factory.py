@@ -956,7 +956,7 @@ class Factory:
         """
         params = self.ensure_dictionary(params)
 
-        polar_coordinate = params.pop('polar_coordinate')
+        polar_coordinates = params.pop('polar_coordinates')
         height = params.pop('height')
         magnitude = params.pop('magnitude')
         wavelengthInNm = params.pop('wavelengthInNm')
@@ -990,7 +990,7 @@ class Factory:
         if kernel4PSF_conv_tag and kernel4PSF_conv is None:
             kernel4PSF_conv = self._cm.read_data(kernel4PSF_conv_tag)
 
-        polar_coordinate += error_coord
+        polar_coordinates += error_coord
 
         if 'zenithAngleInDeg' in self._main:
             airmass = 1.0 / xp.cos(xp.radians(self._main['zenithAngleInDeg']))
@@ -1002,7 +1002,7 @@ class Factory:
         if focusHeight is not None:
             focusHeight *= airmass
 
-        extended_source = ExtendedSource(polar_coordinate, height, magnitude, wavelengthInNm, multiples_fwhm, d_tel, source_type, 
+        extended_source = ExtendedSource(polar_coordinates, height, magnitude, wavelengthInNm, multiples_fwhm, d_tel, source_type, 
                                         band=band, zeroPoint=zeroPoint, size_obj=size_obj, xy_array=xy_array, 
                                         sampling_type=sampling_type, layerHeight=layerHeight, intensityProfile=intensityProfile, 
                                         ttProfile=ttProfile, focusHeight=focusHeight, n_rings=n_rings, show_source=show_source, 
@@ -2295,7 +2295,7 @@ class Factory:
 
         for i in range(len(x)):
             p = {
-                'polar_coordinate': [r[i], phi[i]],
+                'polar_coordinates': [r[i], phi[i]],
                 'height': height,
                 'magnitude': magnitude,
                 'wavelengthInNm': wavelengthInNm
