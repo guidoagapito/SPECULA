@@ -11,13 +11,13 @@ class MirrorCommandsCombinator(BaseProcessingObj):
     def __init__(self,
                  k_vector,
                  recmat: Recmat=None,
-                 dims_LO=None,
-                 dims_P=None,
-                 dims_F=1,
-                 out_dims=None,
+                 dims_LO: list=None,
+                 dims_P: int=None,
+                 dims_F: int=1,
+                 out_dims: list=None,
                  # for all processing objects:                 
-                 target_device_idx=None, # thise is always here
-                 precision=None          # thise is always here
+                 target_device_idx: int=None, # thise is always here
+                 precision: int=None          # thise is always here
                 ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)        
                 

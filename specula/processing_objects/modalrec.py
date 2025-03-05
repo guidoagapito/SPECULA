@@ -21,8 +21,8 @@ class Modalrec(BaseProcessingObj):
                  nSlopesToBeDiscarded: int=None,
                  dmNumber: int=0,
                  noProj: bool=False,
-                 target_device_idx=None, 
-                 precision=None
+                 target_device_idx: int=None, 
+                 precision: int=None
                 ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
