@@ -49,72 +49,37 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
         n_act_tot = n_act ** 2
 
     coordinates = xp.vstack((x, y))
+    grid_x, grid_y = xp.meshgrid(xp.arange(dim), xp.arange(dim))
 
     # ----------------------------------------------------------
     # Influence Function (ifs_cube) Computation
     ifs_cube = xp.zeros((n_act_tot, dim, dim))
 
     # Minimum distance between points
-    min_distance_norm = max([4/n_act, 0.15])
+    min_distance_norm = 8*dim/n_act
 
     for i in range(n_act_tot):
         z = xp.zeros(n_act_tot)
 
         z[i] = 1.0  # Set the central actuator
         
-        if n_act <= 20:
+        if min_distance_norm >= dim/2:
             x_close, y_close, z_close = x, y, z
+            idx_far_grid = None
         else:
-            # reduce the set of points to improve performance
             distance = xp.sqrt((x - x[i]) ** 2 + (y - y[i]) ** 2)
-            
-            # Always keep very close points
-            min_distance = min_distance_norm * distance.max()
-            idx_close_near = xp.where(distance <= min_distance)[0]
-
-            # Randomly select additional points with weighted probability based on distance
-            mask_far = distance > min_distance  # Consider only far points
-            prob = xp.exp(-distance[mask_far] / (0.3 * distance.max()))  # Exponential decay
-            prob /= prob.sum()  # Normalize probability
-
-            if n_act <= 10:
-                num_points = (len(distance) // 3)  # Maintain a balanced number of total points
-            elif n_act <= 20:
-                num_points = (len(distance) // 4)
-            else:
-                num_points = (len(distance) // 6)
-            num_points = max(num_points, 0)  # Avoid negative values
-
-            idx_far = xp.where(mask_far)[0]  # Indices of far points
-            idx_close_far = xp.random.choice(idx_far, size=num_points, replace=False, p=prob) if num_points > 0 else xp.array([])
-
-            # Merge selected points
-            idx_close = xp.concatenate((idx_close_near, idx_close_far))
-
-            if circGeom:
-                idx_border = np.where(np.abs(np.sqrt((x - x_c)**2 + (y - y_c)**2) - R) < step / 2)[0]
-                idx_close = np.unique(np.concatenate((idx_close, idx_border)))
-            else:
-                # Define corner points
-                corner_points = np.array([[0, 0], [0, dim-1], [dim-1, 0], [dim-1, dim-1]])
-
-                # Find indices of x and y that correspond to corner points
-                corner_indices = []
-                for cx, cy in corner_points:
-                    indices = np.where((x == cx) & (y == cy))[0]
-                    corner_indices.extend(indices)
-
-                corner_indices = np.array(corner_indices)
-                idx_close = np.unique(np.concatenate((idx_close, corner_indices)))
-
-                x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]
-
-            x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]
+            idx_close = xp.where(distance <= min_distance_norm)[0]
+            x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]           
+            # Compute the distance grid
+            distance_grid = xp.sqrt((grid_x - x[i]) ** 2 + (grid_x - y[i]) ** 2)
+            idx_far_grid = xp.where(distance_grid < min_distance_norm)[0]
 
         # Interpolation using Thin Plate Splines
         rbf = Rbf(x_close, y_close, z_close, function='thin_plate')
-        grid_x, grid_y = xp.meshgrid(xp.arange(dim), xp.arange(dim))
+        
         z_interp = rbf(grid_x, grid_y)
+        if idx_far_grid is not None:
+            z_interp.flatten()[idx_far_grid] = 0
 
         ifs_cube[i, :, :] = z_interp
 
