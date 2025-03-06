@@ -71,15 +71,15 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
             idx_close = xp.where(distance <= min_distance_norm)[0]
             x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]           
             # Compute the distance grid
-            distance_grid = xp.sqrt((grid_x - x[i]) ** 2 + (grid_x - y[i]) ** 2)
-            idx_far_grid = xp.where(distance_grid < min_distance_norm)[0]
+            distance_grid = xp.sqrt((grid_x.flat - x[i]) ** 2 + (grid_x.flat - y[i]) ** 2)
+            idx_far_grid = xp.where(distance_grid > min_distance_norm)[0]
 
         # Interpolation using Thin Plate Splines
         rbf = Rbf(x_close, y_close, z_close, function='thin_plate')
         
         z_interp = rbf(grid_x, grid_y)
         if idx_far_grid is not None:
-            z_interp.flatten()[idx_far_grid] = 0
+            z_interp.flat[idx_far_grid] = 0
 
         ifs_cube[i, :, :] = z_interp
 
