@@ -56,7 +56,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
     ifs_cube = xp.zeros((n_act_tot, dim, dim))
 
     # Minimum distance between points
-    min_distance_norm = 8*dim/n_act
+    min_distance_norm = 9*dim/n_act
 
     for i in range(n_act_tot):
         z = xp.zeros(n_act_tot)
@@ -72,7 +72,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
             x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]           
             # Compute the distance grid
             distance_grid = xp.sqrt((grid_x.flat - x[i]) ** 2 + (grid_x.flat - y[i]) ** 2)
-            idx_far_grid = xp.where(distance_grid > min_distance_norm)[0]
+            idx_far_grid = xp.where(distance_grid > 0.8*min_distance_norm)[0]
 
         # Interpolation using Thin Plate Splines
         rbf = Rbf(x_close, y_close, z_close, function='thin_plate')
