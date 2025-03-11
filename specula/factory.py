@@ -29,7 +29,7 @@ ExtendedSource = IdealWFS = IdealWFSSlopec = IntegratorOpt = IntegratorAutoGain 
 LUTControl = MatFilter = Kernel = LIFT = ModalAnalysisWFS = ModalRecNN = ModalRecNNMulti = object
 IIRControlState = IntegratorMat = LIFT_SH_Slopec = M2CRec = ModalAnalysis = ModalAnalysisSlopec = AVC = object
 ModalRecNNPython = ModalRecCured = ModalRecDisplay = ShShift = ShTilt = PyrTilt = OptGainControl = object
-IIRFilter = IIRFilterState = object
+IirFilter = IirFilterState = object
 
 def zern2phi(*args, **kwargs):
     pass
@@ -1190,7 +1190,7 @@ class Factory:
         offset: Offset value
 
         Returns:
-        IIRFilter: IIR Control processing object
+        IirFilter: IIR Control processing object
         """
         params = self.ensure_dictionary(params)
 
@@ -1200,7 +1200,7 @@ class Factory:
         iir_tag = params.pop('iir_tag')
         iir_filter_data = self._cm.read_iir_filter_data(iir_tag)
 
-        iirc = IIRFilter(iir_filter_data, delay=delay)
+        iirc = IirFilter(iir_filter_data, delay=delay)
 
         if offset is not None:
             iirc.offset = offset
@@ -1221,7 +1221,7 @@ class Factory:
         offset: Offset value
 
         Returns:
-        IIRFilterState: IIR Control State processing object
+        IirFilterState: IIR Control State processing object
         """
         params = self.ensure_dictionary(params)
 
@@ -1231,7 +1231,7 @@ class Factory:
         iir_tag = params.pop('iir_tag')
         iir_filter_data = self._cm.read_iir_filter_data(iir_tag)
 
-        iirc = IIRFilterState(iir_filter_data, delay=delay)
+        iirc = IirFilterState(iir_filter_data, delay=delay)
 
         if offset is not None:
             iirc.offset = offset

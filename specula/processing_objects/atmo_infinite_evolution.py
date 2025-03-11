@@ -20,14 +20,12 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
                  Cn2: list,
                  pixel_pupil: float,
                  data_dir: str,
-                 source_dict: dict,
                  wavelengthInNm: float=500.0,
                  zenithAngleInDeg: float=0.0,
-                 mcao_fov: float=None,
+                 fov: float=0.0,
                  seed: int=1,
                  verbose: bool=False,
                  user_defined_phasescreen: str='',
-                 force_mcao_fov: bool=False,
                  fov_in_m: float=None,
                  pupil_position:list =[0,0],
                  target_device_idx: int=None,
@@ -58,25 +56,14 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
     
         self.heights = np.array(heights, dtype=self.dtype) * self.airmass
 
-        if force_mcao_fov:
-            print(f'\nATTENTION: MCAO FoV is forced to diameter={mcao_fov} arcsec\n')
-            alpha_fov = mcao_fov / 2.0
-        else:
-            alpha_fov = 0.0
-            for source in source_dict.values():
-                alpha_fov = max(alpha_fov, *abs(cv_coord(from_polar=[source.phi, source.r_arcsec],
-                                                       to_rect=True, degrees=False, xp=np)))
-            if mcao_fov is not None:
-                alpha_fov = max(alpha_fov, mcao_fov / 2.0)
-        
-        # Max star angle from arcseconds to radians
-        rad_alpha_fov = alpha_fov * ASEC2RAD
+        # FoV in radians
+        fov_rad = fov * ASEC2RAD
 
         # Compute layers dimension in pixels
-        self.pixel_layer_size = np.ceil((pixel_pupil + 2 * np.sqrt(np.sum(np.array(pupil_position, dtype=self.dtype) * 2)) / self.pixel_pitch + 
-                               2.0 * abs(self.heights) / self.pixel_pitch * rad_alpha_fov) / 2.0) * 2.0
+        self.pixel_layer = np.ceil((pixel_pupil + 2 * np.sqrt(np.sum(np.array(pupil_position, dtype=self.dtype) * 2)) / pixel_pitch + 
+                               abs(heights) / pixel_pitch * fov_rad) / 2.0) * 2.0
         if fov_in_m is not None:
-            self.pixel_layer_size = np.full_like(self.heights, int(fov_in_m / self.pixel_pitch / 2.0) * 2)
+            self.pixel_layer = np.full_like(heights, int(fov_in_m / pixel_pitch / 2.0) * 2)
         
         self.L0 = L0
         self.Cn2 = np.array(Cn2, dtype=self.dtype)

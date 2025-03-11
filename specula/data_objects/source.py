@@ -65,13 +65,13 @@ class Source(BaseDataObj):
 
     @property
     def x_coord(self):
-        alpha = self._polar_coordinate[0] * 4.848e-6
+        alpha = self._polar_coordinate[0] * ASEC2RAD
         d = self.height * np.sin(alpha)
         return np.cos(np.radians(self._polar_coordinate[1])) * d
 
     @property
     def y_coord(self):
-        alpha = self._polar_coordinate[0] * 4.848e-6
+        alpha = self._polar_coordinate[0] * ASEC2RAD
         d = self.height * np.sin(alpha)
         return np.sin(np.radians(self._polar_coordinate[1])) * d
 
