@@ -188,14 +188,21 @@ class AtmoPropagation(BaseProcessingObj):
         xx, yy = make_xy(self.pixel_pupil_size, pixel_pupmeta/2., xp=self.xp)
         xx1 = xx + half_pixel_layer[0] + pixel_position[0]
         yy1 = yy + half_pixel_layer[1] + pixel_position[1]
+        limit0 = (layer.size[0] - self.pixel_pupil_size) /2
+        limit1 = (layer.size[1] - self.pixel_pupil_size) /2
 
-        print('Checking sources in FoV')
-        print('pixel_position[0]', pixel_position[0])
-        print('pixel_position[1]', pixel_position[1])
-        print('layer.size[0]', layer.size[0])
-        print('layer.size[1]', layer.size[1])
-        print('self.pixel_pupil_size', self.pixel_pupil_size)
-        isInside = abs(pixel_position[0]) <= (layer.size[0] - self.pixel_pupil_size) /2 and abs(pixel_position[1]) <= (layer.size[1] - self.pixel_pupil_size) /2
+        # In case debugging is needed:
+        # print('Checking sources in FoV')
+        # print('pixel_position[0]', pixel_position[0])
+        # print('pixel_position[1]', pixel_position[1])
+        # print('layer.size[0]', layer.size[0])
+        # print('layer.size[1]', layer.size[1])
+        # print('self.pixel_pupil_size', self.pixel_pupil_size)
+        # print('layer.size[1]', layer.size[1])
+        # print('limit0', limit0)
+        # print('limit1', limit1)
+
+        isInside = abs(pixel_position[0]) <= limit0 and abs(pixel_position[1]) <= limit1
         if not isInside:
             return None
 
