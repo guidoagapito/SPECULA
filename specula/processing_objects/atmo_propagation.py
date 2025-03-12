@@ -55,7 +55,8 @@ class AtmoPropagation(BaseProcessingObj):
             ef.S0 = source.phot_density()
             self.outputs['out_'+name+'_ef'] = ef            
             
-        self.inputs['layer_list'] = InputList(type=Layer)
+        self.inputs['atmo_layer_list'] = InputList(type=Layer)
+        self.inputs['common_layer_list'] = InputList(type=Layer)
 
     def doFresnel_setup(self):
    
@@ -67,12 +68,12 @@ class AtmoPropagation(BaseProcessingObj):
 
         if not self.propagators:
                         
-            layer_list = self.local_inputs['layer_list']
+            layer_list = self.local_inputs['atmo_layer_list']
             
             nlayers = len(layer_list)
             self.propagators = []
 
-            height_layers = np.array([layer.height for layer in self.layer_list], dtype=self.dtype)
+            height_layers = np.array([layer.height for layer in self.atmo_layer_list], dtype=self.dtype)
             sorted_heights = np.sort(height_layers)
             if not (np.allclose(height_layers, sorted_heights) or np.allclose(height_layers, sorted_heights[::-1])):
                 raise ValueError('Layers must be sorted from highest to lowest or from lowest to highest')
@@ -92,31 +93,26 @@ class AtmoPropagation(BaseProcessingObj):
     def trigger_code(self):
         #if self.doFresnel:
         #    self.doFresnel_setup()
-
-        layer_list = self.local_inputs['layer_list']
         for source_name, source in self.source_dict.items():
 
             output_ef = self.outputs['out_'+source_name+'_ef']
             output_ef.reset()
 
-            for layer in layer_list:
+            for layer in self.local_inputs['atmo_layer_list']:
+                interpolator = self.interpolators[source][layer]                                
+                if self.magnification_list[layer] is not None:
+                    tempA = layer.A
+                    tempP = layer.phaseInNm
+                    tempP[tempA == 0] = self.xp.mean(tempP[tempA != 0])
+                    layer.phaseInNm = tempP
 
-                interpolator = self.interpolators[source][layer]
+                output_ef.A *= interpolator.interpolate(layer.A)
+                output_ef.phaseInNm += interpolator.interpolate(layer.phaseInNm)
+
+            for layer in self.local_inputs['common_layer_list']:                
+                topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, (layer.size[1] - self.pixel_pupil_size) // 2]
+                output_ef.product(layer, subrect=topleft)
                 
-                if interpolator is None:
-                    topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, (layer.size[1] - self.pixel_pupil_size) // 2]
-                    output_ef.product(layer, subrect=topleft)
-                else:
-                    
-                    if self.magnification_list[layer] is not None:
-                        tempA = layer.A
-                        tempP = layer.phaseInNm
-                        tempP[tempA == 0] = self.xp.mean(tempP[tempA != 0])
-                        layer.phaseInNm = tempP
-
-                    output_ef.A *= interpolator.interpolate(layer.A)
-                    output_ef.phaseInNm += interpolator.interpolate(layer.phaseInNm)
-
 #                if self.doFresnel:
 #                    if self.propagators:
 #                        propagator = self.propagators[i]
@@ -138,7 +134,7 @@ class AtmoPropagation(BaseProcessingObj):
         self.interpolators = {}
         for source in self.source_dict.values():
             self.interpolators[source] = {}
-            for layer in self.layer_list:
+            for layer in self.atmo_layer_list:
                 diff_height = source.height - layer.height
                 if (layer.height == 0 or (np.isinf(source.height) and source.r == 0)) and \
                                 not self.shiftXY_cond[layer] and \
@@ -212,12 +208,12 @@ class AtmoPropagation(BaseProcessingObj):
     def setup(self, loop_dt, loop_niters):
         super().setup(loop_dt, loop_niters)
 
-        self.layer_list = self.inputs['layer_list'].get(self.target_device_idx)
-        if len(self.layer_list) < 1:
+        self.atmo_layer_list = self.inputs['atmo_layer_list'].get(self.target_device_idx)
+        if len(self.atmo_layer_list) < 1:
             raise ValueError('At least one layer must be set')
 
-        self.shiftXY_cond = {layer: np.any(layer.shiftXYinPixel) for layer in self.layer_list}
-        self.magnification_list = {layer: max(layer.magnification, 1.0) for layer in self.layer_list}
+        self.shiftXY_cond = {layer: np.any(layer.shiftXYinPixel) for layer in self.atmo_layer_list}
+        self.magnification_list = {layer: max(layer.magnification, 1.0) for layer in self.atmo_layer_list}
 
         self.setup_interpolators()
 

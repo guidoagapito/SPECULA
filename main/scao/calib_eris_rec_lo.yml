@@ -13,7 +13,7 @@ main_override:
 
 prop_override:
   inputs:
-    layer_list: ['pupilstop',
+    common_layer_list: ['pupilstop',
                   'dm.out_layer']
 
 source_on_axis_override:

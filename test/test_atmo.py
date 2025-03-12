@@ -48,7 +48,8 @@ class TestAtmo(unittest.TestCase):
         atmo.inputs['seeing'].set(seeing.output)
         atmo.inputs['wind_direction'].set(wind_direction.output)
         atmo.inputs['wind_speed'].set(wind_speed.output)
-        prop.inputs['layer_list'].set(atmo.outputs['layer_list'])
+        prop.inputs['atmo_layer_list'].set(atmo.outputs['layer_list'])
+        prop.inputs['common_layer_list'].set([])
 
         for obj in [seeing, wind_speed, wind_direction, atmo, prop]:
             obj.setup(1, 1)

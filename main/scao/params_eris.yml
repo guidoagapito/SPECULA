@@ -85,10 +85,9 @@ prop:
   class:                'AtmoPropagation'
   source_dict_ref:      ['source_on_axis', 'source_lgs', 'source_ngs' ]
   inputs:
-    layer_list: ['atmo.layer_list',
-                  'pupilstop',
-                  'dm.out_layer:-1',
-                  ]
+    atmo_layer_list: 'atmo.layer_list'
+    common_layer_list: ['pupilstop', 'dm.out_layer:-1']
+
   outputs: ['out_source_on_axis_ef','out_source_lgs_ef', 'out_source_ngs_ef']
 
 # -------
