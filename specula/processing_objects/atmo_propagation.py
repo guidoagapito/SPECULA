@@ -15,14 +15,15 @@ degree2rad = np.pi / 180.
 class AtmoPropagation(BaseProcessingObj):
     '''Atmospheric propagation'''
     def __init__(self,
-                 source_dict,
+                 source_dict: dict,
                  pixel_pupil: int,
                  pixel_pitch: float,
-                 target_device_idx=None, 
-                 precision=None,
                  doFresnel: bool=False,
                  wavelengthInNm: float=500.0,
-                 pupil_position=None):
+                 pupil_position: list=None,
+                 target_device_idx: int=None, 
+                 precision: int=None):
+    
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         if doFresnel and wavelengthInNm is None:
@@ -147,7 +148,12 @@ class AtmoPropagation(BaseProcessingObj):
                     self.interpolators[source][layer] = None
 
                 elif diff_height > 0:
-                    self.interpolators[source][layer] = self.layer_interpolator(source, layer)
+                    li = self.layer_interpolator(source, layer)                    
+                    if li is None:
+                        raise ValueError('FATAL ERROR, the source is not inside the selected FoV for atmosphere layers generation.')
+                    else:
+                        self.interpolators[source][layer] = self.layer_interpolator(source, layer)
+
                 else:
                     raise ValueError('Invalid layer/source geometry')
  
@@ -182,8 +188,26 @@ class AtmoPropagation(BaseProcessingObj):
         xx, yy = make_xy(self.pixel_pupil_size, pixel_pupmeta/2., xp=self.xp)
         xx1 = xx + half_pixel_layer[0] + pixel_position[0]
         yy1 = yy + half_pixel_layer[1] + pixel_position[1]
+        limit0 = (layer.size[0] - self.pixel_pupil_size) /2
+        limit1 = (layer.size[1] - self.pixel_pupil_size) /2
+
+        # In case debugging is needed:
+        # print('Checking sources in FoV')
+        # print('pixel_position[0]', pixel_position[0])
+        # print('pixel_position[1]', pixel_position[1])
+        # print('layer.size[0]', layer.size[0])
+        # print('layer.size[1]', layer.size[1])
+        # print('self.pixel_pupil_size', self.pixel_pupil_size)
+        # print('layer.size[1]', layer.size[1])
+        # print('limit0', limit0)
+        # print('limit1', limit1)
+
+        isInside = abs(pixel_position[0]) <= limit0 and abs(pixel_position[1]) <= limit1
+        if not isInside:
+            return None
+
         return Interp2D(layer.size, (self.pixel_pupil_size, self.pixel_pupil_size), xx=xx1, yy=yy1,
-                        rotInDeg=angle*180.0/3.1415, xp=self.xp, dtype=self.dtype)
+                        rotInDeg=angle*180.0/np.pi, xp=self.xp, dtype=self.dtype)
 
     def setup(self, loop_dt, loop_niters):
         super().setup(loop_dt, loop_niters)

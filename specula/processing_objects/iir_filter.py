@@ -4,11 +4,11 @@ import sys
 try:
     from numba import jit
 except ImportError:
-    print("WARNING: numba not found, using non-jitted version of IIRFilter")
+    print("WARNING: numba not found, using non-jitted version of IirFilter")
     def jit(x, *args, **kwargs):
         return x
 
-from specula.data_objects.iir_filter_data import IIRFilterData
+from specula.data_objects.iir_filter_data import IirFilterData
 from specula.base_processing_obj import BaseProcessingObj
 from specula.connections import InputValue
 from specula.base_value import BaseValue
@@ -98,20 +98,21 @@ def trigger_function(input, _outFinite, _ist, _ost, _iir_filter_data_num, _iir_f
     return comm, state
 
 
-class IIRFilter(BaseProcessingObj):
+class IirFilter(BaseProcessingObj):
     '''Infinite Impulse Response filter based Time Control
     
     Set *integration* to False to disable integration, regardless
-    of wha the input IIRFilter object contains
+    of wha the input IirFilter object contains
     '''
-    def __init__(self, iir_filter_data: IIRFilterData,
+    def __init__(self, 
+                 iir_filter_data: IirFilterData,
                  delay: int=0,
                  integration: bool=True,
-                 offset: int=None,
+                 offset: float=None,
                  og_shaper=None,
-                 target_device_idx=None,
-                 precision=None
-                 ):
+                 target_device_idx: int=None,
+                 precision: int=None
+                ):
         global gxp, gdtype    
 
         self._verbose = True
@@ -119,7 +120,7 @@ class IIRFilter(BaseProcessingObj):
         
         self.integration = integration
         if integration is False:
-            raise NotImplementedError('IIRFilter: integration=False is not implemented yet')
+            raise NotImplementedError('IirFilter: integration=False is not implemented yet')
         
         if og_shaper is not None:
             raise NotImplementedError('OG Shaper not implementd yet')

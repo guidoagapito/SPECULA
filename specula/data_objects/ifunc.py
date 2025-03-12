@@ -22,8 +22,9 @@ class IFunc(BaseDataObj):
                  diaratio: float=None,
                  start_mode: int=None,
                  nmodes: int=None,
-                 idx_modes=None,
-                 target_device_idx=None, precision=None
+                 idx_modes: list=None,
+                 target_device_idx: int=None, 
+                 precision: int=None
                 ):
         super().__init__(precision=precision, target_device_idx=target_device_idx)
         self._doZeroPad = False

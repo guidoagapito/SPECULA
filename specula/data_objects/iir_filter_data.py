@@ -5,8 +5,14 @@ from specula.base_data_obj import BaseDataObj
 from astropy.io import fits
 
 
-class IIRFilterData(BaseDataObj):
-    def __init__(self, ordnum, ordden, num, den, target_device_idx=None, precision=None):
+class IirFilterData(BaseDataObj):
+    def __init__(self,
+                 ordnum: list,
+                 ordden: list, 
+                 num, 
+                 den, 
+                 target_device_idx: int=None, 
+                 precision: int=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         self.ordnum = self.xp.array(ordnum, dtype=int)
         self.ordden = self.xp.array(ordden, dtype=int) 
@@ -212,7 +218,7 @@ class IIRFilterData(BaseDataObj):
             ordden = hdul['ORDDEN'].data
             num = hdul['NUM'].data
             den = hdul['DEN'].data
-            return IIRFilterData(ordnum, ordden, num, den, target_device_idx=target_device_idx)
+            return IirFilterData(ordnum, ordden, num, den, target_device_idx=target_device_idx)
 
     def get_fits_header(self):
         # TODO
@@ -254,7 +260,7 @@ class IIRFilterData(BaseDataObj):
 
     @staticmethod
     def from_gain_and_ff(gain, ff=None, target_device_idx=None):
-        '''Build an IIRFilterData object from a gain value/vector
+        '''Build an IirFilterData object from a gain value/vector
         and an optional forgetting factor value/vector'''
 
         gain = np.array(gain)
@@ -281,11 +287,11 @@ class IIRFilterData(BaseDataObj):
             den[i, 1] = 1
             ord_den[i] = 2
         
-        return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
+        return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
     @staticmethod
     def lpf_from_fc(fc, fs, n_ord=2, target_device_idx=None):
-        '''Build an IIRFilterData object from a cut off frequency value/vector
+        '''Build an IirFilterData object from a cut off frequency value/vector
         and a filter order value (must be even)'''
 
         if n_ord != 1 and (n_ord % 2) != 0:
@@ -346,11 +352,11 @@ class IIRFilterData(BaseDataObj):
             ord_num[i] = len(num_total)
             ord_den[i] = len(den_total)
 
-        return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
+        return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
     @staticmethod
     def lpf_from_fc_and_ampl(fc, ampl, fs, target_device_idx=None):
-        '''Build an IIRFilterData object from a cut off frequency value/vector
+        '''Build an IirFilterData object from a cut off frequency value/vector
         and amplification    value/vector'''
 
         fc = np.array(fc)
@@ -397,4 +403,4 @@ class IIRFilterData(BaseDataObj):
             ord_num[i] = len(num_total)
             ord_den[i] = len(den_total)
 
-        return IIRFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
+        return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
