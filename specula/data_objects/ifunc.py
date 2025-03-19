@@ -24,6 +24,11 @@ class IFunc(BaseDataObj):
                  diaratio: float=None,
                  start_mode: int=None,
                  nmodes: int=None,
+                 n_act: int=None,
+                 circ_geom: bool=True,
+                 angle_offset: float=0,
+                 do_mech_coupling: bool=False,
+                 coupling_coeffs: list=[0.31, 0.05],
                  idx_modes=None,
                  target_device_idx=None, precision=None
                 ):
