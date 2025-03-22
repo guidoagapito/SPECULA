@@ -3,7 +3,7 @@ from specula.lib.make_mask import make_mask
 
 def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
                         do_mech_coupling=False, coupling_coeffs=[0.31, 0.05],
-                        obsratio=0.0, diaratio=1.0, mask=None):
+                        obsratio=0.0, diaratio=1.0, mask=None, return_coordinates=False):
     """ Computes the ifs_cube matrix with Influence Functions using Thin Plate Splines """
 
     if mask is None:
@@ -108,4 +108,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
 
     print("\nComputation completed.")
 
-    return ifs_2d, mask
+    if return_coordinates:
+        return ifs_2d, mask, coordinates
+    else:
+        return ifs_2d, mask
