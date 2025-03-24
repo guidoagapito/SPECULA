@@ -85,7 +85,7 @@ class InitMethodVisitor(ast.NodeVisitor):
                     self.outputs.append(key)
 
 def extract_class_info(file_path):
-    """Extracts class name, __init__ method parameters, inputs, and outputs from a Python file."""
+    """Extracts class name, __init__ method parameters, default values, and types from a Python file."""
     with open(file_path, "r", encoding="utf-8") as file:
         tree = ast.parse(file.read(), filename=file_path)
     
@@ -99,12 +99,12 @@ def extract_class_info(file_path):
             visitor = InitMethodVisitor()
             visitor.visit(node)
             
-            class_data.append((class_name, visitor.init_params, visitor.param_comments, visitor.inputs, visitor.outputs))
+            class_data.append((class_name, init_params, param_comments))
     
     return class_data
 
-def generate_yaml(class_name, params, comments, inputs, outputs, output_folder):
-    """Generates a YAML file with class information, inputs, and outputs."""
+def generate_yaml(class_name, params, comments, output_folder):
+    """Generates a YAML file with class information and comments for each parameter."""
     yaml_path = os.path.join(output_folder, f"{class_name}.yml")
     
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
@@ -138,8 +138,8 @@ def process_python_files(input_folder, output_folder):
             file_path = os.path.join(input_folder, file_name)
             classes = extract_class_info(file_path)
             
-            for class_name, params, comments, inputs, outputs in classes:
-                generate_yaml(class_name, params, comments, inputs, outputs, output_folder)
+            for class_name, params, comments in classes:
+                generate_yaml(class_name, params, comments, output_folder)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -154,3 +154,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     process_python_files(input_folder, output_folder)
+

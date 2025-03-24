@@ -116,9 +116,11 @@ class CCD(BaseProcessingObj):
                         background_level = 0
 
         # Adjust ADU / EM gain values
-        if excess_noise:
-            emccd_gain = 400         
-            ADU_gain = 1 / 20
+        if emccd_gain is None:
+            emccd_gain = 400 if excess_noise else 1
+
+        if ADU_gain is None:
+            ADU_gain = 1 / 20 if excess_noise else 8
 
         if ADU_gain <= 1 and (not excess_noise or emccd_gain <= 1):
             print('ATTENTION: ADU gain is less than 1 and there is no electronic multiplication.')
@@ -147,8 +149,12 @@ class CCD(BaseProcessingObj):
         self._photon_seed = photon_seed
         self._readout_seed = readout_seed
         self._excess_seed = excess_seed
+        self._cic_seed = cic_seed
+
         self._excess_delta = excess_delta
-        
+
+        self._charge_diffusion = charge_diffusion
+        self._charge_diffusion_fwhm = charge_diffusion_fwhm
         self._keep_ADU_bias = False
         self._doNotChangeI = False
         self._bg_remove_average = False
@@ -234,7 +240,10 @@ class CCD(BaseProcessingObj):
 
         if self._cic_noise:
             ccd_frame += self.xp.random.binomial(1, self._cic_level, ccd_frame.shape)
-        
+
+        if self._charge_diffusion:
+            ccd_frame = convolve(ccd_frame, self._chDiffKernel, mode='constant', cval=0.0)
+
         if self._photon_noise:
             ccd_frame = self._photon_rng.poisson(ccd_frame)
 

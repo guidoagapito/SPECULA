@@ -8,7 +8,7 @@ from specula.data_objects.layer import Layer
 from specula.lib.cv_coord import cv_coord
 from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
-from specula import cpuArray, ASEC2RAD
+from specula import cpuArray
 
 
 class AtmoEvolution(BaseProcessingObj):
@@ -51,19 +51,38 @@ class AtmoEvolution(BaseProcessingObj):
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
         self.inputs['wind_direction'] = InputValue(type=BaseValue)
-                
-        self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
-        # print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
-        # print(f'Atmo_Evolution: airmass is: {self.airmass}')
-    
+
+        if pupil_position is None:
+            pupil_position = [0, 0]
+        
+        if zenithAngleInDeg is not None:
+            self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
+            print(f'Atmo_Evolution: zenith angle is defined as: {zenithAngleInDeg} deg')
+            print(f'Atmo_Evolution: airmass is: {self.airmass}')
+        else:
+            self.airmass = np.array(1.0, dtype=self.dtype)
         heights = np.array(heights, dtype=self.dtype) * self.airmass
 
-        # FoV in radians
-        fov_rad = fov * ASEC2RAD
+        # Conversion coefficient from arcseconds to radians
+        sec2rad = 4.848e-6
+        
+        if force_mcao_fov:
+            print(f'\nATTENTION: MCAO FoV is forced to diameter={mcao_fov} arcsec\n')
+            alpha_fov = mcao_fov / 2.0
+        else:
+            alpha_fov = 0.0
+            for source in source_dict.values():
+                alpha_fov = max(alpha_fov, *abs(cv_coord(from_polar=[source.phi, source.r_arcsec],
+                                                       to_rect=True, degrees=False, xp=np)))
+            if mcao_fov is not None:
+                alpha_fov = max(alpha_fov, mcao_fov / 2.0)
+        
+        # Max star angle from arcseconds to radians
+        rad_alpha_fov = alpha_fov * sec2rad
 
         # Compute layers dimension in pixels
         self.pixel_layer = np.ceil((pixel_pupil + 2 * np.sqrt(np.sum(np.array(pupil_position, dtype=self.dtype) * 2)) / pixel_pitch + 
-                               abs(heights) / pixel_pitch * fov_rad) / 2.0) * 2.0
+                               2.0 * abs(heights) / pixel_pitch * rad_alpha_fov) / 2.0) * 2.0
         if fov_in_m is not None:
             self.pixel_layer = np.full_like(heights, int(fov_in_m / pixel_pitch / 2.0) * 2)
         
@@ -77,13 +96,16 @@ class AtmoEvolution(BaseProcessingObj):
         self.wind_speed = None
         self.wind_direction = None
 
-        self.pixel_square_phasescreens = pixel_phasescreens
+        if pixel_phasescreens is None:
+            self.pixel_square_phasescreens = 8192
+        else:
+            self.pixel_square_phasescreens = pixel_phasescreens
 
         # Error if phase-screens dimension is smaller than maximum layer dimension
         if self.pixel_square_phasescreens < max(self.pixel_layer):
             raise ValueError('Error: phase-screens dimension must be greater than layer dimension!')
         
-        self.verbose = verbose
+        self.verbose = verbose if verbose is not None else False
 
         # Use a specific user-defined phase screen if provided
         if user_defined_phasescreen is not None:
