@@ -26,8 +26,8 @@ class TestAtmo(unittest.TestCase):
         wind_speed = FuncGenerator(constant=5.5, target_device_idx=target_device_idx)
         wind_direction = FuncGenerator(constant=0, target_device_idx=target_device_idx)
 
-        on_axis_source = Source(polar_coordinate=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
-        lgs1_source = Source( polar_coordinate=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
+        on_axis_source = Source(polar_coordinates=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
+        lgs1_source = Source( polar_coordinates=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
 
         atmo = AtmoEvolution(L0=23,  # [m] Outer scale
                              pixel_pupil=160,
@@ -71,8 +71,8 @@ class TestAtmo(unittest.TestCase):
     def test_that_wrong_Cn2_total_is_detected(self, target_device_idx, xp):
 
         data_dir = os.path.join(os.path.dirname(__file__), 'data')
-        on_axis_source = Source(polar_coordinate=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
-        lgs1_source = Source( polar_coordinate=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
+        on_axis_source = Source(polar_coordinates=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
+        lgs1_source = Source( polar_coordinates=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
 
         with self.assertRaises(ValueError):
             atmo = AtmoEvolution(L0=23,  # [m] Outer scale
@@ -99,8 +99,8 @@ class TestAtmo(unittest.TestCase):
     @cpu_and_gpu
     def test_layer_list_type_length_and_element_types(self, target_device_idx, xp):
         data_dir = os.path.join(os.path.dirname(__file__), 'data')
-        on_axis_source = Source(polar_coordinate=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
-        lgs1_source = Source( polar_coordinate=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
+        on_axis_source = Source(polar_coordinates=[0.0, 0.0], magnitude=8, wavelengthInNm=750)
+        lgs1_source = Source( polar_coordinates=[45.0, 0.0], height=90000, magnitude=5, wavelengthInNm=589)
 
         atmo = AtmoEvolution(L0=23,  # [m] Outer scale
                             pixel_pupil=160,

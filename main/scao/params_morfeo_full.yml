@@ -44,42 +44,42 @@ wind_direction:
 
 source_on_axis:
   class:             'Source'
-  polar_coordinate:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
   magnitude:         8                    # source magnitude
   wavelengthInNm:    750                   # [nm] wavelength
 
 source_lgs1: &LGS_SOURCE
   class:             'Source'
-  polar_coordinate:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
-source_lgs2: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 60.0] }
-source_lgs3: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 120.0] }
-source_lgs4: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 180.0] }
-source_lgs5: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 240.0] }
-source_lgs6: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 300.0] }
+source_lgs2: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 60.0] }
+source_lgs3: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 120.0] }
+source_lgs4: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 180.0] }
+source_lgs5: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 240.0] }
+source_lgs6: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 300.0] }
 
 source_ngs1: &NGS_SOURCE
   class:             'Source'
-  polar_coordinate:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
   height:            .inf                # Source height [m]
   magnitude:         10.0                # source magnitude
   wavelengthInNm:    1650                # [nm] wavelength
 
-source_ngs2: { <<: *NGS_SOURCE, polar_coordinate: [55.0, 120.0] }
-source_ngs3: { <<: *NGS_SOURCE, polar_coordinate: [55.0, 240.0] }
+source_ngs2: { <<: *NGS_SOURCE, polar_coordinates: [55.0, 120.0] }
+source_ngs3: { <<: *NGS_SOURCE, polar_coordinates: [55.0, 240.0] }
 
 source_ref1: &REF_SOURCE
   class:             'Source'
-  polar_coordinate:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinates:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
   height:            .inf                # Source height [m]
   magnitude:         10.0                # source magnitude
   wavelengthInNm:    750                # [nm] wavelength
 
-source_ref2: { <<: *REF_SOURCE, polar_coordinate: [55.0, 120.0] }
-source_ref3: { <<: *REF_SOURCE, polar_coordinate: [55.0, 240.0] }
+source_ref2: { <<: *REF_SOURCE, polar_coordinates: [55.0, 120.0] }
+source_ref3: { <<: *REF_SOURCE, polar_coordinates: [55.0, 240.0] }
 
 
 pupilstop:                                 # Default parameters (circular pupil)
