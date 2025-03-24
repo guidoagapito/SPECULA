@@ -9,8 +9,8 @@ from specula.data_objects.ifunc import IFunc
 class ModalAnalysis(BaseProcessingObj):
 
     def __init__(self, 
-                ifunc: IFunc=None,
-                wavelengthInNm: float=0,
+                ifunc: IFunc,
+                wavelengthInNm: float=0.0,
                 dorms: bool=False,
                 target_device_idx: int=None,
                 precision: int=None):

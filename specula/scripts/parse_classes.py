@@ -3,6 +3,21 @@ import ast
 import yaml
 import sys
 
+# All the classes are:
+# AtmoEvolution.yml          BaseOperation.yml      DataStore.yml      FlaskServer.yml    ImRecCalibrator.yml           
+# ModalAnalysisWFS.yml  MultiImRecCalibrator.yml  ShShift.yml            Slopec.yml
+# AtmoInfiniteEvolution.yml  BaseProcessingObj.yml  DisplayServer.yml  FuncGenerator.yml  Integrator.yml                
+# ModalAnalysis.yml     ProcessingContainer.yml   ShSlopec.yml           SnCalibrator.yml
+# AtmoPropagation.yml        CCD.yml                DM.yml             IdealWFS.yml       LowPassFilter.yml             
+# Modalrec.yml          PSF.yml                   ShSubapCalibrator.yml  Vibrations.yml
+# AtmoRandomPhase.yml        DataSource.yml         Factory.yml        IirFilter.yml      MirrorCommandsCombinator.yml  
+# ModulatedPyramid.yml  PyrSlopec.yml             SH.yml                 WindowedIntegration.yml
+
+exposed_classes = [ 'Source', 'Pupilstop',                    
+                    'FuncGenerator', 'BaseOperation', 'AtmoEvolution', 'AtmoInfiniteEvolution', 'AtmoPropagation',
+                    'ModulatedPyramid', 'CCD', 'PyrSlopec', 'Modalrec', 'Integrator', 'DM', 'PSF', 'DataStore'                
+                  ]
+
 class InitMethodVisitor(ast.NodeVisitor):
     """AST Visitor to extract parameters, inputs, and outputs from an __init__ method."""
     
@@ -79,6 +94,8 @@ def extract_class_info(file_path):
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             class_name = node.name
+            if not class_name in exposed_classes:
+                continue
             visitor = InitMethodVisitor()
             visitor.visit(node)
             
@@ -91,17 +108,19 @@ def generate_yaml(class_name, params, comments, inputs, outputs, output_folder):
     yaml_path = os.path.join(output_folder, f"{class_name}.yml")
     
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
-        yaml_file.write(f"example_{class_name}:\n")
+        yaml_file.write(f"{class_name}:\n")
         
         # Write constructor parameters
         for param, value in params.items():
-            yaml_file.write(f"  {param}: {value}  # {comments[param]}\n")
+            # yaml_file.write(f"  {param}: {value}  # {comments[param]}\n")
+            yaml_file.write(f"  {param}: {value}\n")
 
         # Write inputs
         if inputs:
             yaml_file.write("  inputs:\n")
             for input_name, input_type in inputs.items():
-                yaml_file.write(f"    {input_name}: {input_type}  # InputType\n")
+                # yaml_file.write(f"    {input_name}: {input_type}  # InputType\n")
+                yaml_file.write(f"    {input_name}: {input_type}\n")
 
         # Write outputs as a YAML list
         if outputs:

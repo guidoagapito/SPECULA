@@ -16,7 +16,7 @@ def psf_abs2(v, xp):
 
 class PSF(BaseProcessingObj):
     def __init__(self,
-                 wavelengthInNm: float,
+                 wavelengthInNm: float=500.0,
                  nd: float=1,
                  start_time: float=0.0,
                  target_device_idx: int = None, 

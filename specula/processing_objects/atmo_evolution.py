@@ -13,12 +13,12 @@ from specula import cpuArray, ASEC2RAD
 
 class AtmoEvolution(BaseProcessingObj):
     def __init__(self,
-                 L0: list,
-                 pixel_pitch: float,
-                 heights: list,
-                 Cn2: list,
-                 pixel_pupil: float,
-                 data_dir: str,
+                 L0: list=[1.0],
+                 pixel_pitch: float=0.05,
+                 heights: list=[0.0],
+                 Cn2: list=[1.0],
+                 pixel_pupil: int=160,
+                 data_dir: str="",
                  wavelengthInNm: float=500.0,
                  zenithAngleInDeg: float=0.0,
                  fov: float=0.0,

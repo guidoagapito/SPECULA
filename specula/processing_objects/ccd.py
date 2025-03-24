@@ -31,10 +31,10 @@ class ModalAnalysisWFS:
 class CCD(BaseProcessingObj):
     '''Simple CCD from intensity field'''
     def __init__(self, 
-                 size: int,
-                 dt: float,
-                 bandw: float,
-                 name: str=None,
+                 size: list=[80,80],
+                 dt: float=0.001,
+                 bandw: float=300.0,
+                 name: str='OCAM2k',
                  binning: int=1,
                  photon_noise: bool=False,
                  readout_noise: bool=False,
