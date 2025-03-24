@@ -99,12 +99,12 @@ def extract_class_info(file_path):
             visitor = InitMethodVisitor()
             visitor.visit(node)
             
-            class_data.append((class_name, init_params, param_comments))
-    
+            class_data.append((class_name, visitor.init_params, visitor.param_comments, visitor.inputs, visitor.outputs))
+
     return class_data
 
-def generate_yaml(class_name, params, comments, output_folder):
-    """Generates a YAML file with class information and comments for each parameter."""
+def generate_yaml(class_name, params, comments, inputs, outputs, output_folder):
+    """Generates a YAML file with class information, inputs, and outputs."""
     yaml_path = os.path.join(output_folder, f"{class_name}.yml")
     
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
@@ -138,8 +138,8 @@ def process_python_files(input_folder, output_folder):
             file_path = os.path.join(input_folder, file_name)
             classes = extract_class_info(file_path)
             
-            for class_name, params, comments in classes:
-                generate_yaml(class_name, params, comments, output_folder)
+            for class_name, params, comments, inputs, outputs in classes:
+                generate_yaml(class_name, params, comments, inputs, outputs, output_folder)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
