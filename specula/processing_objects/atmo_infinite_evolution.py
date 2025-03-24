@@ -273,16 +273,7 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
             self.airmass = np.array(1.0, dtype=self.dtype)
         self.heights = np.array(heights, dtype=self.dtype) * self.airmass
 
-        if force_mcao_fov:
-            print(f'\nATTENTION: MCAO FoV is forced to diameter={mcao_fov} arcsec\n')
-            alpha_fov = mcao_fov / 2.0
-        else:
-            alpha_fov = 0.0
-            for source in source_dict.values():
-                alpha_fov = max(alpha_fov, *abs(cv_coord(from_polar=[source.phi, source.r_arcsec],
-                                                       to_rect=True, degrees=False, xp=np)))
-            if mcao_fov is not None:
-                alpha_fov = max(alpha_fov, mcao_fov / 2.0)
+        alpha_fov = fov / 2.0
         
         # Max star angle from arcseconds to radians
         rad_alpha_fov = alpha_fov * ASEC2RAD

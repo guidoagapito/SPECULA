@@ -149,12 +149,8 @@ class CCD(BaseProcessingObj):
         self._photon_seed = photon_seed
         self._readout_seed = readout_seed
         self._excess_seed = excess_seed
-        self._cic_seed = cic_seed
 
-        self._excess_delta = excess_delta
-
-        self._charge_diffusion = charge_diffusion
-        self._charge_diffusion_fwhm = charge_diffusion_fwhm
+        self._excess_delta = excess_delta                
         self._keep_ADU_bias = False
         self._doNotChangeI = False
         self._bg_remove_average = False
@@ -240,10 +236,7 @@ class CCD(BaseProcessingObj):
 
         if self._cic_noise:
             ccd_frame += self.xp.random.binomial(1, self._cic_level, ccd_frame.shape)
-
-        if self._charge_diffusion:
-            ccd_frame = convolve(ccd_frame, self._chDiffKernel, mode='constant', cval=0.0)
-
+        
         if self._photon_noise:
             ccd_frame = self._photon_rng.poisson(ccd_frame)
 

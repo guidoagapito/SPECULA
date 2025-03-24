@@ -305,7 +305,7 @@ subtract_ref:
   outputs: ['out_value']
 
 iir_lgs:
-  class:             'IIRFilter'
+  class:             'IirFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -393,7 +393,7 @@ tomo_polc_ngs:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_ngs:
-  class:             'IIRFilter'
+  class:             'IirFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -418,7 +418,7 @@ rec_focus:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_focus:
-  class:             'IIRFilter'
+  class:             'IirFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -439,7 +439,7 @@ tomo_polc_ref:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_ref:
-  class:             'IIRFilter'
+  class:             'IirFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -459,7 +459,7 @@ control_ref:
 # -------------
 
 iir_lift:
-  class:             'IIRFilter'
+  class:             'IirFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:

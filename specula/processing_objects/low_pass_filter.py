@@ -1,6 +1,6 @@
 
-from specula.processing_objects.iir_filter import IIRFilter
-from specula.data_objects.iir_filter_data import IIRFilterData
+from specula.processing_objects.iir_filter import IirFilter
+from specula.data_objects.iir_filter_data import IirFilterData
 
     
 class LowPassFilter(IirFilter):
@@ -21,12 +21,12 @@ class LowPassFilter(IirFilter):
         if amplif_fact is not None:
             if n_ord is not None:
                 raise ValueError('Only one of amplif_fact and n_ord can be specified')
-            iir_filter_data = IIRFilterData.lpf_from_fc_and_ampl(cutoff_freq, amplif_fact,
+            iir_filter_data = IirFilterData.lpf_from_fc_and_ampl(cutoff_freq, amplif_fact,
                                                samp_freq, target_device_idx=target_device_idx)
         else:
-            iir_filter_data = IIRFilterData.lpf_from_fc(cutoff_freq, samp_freq, n_ord=n_ord,
+            iir_filter_data = IirFilterData.lpf_from_fc(cutoff_freq, samp_freq, n_ord=n_ord,
                                                         target_device_idx=target_device_idx)
 
-        # Initialize IIRFilter object
+        # Initialize IirFilter object
         super().__init__(iir_filter_data, delay=delay, offset=offset, og_shaper=og_shaper,
                          target_device_idx=target_device_idx, precision=precision)
