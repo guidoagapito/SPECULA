@@ -35,8 +35,7 @@ class TestAtmo(unittest.TestCase):
                              data_dir=data_dir,
                              heights = [30.0000, 26500.0], # [m] layer heights at 0 zenith angle
                              Cn2 = [0.5, 0.5], # Cn2 weights (total must be eq 1)
-                             source_dict = {'on_axis_source': on_axis_source,
-                                            'lgs1_source': lgs1_source},
+                             fov = 120.0,
                              target_device_idx=target_device_idx)
 
 
@@ -81,8 +80,7 @@ class TestAtmo(unittest.TestCase):
                                 data_dir=data_dir,
                                 heights = [30.0000, 26500.0], # [m] layer heights at 0 zenith angle
                                 Cn2 = [0.2, 0.2], # Cn2 weights (total must be eq 1)
-                                source_dict = {'on_axis_source': on_axis_source,
-                                                'lgs1_source': lgs1_source},
+                                fov = 120.0,
                                 target_device_idx=target_device_idx)
 
         # Total is 1, no exception raised.
@@ -92,8 +90,7 @@ class TestAtmo(unittest.TestCase):
                             data_dir=data_dir,
                             heights = [30.0000, 26500.0], # [m] layer heights at 0 zenith angle
                             Cn2 = [0.5, 0.5], # Cn2 weights (total must be eq 1)
-                            source_dict = {'on_axis_source': on_axis_source,
-                                            'lgs1_source': lgs1_source},
+                            fov = 120.0,
                             target_device_idx=target_device_idx)
 
     @cpu_and_gpu
@@ -108,8 +105,7 @@ class TestAtmo(unittest.TestCase):
                             data_dir=data_dir,
                             heights = [30.0000, 26500.0], # [m] layer heights at 0 zenith angle
                             Cn2 = [0.5, 0.5], # Cn2 weights (total must be eq 1)
-                            source_dict = {'on_axis_source': on_axis_source,
-                                            'lgs1_source': lgs1_source},
+                            fov = 120.0,
                             target_device_idx=target_device_idx)
             
         assert isinstance(atmo.outputs['layer_list'], list)
