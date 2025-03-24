@@ -10,14 +10,14 @@ class Source(BaseDataObj):
     '''source'''
 
     def __init__(self,
-                 polar_coordinates: list,
+                 polar_coordinate,
                  magnitude: float,
                  wavelengthInNm: float,
                  height: float=float('inf'),
                  band: str='',
                  zeroPoint: float=0,
                  zenithAngleInDeg: float=None,
-                 error_coord: tuple=(0., 0.),
+                 error_coord=(0., 0.),
                  verbose: bool=False):
         super().__init__()
         
@@ -26,12 +26,12 @@ class Source(BaseDataObj):
             height *= airmass
             print(f'get_source: changing source height by airmass value ({airmass})')
 
-        polar_coordinates = np.array(polar_coordinates, dtype=self.dtype) + np.array(error_coord, dtype=self.dtype)
+        polar_coordinate = np.array(polar_coordinate, dtype=self.dtype) + np.array(error_coord, dtype=self.dtype)
         if any(error_coord):
             print(f'there is a desired error ({error_coord[0]},{error_coord[1]}) on source coordinates.')
-            print(f'final coordinates are: {polar_coordinates[0]},{polar_coordinates[1]}')
+            print(f'final coordinates are: {polar_coordinate[0]},{polar_coordinate[1]}')
         
-        self.polar_coordinates = polar_coordinates
+        self.polar_coordinate = polar_coordinate
         self.height = height
         self.magnitude = magnitude
         self.wavelengthInNm = wavelengthInNm
@@ -40,11 +40,11 @@ class Source(BaseDataObj):
         self.verbose = verbose
 
     @property
-    def polar_coordinates(self):
+    def polar_coordinate(self):
         return self._polar_coordinate
 
-    @polar_coordinates.setter
-    def polar_coordinates(self, value):
+    @polar_coordinate.setter
+    def polar_coordinate(self, value):
         self._polar_coordinate = np.array(value, dtype=self.dtype)
 
     @property
@@ -65,13 +65,13 @@ class Source(BaseDataObj):
 
     @property
     def x_coord(self):
-        alpha = self._polar_coordinate[0] * ASEC2RAD
+        alpha = self._polar_coordinate[0] * 4.848e-6
         d = self.height * np.sin(alpha)
         return np.cos(np.radians(self._polar_coordinate[1])) * d
 
     @property
     def y_coord(self):
-        alpha = self._polar_coordinate[0] * ASEC2RAD
+        alpha = self._polar_coordinate[0] * 4.848e-6
         d = self.height * np.sin(alpha)
         return np.sin(np.radians(self._polar_coordinate[1])) * d
 

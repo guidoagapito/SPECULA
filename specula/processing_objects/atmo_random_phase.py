@@ -12,18 +12,19 @@ from specula.connections import InputValue
 
 class AtmoRandomPhase(BaseProcessingObj):
     def __init__(self,
-                 L0: float,
-                 pixel_pitch: float,
-                 pixel_pupil: int,
-                 data_dir: str, 
-                 source_dict: dict,
+                 L0,
+                 pixel_pitch,
+                 pixel_pupil,
+                 data_dir, 
+                 source_dict,
                  wavelengthInNm: float=500.0,
-                 zenithAngleInDeg: float=0.0,
-                 pixel_phasescreens: int=8192,
+                 zenithAngleInDeg=None,
+                 pixel_phasescreens=None,
                  seed: int=1,
-                 verbose: bool=False,
-                 target_device_idx: int=None,
-                 precision: int=None):
+                 target_device_idx=None,
+                 precision=None,
+                 verbose=None):
+
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
                 
@@ -37,9 +38,12 @@ class AtmoRandomPhase(BaseProcessingObj):
         
         self.inputs['seeing'] = InputValue(type=BaseValue)
         
-        self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg))
-        # print(f'AtmoRandomPhase: zenith angle is defined as: {zenithAngleInDeg} deg')
-        # print(f'AtmoRandomPhase: airmass is: {self.airmass}')
+        if zenithAngleInDeg is not None:
+            self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg))
+            print(f'AtmoRandomPhase: zenith angle is defined as: {zenithAngleInDeg} deg')
+            print(f'AtmoRandomPhase: airmass is: {self.airmass}')
+        else:
+            self.airmass = 1.0
 
         # Compute layers dimension in pixels
         self.pixel_layer_size = pixel_pupil
@@ -49,13 +53,16 @@ class AtmoRandomPhase(BaseProcessingObj):
         self.data_dir = data_dir
         self.seeing = None
 
-        self.pixel_square_phasescreens = pixel_phasescreens
+        if pixel_phasescreens is None:
+            self.pixel_square_phasescreens = 8192
+        else:
+            self.pixel_square_phasescreens = pixel_phasescreens
 
         # Error if phase-screens dimension is smaller than maximum layer dimension
         if self.pixel_square_phasescreens < self.pixel_layer_size:
             raise ValueError('Error: phase-screens dimension must be greater than layer dimension!')
         
-        self.verbose = verbose
+        self.verbose = verbose if verbose is not None else False
         
         # Initialize layer list with correct heights
         self.layer_list = []
