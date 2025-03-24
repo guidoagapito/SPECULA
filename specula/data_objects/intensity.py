@@ -5,11 +5,7 @@ from specula.base_data_obj import BaseDataObj
 
 class Intensity(BaseDataObj):
     '''Intensity field object'''
-    def __init__(self, 
-                 dimx: int, 
-                 dimy: int, 
-                 target_device_idx: int=None, 
-                 precision: int=None):
+    def __init__(self, dimx, dimy, target_device_idx=None, precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
                 
         self.i = self.xp.zeros((dimx, dimy), dtype=self.dtype)

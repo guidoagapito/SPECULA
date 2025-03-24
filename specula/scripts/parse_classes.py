@@ -3,74 +3,8 @@ import ast
 import yaml
 import sys
 
-class InitMethodVisitor(ast.NodeVisitor):
-    """AST Visitor to extract parameters, inputs, and outputs from an __init__ method."""
-    
-    def __init__(self):
-        self.init_params = {}
-        self.param_comments = {}
-        self.inputs = {}
-        self.outputs = []
-    
-    def visit_FunctionDef(self, node):
-        """Visit the __init__ method and extract parameters, inputs, and outputs."""
-        if node.name == "__init__":
-            total_params = len(node.args.args) - 1  # Exclude 'self'
-            num_defaults = len(node.args.defaults)
-
-            # Extract type hints from function annotations
-            annotations = {arg.arg: ast.unparse(arg.annotation) if arg.annotation else None for arg in node.args.args[1:]}  # Skip 'self'
-
-            for i, arg in enumerate(node.args.args[1:]):  # Skip 'self'
-                param_name = arg.arg
-                param_type = annotations.get(param_name, None)
-                is_optional = i >= (total_params - num_defaults)
-                
-                default_value = "value"
-                if is_optional:
-                    default_index = i - (total_params - num_defaults)
-                    default_node = node.args.defaults[default_index]
-                    
-                    try:
-                        default_value = ast.literal_eval(default_node)
-                    except (ValueError, TypeError, AttributeError):
-                        if isinstance(default_node, ast.Name):
-                            default_value = default_node.id  # Handle names like `np`
-                        else:
-                            default_value = "value"
-
-                # Construct comment with type and optional status
-                comment = "Required" if not is_optional else f"Optional (default={default_value})"
-                if param_type:
-                    comment += f", type: {param_type}"
-
-                self.init_params[param_name] = default_value
-                self.param_comments[param_name] = comment
-
-            # Visit the body of __init__ to extract inputs and outputs
-            for statement in node.body:
-                self.visit(statement)
-    
-    def visit_Assign(self, node):
-        """Extract input and output specifications from self.inputs and self.outputs assignments."""
-        if isinstance(node.targets[0], ast.Subscript):
-            target = node.targets[0]
-            if isinstance(target.value, ast.Attribute) and target.value.attr in ["inputs", "outputs"]:
-                key = target.slice.value if isinstance(target.slice, ast.Constant) else target.slice
-
-                if target.value.attr == "inputs" and isinstance(node.value, ast.Call):
-                    # Extract input type from: self.inputs['input_name'] = InputValue(type=InputType)
-                    for keyword in node.value.keywords:
-                        if keyword.arg == "type":
-                            input_type = ast.unparse(keyword.value)
-                            self.inputs[key] = input_type
-                
-                elif target.value.attr == "outputs":
-                    # Extract output from: self.outputs['out_value'] = self.out_value
-                    self.outputs.append(key)
-
 def extract_class_info(file_path):
-    """Extracts class name, __init__ method parameters, inputs, and outputs from a Python file."""
+    """Extracts class name, __init__ method parameters, default values, and types from a Python file."""
     with open(file_path, "r", encoding="utf-8") as file:
         tree = ast.parse(file.read(), filename=file_path)
     
@@ -79,33 +13,56 @@ def extract_class_info(file_path):
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             class_name = node.name
-            visitor = InitMethodVisitor()
-            visitor.visit(node)
+            init_params = {}
+            param_comments = {}
+
+            # Find __init__ method
+            for sub_node in node.body:
+                if isinstance(sub_node, ast.FunctionDef) and sub_node.name == "__init__":
+                    total_params = len(sub_node.args.args) - 1  # Exclude 'self'
+                    num_defaults = len(sub_node.args.defaults)
+
+                    # Extract type hints from function annotations
+                    annotations = {arg.arg: ast.unparse(arg.annotation) if arg.annotation else None for arg in sub_node.args.args[1:]}  # Skip 'self'
+
+                    for i, arg in enumerate(sub_node.args.args[1:]):  # Skip 'self'
+                        param_name = arg.arg
+                        param_type = annotations.get(param_name, None)
+                        is_optional = i >= (total_params - num_defaults)
+                        
+                        default_value = "value"
+                        if is_optional:
+                            default_index = i - (total_params - num_defaults)
+                            default_node = sub_node.args.defaults[default_index]
+                            
+                            try:
+                                default_value = ast.literal_eval(default_node)
+                            except (ValueError, TypeError, AttributeError):
+                                if isinstance(default_node, ast.Name):
+                                    default_value = default_node.id  # Handle names like `np`
+                                else:
+                                    default_value = "value"
+
+                        # Construct comment with type and optional status
+                        comment = "Required" if not is_optional else f"Optional (default={default_value})"
+                        if param_type:
+                            comment += f", type: {param_type}"
+
+                        init_params[param_name] = default_value
+                        param_comments[param_name] = comment
             
-            class_data.append((class_name, visitor.init_params, visitor.param_comments, visitor.inputs, visitor.outputs))
+            class_data.append((class_name, init_params, param_comments))
     
     return class_data
 
-def generate_yaml(class_name, params, comments, inputs, outputs, output_folder):
-    """Generates a YAML file with class information, inputs, and outputs."""
+def generate_yaml(class_name, params, comments, output_folder):
+    """Generates a YAML file with class information and comments for each parameter."""
     yaml_path = os.path.join(output_folder, f"{class_name}.yml")
     
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
         yaml_file.write(f"example_{class_name}:\n")
-        
-        # Write constructor parameters
         for param, value in params.items():
             yaml_file.write(f"  {param}: {value}  # {comments[param]}\n")
-
-        # Write inputs
-        if inputs:
-            yaml_file.write("  inputs:\n")
-            for input_name, input_type in inputs.items():
-                yaml_file.write(f"    {input_name}: {input_type}  # InputType\n")
-
-        # Write outputs as a YAML list
-        if outputs:
-            yaml_file.write(f"  outputs: {outputs}\n")
     
     print(f"Generated YAML: {yaml_path}")
 
@@ -119,8 +76,8 @@ def process_python_files(input_folder, output_folder):
             file_path = os.path.join(input_folder, file_name)
             classes = extract_class_info(file_path)
             
-            for class_name, params, comments, inputs, outputs in classes:
-                generate_yaml(class_name, params, comments, inputs, outputs, output_folder)
+            for class_name, params, comments in classes:
+                generate_yaml(class_name, params, comments, output_folder)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -135,3 +92,4 @@ if __name__ == "__main__":
         sys.exit(1)
 
     process_python_files(input_folder, output_folder)
+

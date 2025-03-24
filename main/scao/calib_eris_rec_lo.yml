@@ -17,7 +17,7 @@ prop_override:
                   'dm.out_layer']
 
 source_on_axis_override:
-  polar_coordinates:  [0.0, 0.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinate:  [0.0, 0.0]         # [arcsec, degrees] source polar coordinates
   magnitude:         7.0  
 
 dm_override:

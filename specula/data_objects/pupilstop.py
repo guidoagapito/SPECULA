@@ -14,15 +14,14 @@ class Pupilstop(Layer):
                  input_mask = None,
                  mask_diam: float=1.0,
                  obs_diam: float=None,
-                 shiftXYinPixel: tuple=(0.0, 0.0),
+                 shiftXYinPixel=(0.0, 0.0),
                  rotInDeg: float=0.0,
                  magnification: float=1.0,
                  target_device_idx: int=None,
                  precision: int=None):
 
-        super().__init__(pixel_pupil, pixel_pupil, pixel_pitch, height=0,
-                        shiftXYinPixel=shiftXYinPixel, rotInDeg=rotInDeg, magnification=magnification,
-                        target_device_idx=target_device_idx, precision=precision)
+        super().__init__(pixel_pupil, pixel_pupil, pixel_pitch, height=0, target_device_idx=target_device_idx, precision=precision,
+                         shiftXYinPixel=shiftXYinPixel, rotInDeg=rotInDeg, magnification=magnification)
 
         self._input_mask = input_mask
         self._mask_diam = mask_diam

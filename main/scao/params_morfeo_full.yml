@@ -44,42 +44,42 @@ wind_direction:
 
 source_on_axis:
   class:             'Source'
-  polar_coordinates:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinate:  [0.0, 0.0]           # [arcsec, degrees] source polar coordinates
   magnitude:         8                    # source magnitude
   wavelengthInNm:    750                   # [nm] wavelength
 
 source_lgs1: &LGS_SOURCE
   class:             'Source'
-  polar_coordinates:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
+  polar_coordinate:  [45.0, 0.0]           # [arcsec, degrees] source polar coordinates
   height:            90000                 # Source height [m]
   magnitude:         5.0                   # source magnitude
   wavelengthInNm:    589                   # [nm] wavelength
 
-source_lgs2: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 60.0] }
-source_lgs3: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 120.0] }
-source_lgs4: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 180.0] }
-source_lgs5: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 240.0] }
-source_lgs6: { <<: *LGS_SOURCE, polar_coordinates: [45.0, 300.0] }
+source_lgs2: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 60.0] }
+source_lgs3: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 120.0] }
+source_lgs4: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 180.0] }
+source_lgs5: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 240.0] }
+source_lgs6: { <<: *LGS_SOURCE, polar_coordinate: [45.0, 300.0] }
 
 source_ngs1: &NGS_SOURCE
   class:             'Source'
-  polar_coordinates:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinate:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
   height:            .inf                # Source height [m]
   magnitude:         10.0                # source magnitude
   wavelengthInNm:    1650                # [nm] wavelength
 
-source_ngs2: { <<: *NGS_SOURCE, polar_coordinates: [55.0, 120.0] }
-source_ngs3: { <<: *NGS_SOURCE, polar_coordinates: [55.0, 240.0] }
+source_ngs2: { <<: *NGS_SOURCE, polar_coordinate: [55.0, 120.0] }
+source_ngs3: { <<: *NGS_SOURCE, polar_coordinate: [55.0, 240.0] }
 
 source_ref1: &REF_SOURCE
   class:             'Source'
-  polar_coordinates:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
+  polar_coordinate:  [55.0, 0.0]         # [arcsec, degrees] source polar coordinates
   height:            .inf                # Source height [m]
   magnitude:         10.0                # source magnitude
   wavelengthInNm:    750                # [nm] wavelength
 
-source_ref2: { <<: *REF_SOURCE, polar_coordinates: [55.0, 120.0] }
-source_ref3: { <<: *REF_SOURCE, polar_coordinates: [55.0, 240.0] }
+source_ref2: { <<: *REF_SOURCE, polar_coordinate: [55.0, 120.0] }
+source_ref3: { <<: *REF_SOURCE, polar_coordinate: [55.0, 240.0] }
 
 
 pupilstop:                                 # Default parameters (circular pupil)
@@ -97,7 +97,11 @@ atmo:
                          0.0161969, 0.0260951, 0.0155971, 0.0103980, 0.00999811, 0.0119977, 0.00400924, 0.0139974, 0.0129975, 0.00700868,
                          0.0159970, 0.0258951, 0.0190964, 0.00986813, 0.00616883, 0.00400924, 0.00246953, 0.00215959, 0.00184965, 0.00135974,
                          0.00110979, 0.000616883, 0.000925825, 0.000493907, 0.000431918] # Cn2 weights (total must be eq 1)
-  fov:                  160.0
+  source_dict_ref:      &ALL_SOURCES 
+                        ['source_on_axis',
+                         'source_lgs1','source_lgs2','source_lgs3','source_lgs4','source_lgs5','source_lgs6',
+                         'source_ngs1', 'source_ngs2', 'source_ngs3',
+                         'source_ref1', 'source_ref2', 'source_ref3']
   inputs:
     seeing: 'seeing.output'
     wind_speed: 'wind_speed.output'
@@ -107,10 +111,7 @@ atmo:
 
 prop:
   class:                'AtmoPropagation'
-  source_dict_ref:      ['source_on_axis',
-                         'source_lgs1','source_lgs2','source_lgs3','source_lgs4','source_lgs5','source_lgs6',
-                         'source_ngs1', 'source_ngs2', 'source_ngs3',
-                         'source_ref1', 'source_ref2', 'source_ref3']
+  source_dict_ref:      *ALL_SOURCES 
   inputs:
     layer_list: ['atmo.layer_list',
                   'pupilstop',
@@ -304,7 +305,7 @@ subtract_ref:
   outputs: ['out_value']
 
 iir_lgs:
-  class:             'IirFilter'
+  class:             'IIRFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -392,7 +393,7 @@ tomo_polc_ngs:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_ngs:
-  class:             'IirFilter'
+  class:             'IIRFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -417,7 +418,7 @@ rec_focus:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_focus:
-  class:             'IirFilter'
+  class:             'IIRFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -438,7 +439,7 @@ tomo_polc_ref:
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 iir_ref:
-  class:             'IirFilter'
+  class:             'IIRFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
@@ -458,7 +459,7 @@ control_ref:
 # -------------
 
 iir_lift:
-  class:             'IirFilter'
+  class:             'IIRFilter'
   num_coeffs:        [0, 0, 0, 0, 0]
   den_coeffs:        [0, 0, 0, 0, 0]
   inputs:
