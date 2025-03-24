@@ -17,14 +17,14 @@ class DM(BaseProcessingObj):
                  nmodes: int=None,
                  nzern: int=None,
                  start_mode: int=None,
-                 idx_modes = None,
+                 idx_modes: list = None,
                  npixels: int=None,
                  obsratio: float=None,
                  diaratio: float=None,
                  pupilstop: Pupilstop=None,
                  sign: int=-1,
-                 target_device_idx=None, 
-                 precision=None
+                 target_device_idx: int=None, 
+                 precision: int=None
                  ):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 

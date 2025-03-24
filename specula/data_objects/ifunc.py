@@ -30,7 +30,8 @@ class IFunc(BaseDataObj):
                  do_mech_coupling: bool=False,
                  coupling_coeffs: list=[0.31, 0.05],
                  idx_modes=None,
-                 target_device_idx=None, precision=None
+                 target_device_idx=None, 
+                 precision=None
                 ):
         super().__init__(precision=precision, target_device_idx=target_device_idx)
         self._doZeroPad = False
