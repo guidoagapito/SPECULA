@@ -1,0 +1,225 @@
+import numpy as np
+from scipy.linalg import svd, pinv
+from scipy.special import gamma
+from specula.lib.zernike_generator import ZernikeGenerator
+
+def generate_phase_spectrum(f, r0, L0):
+    cst = (gamma(11.0/6.0)**2/(2.0*np.pi**(11.0/3.0)))*(24.0*gamma(6.0/5.0)/5.0)**(5.0/6.0)
+    out = cst * r0**(-5.0/3.0)*(f**2+(1.0/L0)**2)**(-11.0/6.0)
+    return out
+
+def generate_distance_grid(N, M=None):
+    if M is None:
+        M = N
+    
+    R = np.zeros((M, N), dtype=np.float32)
+    for x in range(N):
+        if x <= N/2:
+            f = x**2
+        else:
+            f = (N-x)**2
+ 
+        for y in range(M):
+            if y <= M/2:
+                g = y**2
+            else:
+                g = (M-y)**2
+            R[y, x] = np.sqrt(f + g)
+  
+    return R
+
+def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversampling=2, verbose=False):
+    if verbose:
+        print("Computing turbulence covariance matrix...")
+
+    idx_mask = np.where(pupil_mask)
+    npupil_mask = np.sum(pupil_mask)
+    n_actuators = influence_functions.shape[0]
+    mask_shape = pupil_mask.shape
+
+    mask_size = max(mask_shape)
+    ft_shape = (oversampling * mask_size, oversampling * mask_size)
+
+    ft_influence_functions = np.zeros((ft_shape[0], ft_shape[1], n_actuators), dtype=complex)
+
+    for act_idx in range(n_actuators):
+        if_flat = influence_functions[act_idx, :]
+
+        if_2d = np.zeros(mask_shape, dtype=np.float32)
+        if_2d[idx_mask] = if_flat
+
+        support = np.zeros(ft_shape, dtype=np.float32)
+        support[:mask_shape[0], :mask_shape[1]] = if_2d
+
+        ft_support = np.fft.fft2(support)
+        ft_influence_functions[:, :, act_idx] = ft_support
+
+    freq_x = np.fft.fftfreq(ft_shape[0], d=diameter/(ft_shape[0]))
+    freq_y = np.fft.fftfreq(ft_shape[1], d=diameter/(ft_shape[1]))
+    fx, fy = np.meshgrid(freq_x, freq_y, indexing='ij')
+    f = np.sqrt(fx**2 + fy**2)
+
+    phase_spectrum = np.zeros(ft_shape, dtype=np.float32)
+    valid_f = f > 0
+    phase_spectrum[valid_f] = 0.023 * (diameter/r0)**(5/3) * (f[valid_f]**2 + (1/L0)**2)**(-11/6)
+
+    norm_factor = npupil_mask**2 * (oversampling * diameter)**2
+
+    if2 = np.zeros((np.prod(ft_shape), n_actuators), dtype=complex)
+    for act_idx in range(n_actuators):
+        if2[:, act_idx] = (ft_influence_functions[:, :, act_idx] * phase_spectrum).flatten()
+
+    if3 = np.conj(ft_influence_functions.reshape(np.prod(ft_shape), n_actuators))
+
+    r_if2 = np.real(if2)
+    i_if2 = np.imag(if2)
+    r_if3 = np.real(if3)
+    i_if3 = np.imag(if3)
+    
+    r_ifft_cov = np.matmul(r_if2.T, r_if3)
+    i_ifft_cov = np.matmul(i_if2.T, i_if3)
+    
+    ifft_covariance = (r_ifft_cov - i_ifft_cov) / norm_factor
+    
+    return ifft_covariance
+
+def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, L0, 
+                            zern_modes=0, oversampling=2, filt_modes=None,
+                            if_max_condition_number=None, verbose=False):
+    if verbose:
+        print("Starting modal basis generation...")
+        print(f"Input shapes: pupil_mask={pupil_mask.shape}, influence_functions={influence_functions.shape}")
+    
+    idx_mask = np.where(pupil_mask)
+    npupil_mask = np.sum(pupil_mask)
+    mask_shape = pupil_mask.shape
+
+    if influence_functions.shape[1] != npupil_mask:
+        raise ValueError(f"influence_functions should have shape (n_actuators, {npupil_mask})")
+
+    n_actuators = influence_functions.shape[0]
+
+    if verbose:
+        print("Step 1: Removing modes from influence functions...")
+
+    number_of_modes_to_be_removed = 1 + zern_modes
+    if filt_modes is not None:
+        number_of_modes_to_be_removed += filt_modes.shape[0]
+
+    modes_to_be_removed = np.zeros((number_of_modes_to_be_removed, npupil_mask), dtype=np.float32)
+    modes_to_be_removed[0, :] = 1.0
+
+    if zern_modes > 0:
+        zg = ZernikeGenerator(mask_shape[0], xp=np, dtype=np.float32)
+        zern_modes_cube = np.stack([zg.getZernike(z) for z in range(2, zern_modes + 2)])
+ 
+        if verbose:
+            print(f"Generated Zernike modes shape: {zern_modes_cube.shape}")
+
+        for i in range(zern_modes):
+            mode_2d = zern_modes_cube[i, :, :]
+            modes_to_be_removed[i+1, :] = mode_2d[idx_mask]
+
+    if zern_modes > 0:
+        coef_zern = np.matmul(modes_to_be_removed, pinv(influence_functions))
+  
+    coef = np.zeros((number_of_modes_to_be_removed, n_actuators), dtype=np.float32)
+    filtered_ifs = influence_functions.copy()
+
+    for mode_idx in range(number_of_modes_to_be_removed):
+        mode = modes_to_be_removed[mode_idx, :]
+        mode_norm = np.sum(mode * mode)
+
+        if mode_norm > 0:
+            for act_idx in range(n_actuators):
+                coef[mode_idx, act_idx] = np.sum(filtered_ifs[act_idx, :] * mode) / mode_norm
+                filtered_ifs[act_idx, :] -= mode * coef[mode_idx, act_idx]
+
+    if verbose:
+        print("Step 2: Calculating geometric covariance matrix...")
+
+    if_covariance = np.matmul(filtered_ifs, filtered_ifs.T) / npupil_mask
+
+    if verbose:
+        print("Step 3: SVD decomposition of covariance matrix...")
+
+    U1, S1, Vt1 = svd(if_covariance, full_matrices=True)
+    V1 = Vt1.T
+
+    S1 = np.real(S1)
+    U1 = np.real(U1)
+    V1 = np.real(V1)
+
+    if verbose:
+        print(f"-- IF covariance matrix SVD ---")
+        cond_number = S1[0] / S1[n_actuators-number_of_modes_to_be_removed-1]
+        print(f"    initial condition number is: {cond_number}")
+
+    if if_max_condition_number is not None:
+        if cond_number > if_max_condition_number:
+            min_cond_number = S1[0] / if_max_condition_number
+            idx_cond_number = np.where(S1[:n_actuators-number_of_modes_to_be_removed] < min_cond_number)[0]
+            count_cond_number = len(idx_cond_number)
+
+            if count_cond_number > 0:
+                number_of_modes_to_be_removed += count_cond_number
+                if verbose:
+                    final_cond = S1[0] / S1[n_actuators-number_of_modes_to_be_removed-1]
+                    print(f"    final condition number is: {final_cond}")
+                    print(f"    no. of cut modes: {count_cond_number}")
+
+    M = np.zeros((n_actuators, n_actuators), dtype=np.float32)
+    for i in range(n_actuators):
+        if i < n_actuators - number_of_modes_to_be_removed:
+            M[:, i] = U1[:, i] / np.sqrt(S1[i])
+
+    if verbose:
+        print("Step 4: Calculating turbulence covariance matrix...")
+
+    ifft_covariance = compute_ifs_covmat(pupil_mask, diameter, filtered_ifs, r0, L0, oversampling, verbose)
+
+    if verbose:
+        print("Step 5: Calculating modal basis...")
+
+    hp = np.matmul(np.matmul(M.T, ifft_covariance), M)
+
+    U2, S2, Vt2 = svd(hp, full_matrices=True)
+    V2 = Vt2.T
+
+    S2 = np.real(S2)
+    U2 = np.real(U2)
+    V2 = np.real(V2)
+
+    Bp = np.matmul(M, U2)
+
+    kl_modes = np.matmul(filtered_ifs.T, Bp[:, :n_actuators-number_of_modes_to_be_removed])
+
+    if zern_modes > 0:
+        if verbose:
+            print("Step 6: Adding Zernike modes to basis...")
+
+        zern_basis = modes_to_be_removed[1:zern_modes+1, :]
+        kl_basis = np.vstack((zern_basis, kl_modes.T))
+
+        K = np.eye(n_actuators, dtype=np.float32)
+        projection = np.matmul(coef_zern[1:zern_modes+1, :].T, coef[1:zern_modes+1, :])
+        K -= projection
+
+        m2c_zern = coef_zern[1:zern_modes+1, :].T
+        m2c_kl = np.matmul(K, Bp[:, :n_actuators-number_of_modes_to_be_removed])
+        m2c = np.hstack((m2c_zern, m2c_kl))
+    else:
+        kl_basis = kl_modes.T
+
+        K = np.eye(n_actuators, dtype=np.float32)
+        projection = np.outer(coef[0, :], coef[0, :])
+        K -= projection
+
+        m2c = np.matmul(K, Bp[:, :n_actuators-number_of_modes_to_be_removed])
+
+    singular_values = {"S1": S1, "S2": S2}
+
+    if verbose:
+        print(f"Final shapes: kl_basis={kl_basis.shape}, m2c={m2c.shape}")
+
+    return kl_basis, m2c, singular_values
