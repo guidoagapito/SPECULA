@@ -18,9 +18,9 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
     # Actuator Coordinates
     if circ_geom:
         if n_act % 2 == 0:
-            step *= float(n_act) / float(n_act - 1)
             na = xp.arange(round((n_act + 1) / 2)) * 6
         else:
+            step *= float(n_act) / float(n_act - 1)
             na = xp.arange(round(n_act / 2)) * 6
         na[0] = 1  # The first value is always 1
 
@@ -38,6 +38,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
 
         # Convert from polar to Cartesian coordinates
         x, y = pol_coords[1] * xp.cos(xp.radians(pol_coords[0])), pol_coords[1] * xp.sin(xp.radians(pol_coords[0]))
+        
         x += x_c  # Shift to the center of the grid
         y += y_c  
 
