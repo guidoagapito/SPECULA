@@ -3,6 +3,7 @@ from specula.lib.make_mask import make_mask
 
 def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
                         do_mech_coupling=False, coupling_coeffs=[0.31, 0.05],
+                        do_slaving=False, slaving_thr=0.1,
                         obsratio=0.0, diaratio=1.0, mask=None, return_coordinates=False):
     """ Computes the ifs_cube matrix with Influence Functions using Thin Plate Splines """
 
@@ -104,6 +105,43 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
                         ifs_cube[j, :, :] += coupling_coeffs[1] * ifs_cube_orig[k, :, :]
 
         print(f"\rCompute IFs: {int((i / n_act_tot) * 100)}% done", end="")
+
+    if do_slaving:
+        max_vals = xp.max(ifs_cube[:, idx[0], idx[1]], axis=1)
+        max_vals_all = xp.max(ifs_cube, axis=(1, 2))
+        idxMaster = xp.where(max_vals >= slaving_thr * max_vals_all)[0]
+        idxSlave = xp.where(max_vals < slaving_thr * max_vals_all)[0]
+
+        print(f"Actuators: {n_act_tot}")
+        print(f"Master actuators: {len(idxMaster)}")
+        print(f"Actuators to be slaved: {len(idxSlave)}")
+
+        slaveMat1 = xp.zeros((n_act_tot, n_act_tot))
+
+        for i in range(n_act_tot):
+            if i in idxMaster:
+                distance = xp.sqrt((coordinates[0] - coordinates[0][i])**2 + 
+                                (coordinates[1] - coordinates[1][i])**2)
+
+                idxCloseMaster1 = xp.where(distance <= 1.1 * step)[0]
+                idxCloseMaster1 = xp.intersect1d(idxCloseMaster1, idxSlave)
+
+                if len(idxCloseMaster1) > 0:
+                    for j in idxCloseMaster1:
+                        slaveMat1[i, j] = 1.0
+
+        for j in range(n_act_tot):
+            slaveMat1[:, j] *= 1.0 / max(1.0, xp.sum(slaveMat1[:, j]))
+
+        for i in range(n_act_tot):
+            if xp.sum(slaveMat1[i, :]) > 0:
+                idxTemp = xp.where(slaveMat1[i, :] > 0)[0]
+                for j in idxTemp:
+                    ifs_cube[i] += slaveMat1[i, j] * ifs_cube[j]
+
+        ifs_cube = ifs_cube[idxMaster]
+        coordinates = coordinates[:, idxMaster]
+        n_act_tot = len(idxMaster)
 
     ifs_2d = xp.array([ifs_cube[i][idx] for i in range(n_act_tot)], dtype=dtype)
 
