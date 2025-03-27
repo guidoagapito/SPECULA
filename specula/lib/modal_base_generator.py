@@ -4,11 +4,45 @@ from scipy.special import gamma
 from specula.lib.zernike_generator import ZernikeGenerator
 
 def generate_phase_spectrum(f, r0, L0):
+    """
+    Generate the phase spectrum of the turbulence
+
+    Parameters:
+    -----------
+    f : 2D array
+        Frequency grid
+    r0 : float
+        Fried parameter
+    L0 : float
+        Outer scale
+
+    Returns:
+    --------
+    out : 2D array
+        Phase spectrum
+    """
+
     cst = (gamma(11.0/6.0)**2/(2.0*np.pi**(11.0/3.0)))*(24.0*gamma(6.0/5.0)/5.0)**(5.0/6.0)
     out = cst * r0**(-5.0/3.0)*(f**2+(1.0/L0)**2)**(-11.0/6.0)
     return out
 
 def generate_distance_grid(N, M=None):
+    """
+    Generate a 2D distance grid
+
+    Parameters:
+    -----------
+    N : int
+        Size of the grid
+    M : int
+        Size of the grid
+
+    Returns:
+    --------
+    R : 2D array
+        Distance grid
+    """
+
     if M is None:
         M = N
     
@@ -28,7 +62,62 @@ def generate_distance_grid(N, M=None):
   
     return R
 
+def make_orto_modes(array):
+    """
+    Return an orthogonal 2D array
+    
+    Parameters:
+    -----------
+    array : 2D array
+        Input array
+        
+    Returns:
+    --------
+    Q : 2D array
+        Orthogonal matrix
+    """
+    # return an othogonal 2D array
+    
+    size_array = np.shape(array)
+
+    if len(size_array) != 2:
+        raise ValueError('Error in input data, the input array must have two dimensions.')
+
+    if size_array[1] > size_array[0]:
+        Q, R = np.linalg.qr(array.T)
+        Q = Q.T
+    else:
+        Q, R = np.linalg.qr(array)
+    
+    return Q
+
 def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversampling=2, verbose=False):
+    """"
+    Compute the covariance matrix of the influence functions
+
+    Parameters:
+    -----------
+    pupil_mask : 2D array
+        Pupil mask
+    diameter : float
+        Telescope diameter
+    influence_functions : 2D array
+        Influence functions
+    r0 : float
+        Fried parameter
+    L0 : float
+        Outer scale
+    oversampling : int
+        Oversampling factor
+    verbose : bool
+        Verbose mode
+
+    Returns:
+    --------
+    ifft_covariance : 2D array
+        Covariance matrix    
+    """
+
     if verbose:
         print("Computing turbulence covariance matrix...")
 
@@ -86,6 +175,42 @@ def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversa
 def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, L0, 
                             zern_modes=0, oversampling=2, filt_modes=None,
                             if_max_condition_number=None, verbose=False):
+    """"
+    Generate a modal basis from the influence functions
+
+    Parameters:
+    -----------
+    pupil_mask : 2D array
+        Pupil mask
+    diameter : float
+        Telescope diameter
+    influence_functions : 2D array
+        Influence functions
+    r0 : float
+        Fried parameter
+    L0 : float
+        Outer scale
+    zern_modes : int
+        Number of Zernike modes to be used as first modes
+    oversampling : int
+        Oversampling factor
+    filt_modes : 2D array
+        Modes to be removed from the influence functions
+    if_max_condition_number : float
+        Maximum condition number for the influence functions
+    verbose : bool
+        Verbose mode
+
+    Returns:
+    --------
+    kl_basis : 2D array
+        Modal basis
+    m2c : 2D array
+        Modes-to-command matrix
+    singular_values : dict
+        Singular values of the covariance matrices
+    """
+
     if verbose:
         print("Starting modal basis generation...")
         print(f"Input shapes: pupil_mask={pupil_mask.shape}, influence_functions={influence_functions.shape}")
@@ -116,12 +241,17 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
         if verbose:
             print(f"Generated Zernike modes shape: {zern_modes_cube.shape}")
 
+        modes_to_be_removed[1:, :] = zern_modes_cube[:, idx_mask[0], idx_mask[1]]
+        # Orthonormalize Zernike modes
+        modes_to_be_removed = make_orto_modes(modes_to_be_removed)
+        # Normalize Zernike modes
         for i in range(zern_modes):
-            mode_2d = zern_modes_cube[i, :, :]
-            modes_to_be_removed[i+1, :] = mode_2d[idx_mask]
+            modes_to_be_removed[i+1, :] -= np.mean(modes_to_be_removed[i+1, :])
+            modes_to_be_removed[i+1, :] /= np.sqrt(np.mean(modes_to_be_removed[i+1, :]**2))
 
     if zern_modes > 0:
         coef_zern = np.matmul(modes_to_be_removed, pinv(influence_functions))
+        modes_to_be_removed = np.matmul(coef_zern,influence_functions)
   
     coef = np.zeros((number_of_modes_to_be_removed, n_actuators), dtype=np.float32)
     filtered_ifs = influence_functions.copy()
