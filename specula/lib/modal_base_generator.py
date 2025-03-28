@@ -150,7 +150,7 @@ def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversa
     else:
         cdtype = complex
 
-    idx_mask = xp.where(pupil_mask)
+    idx_mask = xp.where(pupil_mask.ravel())[0]
     npupil_mask = int(xp.sum(pupil_mask))
     n_actuators = influence_functions.shape[0]
     mask_shape = pupil_mask.shape
@@ -164,7 +164,7 @@ def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversa
         if_flat = influence_functions[act_idx, :]
 
         if_2d = xp.zeros(mask_shape, dtype=dtype)
-        if_2d[idx_mask] = if_flat
+        if_2d.ravel()[idx_mask] = if_flat
 
         support = xp.zeros(ft_shape, dtype=dtype)
         support[:mask_shape[0], :mask_shape[1]] = if_2d
@@ -254,8 +254,8 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
     if verbose:
         print("Starting modal basis generation...")
         print(f"Input shapes: pupil_mask={pupil_mask.shape}, influence_functions={influence_functions.shape}")
-    
-    idx_mask = xp.where(pupil_mask)
+
+    idx_mask = xp.where(pupil_mask.ravel())[0]
     npupil_mask = int(xp.sum(pupil_mask))
     mask_shape = pupil_mask.shape
 
@@ -277,12 +277,13 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
     if zern_modes > 0:
         zg = ZernikeGenerator(mask_shape[0], xp=xp, dtype=dtype)
         zern_modes_cube = xp.stack([zg.getZernike(z) for z in range(2, zern_modes + 2)])
- 
+
         if verbose:
             print(f"Generated Zernike modes shape: {zern_modes_cube.shape}")
 
-        modes_to_be_removed[1:, :] = zern_modes_cube[:, idx_mask[0], idx_mask[1]]
-            
+        for i in range(zern_modes):
+            modes_to_be_removed[i+1, :] = zern_modes_cube[i].ravel()[idx_mask]
+
         # Orthonormalize Zernike modes
         modes_to_be_removed = make_orto_modes(modes_to_be_removed, xp=xp, dtype=dtype)
         # Normalize Zernike modes
