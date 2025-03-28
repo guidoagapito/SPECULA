@@ -183,11 +183,16 @@ def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversa
 
     norm_factor = npupil_mask**2 * (oversampling * diameter)**2
 
-    if2 = xp.zeros((xp.prod(ft_shape), n_actuators), dtype=cdtype)
+    if xp.__name__ == "cupy":
+        prod_ft_shape = ft_shape[0] * ft_shape[1]
+    else:
+        prod_ft_shape = xp.prod(ft_shape)
+
+    if2 = xp.zeros((prod_ft_shape, n_actuators), dtype=cdtype)
     for act_idx in range(n_actuators):
         if2[:, act_idx] = (ft_influence_functions[:, :, act_idx] * phase_spectrum).flatten()
 
-    if3 = xp.conj(ft_influence_functions.reshape(xp.prod(ft_shape), n_actuators))
+    if3 = xp.conj(ft_influence_functions.reshape(prod_ft_shape, n_actuators))
 
     r_if2 = xp.real(if2)
     i_if2 = xp.imag(if2)
@@ -247,7 +252,7 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
 
     """Performs operations with NumPy or CuPy depending on the backend passed as an argument."""
     if xp.__name__ == "cupy":
-        from cupyx.scipy.linalg import svd, pinv
+        from cupy.linalg import svd, pinv
     else:
         from scipy.linalg import svd, pinv
 
@@ -282,9 +287,7 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
             print(f"Generated Zernike modes shape: {zern_modes_cube.shape}")
 
         for i in range(zern_modes):
-            flat_zern = zern_modes_cube[i].ravel()
-            flat_zern = xp.asarray(flat_zern, dtype=dtype)
-            modes_to_be_removed[i+1, :] = flat_zern[idx_mask]
+            modes_to_be_removed[i+1, :] = zern_modes_cube[i].ravel()[idx_mask]
 
         # Orthonormalize Zernike modes
         modes_to_be_removed = make_orto_modes(modes_to_be_removed, xp=xp, dtype=dtype)
