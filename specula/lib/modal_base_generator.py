@@ -284,7 +284,7 @@ def make_modal_base_from_ifs_fft(pupil_mask, diameter, influence_functions, r0, 
         for i in range(zern_modes):
             flat_zern = zern_modes_cube[i].ravel()
             flat_zern = xp.asarray(flat_zern, dtype=dtype)
-            modes_to_be_removed[i+1, :] = variable[idx_mask]
+            modes_to_be_removed[i+1, :] = flat_zern[idx_mask]
 
         # Orthonormalize Zernike modes
         modes_to_be_removed = make_orto_modes(modes_to_be_removed, xp=xp, dtype=dtype)
