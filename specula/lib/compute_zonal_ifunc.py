@@ -1,11 +1,27 @@
 from scipy.interpolate import Rbf
+import numpy as np
 from specula.lib.make_mask import make_mask
 
-def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
+def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, angle_offset=0,
                         do_mech_coupling=False, coupling_coeffs=[0.31, 0.05],
                         do_slaving=False, slaving_thr=0.1,
                         obsratio=0.0, diaratio=1.0, mask=None, return_coordinates=False):
     """ Computes the ifs_cube matrix with Influence Functions using Thin Plate Splines """
+    
+    # Flag to check if we're using CuPy or another non-NumPy array library
+    is_cupy = xp.__name__ == "cupy"
+    
+    # Function to convert to NumPy array if needed
+    def to_numpy(arr):
+        if is_cupy:
+            return xp.asnumpy(arr)
+        return arr
+    
+    # Function to convert back to xp array
+    def to_xp(arr):
+        if is_cupy:
+            return xp.asarray(arr, dtype=dtype)
+        return arr
 
     if mask is None:
         mask, idx = make_mask(dim, obsratio, diaratio, get_idx=True, xp=xp)
@@ -25,7 +41,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
             na = xp.arange(round(n_act / 2)) * 6
         na[0] = 1  # The first value is always 1
 
-        n_act_tot = xp.sum(na)
+        n_act_tot = int(xp.sum(na))
         pol_coords = xp.zeros((2, n_act_tot))
         ka = 0
         for ia in range(len(na)):
@@ -38,10 +54,8 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
         x_c, y_c = dim / 2, dim / 2  
 
         # Convert from polar to Cartesian coordinates
-        x, y = pol_coords[1] * xp.cos(xp.radians(pol_coords[0])), pol_coords[1] * xp.sin(xp.radians(pol_coords[0]))
-        
-        x += x_c  # Shift to the center of the grid
-        y += y_c  
+        x = pol_coords[1] * xp.cos(xp.radians(pol_coords[0])) + x_c
+        y = pol_coords[1] * xp.sin(xp.radians(pol_coords[0])) + y_c
 
         # Maximum radius (outer boundary)
         R = pol_coords[1].max()  # The maximum radial value is the outer boundary
@@ -55,14 +69,13 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
 
     # ----------------------------------------------------------
     # Influence Function (ifs_cube) Computation
-    ifs_cube = xp.zeros((n_act_tot, dim, dim))
+    ifs_cube = xp.zeros((n_act_tot, dim, dim), dtype=dtype)
 
     # Minimum distance between points
     min_distance_norm = 9*dim/n_act
 
     for i in range(n_act_tot):
-        z = xp.zeros(n_act_tot)
-
+        z = xp.zeros(n_act_tot, dtype=dtype)
         z[i] = 1.0  # Set the central actuator
         
         if min_distance_norm >= dim/2:
@@ -73,13 +86,25 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
             idx_close = xp.where(distance <= min_distance_norm)[0]
             x_close, y_close, z_close = x[idx_close], y[idx_close], z[idx_close]           
             # Compute the distance grid
-            distance_grid = xp.sqrt((grid_x.flat - x[i]) ** 2 + (grid_x.flat - y[i]) ** 2)
+            distance_grid = xp.sqrt((grid_x.flat - x[i]) ** 2 + (grid_y.flat - y[i]) ** 2)
             idx_far_grid = xp.where(distance_grid > 0.8*min_distance_norm)[0]
 
-        # Interpolation using Thin Plate Splines
-        rbf = Rbf(x_close, y_close, z_close, function='thin_plate')
+        # Convert to NumPy arrays for Rbf interpolation (required)
+        x_close_np = to_numpy(x_close)
+        y_close_np = to_numpy(y_close)
+        z_close_np = to_numpy(z_close)
+        grid_x_np = to_numpy(grid_x)
+        grid_y_np = to_numpy(grid_y)
         
-        z_interp = rbf(grid_x, grid_y)
+        # Interpolation using Thin Plate Splines (using NumPy arrays)
+        rbf = Rbf(x_close_np, y_close_np, z_close_np, function='thin_plate')
+        
+        # Perform interpolation
+        z_interp_np = rbf(grid_x_np, grid_y_np)
+        
+        # Convert back to xp array
+        z_interp = to_xp(z_interp_np)
+        
         if idx_far_grid is not None:
             z_interp.flat[idx_far_grid] = 0
 
@@ -116,7 +141,7 @@ def compute_zonal_ifunc(dim, n_act, xp, dtype, circ_geom=False, angle_offset=0,
         print(f"Master actuators: {len(idxMaster)}")
         print(f"Actuators to be slaved: {len(idxSlave)}")
 
-        slaveMat1 = xp.zeros((n_act_tot, n_act_tot))
+        slaveMat1 = xp.zeros((n_act_tot, n_act_tot), dtype=dtype)
 
         for i in range(n_act_tot):
             if i in idxMaster:
