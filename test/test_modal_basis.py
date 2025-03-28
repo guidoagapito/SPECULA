@@ -101,4 +101,4 @@ class TestGenerateModalBasis(unittest.TestCase):
         # Test RMS of each mode
         for i, mode in enumerate(kl_basis):
             rms = xp.sqrt(xp.mean(mode**2))
-            self.assertAlmostEqual(rms, 1.0, places=2, msg=f"Mode {i+1} RMS is not close to 1.0")
+            self.assertAlmostEqual(float(rms), 1.0, places=2, msg=f"Mode {i+1} RMS is not close to 1.0")
