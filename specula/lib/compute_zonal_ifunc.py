@@ -46,7 +46,7 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
         ka = 0
         for ia in range(len(na)):
             n_angles = int(na[ia])
-            for ja in n_angles:
+            for ja in range(n_angles):
                 pol_coords[0, ka] = 360. / na[ia] * ja + angle_offset  # Angle in degrees
                 pol_coords[1, ka] = ia * step  # Radial distance
                 ka += 1
