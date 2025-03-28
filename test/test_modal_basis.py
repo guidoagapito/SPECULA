@@ -25,9 +25,19 @@ class TestGenerateModalBasis(unittest.TestCase):
 
         # Generate zonal influence functions
         influence_functions, pupil_mask = compute_zonal_ifunc(
-            pupil_pixels, n_actuators, circ_geom=circGeom, angle_offset=angleOffset, do_mech_coupling=doMechCoupling,
-            coupling_coeffs=couplingCoeffs, do_slaving=doSlaving, slaving_thr=slavingThr,
-            obsratio=obsratio, diaratio=diaratio, mask=None, xp=xp, dtype=dtype,
+            pupil_pixels,
+            n_actuators,
+            circ_geom=circGeom,
+            angle_offset=angleOffset,
+            do_mech_coupling=doMechCoupling,
+            coupling_coeffs=couplingCoeffs,
+            do_slaving=doSlaving,
+            slaving_thr=slavingThr,
+            obsratio=obsratio,
+            diaratio=diaratio,
+            mask=None,
+            xp=xp,
+            dtype=dtype,
             return_coordinates=False
         )
 
@@ -58,9 +68,19 @@ class TestGenerateModalBasis(unittest.TestCase):
 
         # Generate zonal influence functions
         influence_functions, pupil_mask = compute_zonal_ifunc(
-            pupil_pixels, n_actuators, circ_geom=circGeom, angle_offset=angleOffset, do_mech_coupling=doMechCoupling,
-            coupling_coeffs=couplingCoeffs, do_slaving=doSlaving, slaving_thr=slavingThr,
-            obsratio=obsratio, diaratio=diaratio, mask=None, xp=xp, dtype=dtype,
+            pupil_pixels,
+            n_actuators,
+            circ_geom=circGeom,
+            angle_offset=angleOffset,
+            do_mech_coupling=doMechCoupling,
+            coupling_coeffs=couplingCoeffs,
+            do_slaving=doSlaving,
+            slaving_thr=slavingThr,
+            obsratio=obsratio,
+            diaratio=diaratio,
+            mask=None,
+            xp=xp,
+            dtype=dtype,
             return_coordinates=False
         )
 
@@ -73,7 +93,9 @@ class TestGenerateModalBasis(unittest.TestCase):
             L0=L0,
             zern_modes=zern_modes,
             oversampling=oversampling,
-            if_max_condition_number=None
+            if_max_condition_number=None,
+            xp=xp,
+            dtype=dtype
         )
 
         # Test RMS of each mode
