@@ -1,27 +1,13 @@
 from scipy.interpolate import Rbf
 import numpy as np
 from specula.lib.make_mask import make_mask
+from specula import cpuArray
 
 def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, angle_offset=0,
                         do_mech_coupling=False, coupling_coeffs=[0.31, 0.05],
                         do_slaving=False, slaving_thr=0.1,
                         obsratio=0.0, diaratio=1.0, mask=None, return_coordinates=False):
     """ Computes the ifs_cube matrix with Influence Functions using Thin Plate Splines """
-    
-    # Flag to check if we're using CuPy or another non-NumPy array library
-    is_cupy = xp.__name__ == "cupy"
-    
-    # Function to convert to NumPy array if needed
-    def to_numpy(arr):
-        if is_cupy:
-            return xp.asnumpy(arr)
-        return arr
-    
-    # Function to convert back to xp array
-    def to_xp(arr):
-        if is_cupy:
-            return xp.asarray(arr, dtype=dtype)
-        return arr
 
     if mask is None:
         mask, idx = make_mask(dim, obsratio, diaratio, get_idx=True, xp=xp)
@@ -91,11 +77,11 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
             idx_far_grid = xp.where(distance_grid > 0.8*min_distance_norm)[0]
 
         # Convert to NumPy arrays for Rbf interpolation (required)
-        x_close_np = to_numpy(x_close)
-        y_close_np = to_numpy(y_close)
-        z_close_np = to_numpy(z_close)
-        grid_x_np = to_numpy(grid_x)
-        grid_y_np = to_numpy(grid_y)
+        x_close_np = cpuArray(x_close)
+        y_close_np = cpuArray(y_close)
+        z_close_np = cpuArray(z_close)
+        grid_x_np = cpuArray(grid_x)
+        grid_y_np = cpuArray(grid_y)
         
         # Interpolation using Thin Plate Splines (using NumPy arrays)
         rbf = Rbf(x_close_np, y_close_np, z_close_np, function='thin_plate')
@@ -104,7 +90,7 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
         z_interp_np = rbf(grid_x_np, grid_y_np)
         
         # Convert back to xp array
-        z_interp = to_xp(z_interp_np)
+        z_interp = xp.asarray(z_interp_np)
         
         if idx_far_grid is not None:
             z_interp.flat[idx_far_grid] = 0
