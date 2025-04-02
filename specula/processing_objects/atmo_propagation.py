@@ -72,7 +72,7 @@ class AtmoPropagation(BaseProcessingObj):
             nlayers = len(layer_list)
             self.propagators = []
 
-            height_layers = np.array([layer.height for layer in self.atmo_layer_list], dtype=self.dtype)
+            height_layers = np.array([layer.height for layer in self.atmo_layer_list + self.common_layer_list], dtype=self.dtype)
             sorted_heights = np.sort(height_layers)
             if not (np.allclose(height_layers, sorted_heights) or np.allclose(height_layers, sorted_heights[::-1])):
                 raise ValueError('Layers must be sorted from highest to lowest or from lowest to highest')
@@ -189,8 +189,8 @@ class AtmoPropagation(BaseProcessingObj):
         if len(self.atmo_layer_list) < 1:
             raise ValueError('At least one layer must be set')
 
-        self.shiftXY_cond = {layer: np.any(layer.shiftXYinPixel) for layer in self.atmo_layer_list}
-        self.magnification_list = {layer: max(layer.magnification, 1.0) for layer in self.atmo_layer_list}
+        self.shiftXY_cond = {layer: np.any(layer.shiftXYinPixel) for layer in self.atmo_layer_list + self.common_layer_list}
+        self.magnification_list = {layer: max(layer.magnification, 1.0) for layer in self.atmo_layer_list + self.common_layer_list}
 
         self.setup_interpolators()
 
