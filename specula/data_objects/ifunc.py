@@ -32,7 +32,8 @@ class IFunc(BaseDataObj):
                  do_slaving: bool=False,
                  slaving_thr: float=0.1,
                  idx_modes=None,
-                 target_device_idx=None, precision=None
+                 target_device_idx=None,
+                 precision=None
                 ):
         super().__init__(precision=precision, target_device_idx=target_device_idx)
         self._doZeroPad = False

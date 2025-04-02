@@ -85,13 +85,13 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
         
         # Interpolation using Thin Plate Splines (using NumPy arrays)
         rbf = Rbf(x_close_np, y_close_np, z_close_np, function='thin_plate')
-        
+
         # Perform interpolation
         z_interp_np = rbf(grid_x_np, grid_y_np)
-        
+
         # Convert back to xp array
         z_interp = xp.asarray(z_interp_np)
-        
+
         if idx_far_grid is not None:
             z_interp.flat[idx_far_grid] = 0
 
