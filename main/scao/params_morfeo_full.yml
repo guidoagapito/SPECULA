@@ -128,6 +128,10 @@ prop:
 # LGS WFS simulation and slope processing
 # ---------------------------------------
 
+launcher:
+  class:             'LaserLaunchTelescope'
+  spot_size:          1.8
+
 sh_lgs1: &LGS_SH
   class:             'SH'
   subap_wanted_fov:  16.1                    # Requested field-of-view [arcsec]
@@ -136,8 +140,8 @@ sh_lgs1: &LGS_SH
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
   rotAnglePhInDeg:   6.2
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_source_lgs1_ef'
   outputs:  ['out_i']
@@ -268,7 +272,6 @@ sh_ref1: &REF_SH
   sensor_pxscale:    0.153                    # Pixel scale in arcsec/pix
   subap_npx:         30                      # Output sampling [usually corresponding to CCD pixels]
   wavelengthInNm:    750                     # [nm] Pyramid wavelength
-  convolGaussSpotSize: 0.333
   inputs:
     in_ef: 'prop.out_source_ref1_ef'
   outputs:  ['out_i']
