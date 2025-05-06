@@ -157,6 +157,7 @@ class Simul():
                 if len(pars) > 2:
                     raise ValueError('Extra parameters with "tag" are not allowed')
                 filename = cm.filename(classname, pars['tag'])
+                print('Restoring:', filename)
                 self.objs[key] = klass.restore(filename, target_device_idx=target_device_idx)
                 continue
                 
@@ -174,6 +175,10 @@ class Simul():
                 # dict_ref field contains a dictionary of names and associated data objects (defined in the same yml file)
                 elif name.endswith('_dict_ref'):
                     data = {x : self.output_ref(x) for x in value}
+                    pars2[name[:-4]] = data
+
+                elif name.endswith('_ref'):
+                    data = self.output_ref(value)
                     pars2[name[:-4]] = data
 
                 # data fields are read from a fits file
@@ -201,6 +206,7 @@ class Simul():
                                     break
                         
                         filename = cm.filename(parname, value)  # TODO use partype instead of parname?
+                        print('Restoring:', filename)
                         parobj = partype.restore(filename, target_device_idx=target_device_idx)
                         pars2[parname] = parobj
                     else:
@@ -228,6 +234,7 @@ class Simul():
 
             my_params.update(pars2)
             self.objs[key] = klass(**my_params)
+            self.objs[key].name = key
 
             # TODO this could be more general like the getters above
             if type(self.objs[key]) is DataStore:
@@ -285,7 +292,12 @@ class Simul():
                         if not isinstance(output, wanted_type):
                             raise ValueError(f'Input {input_name}: output {output} is not of type {wanted_type}')
 
-                self.objs[dest_object].inputs[input_name].set(output_ref)
+
+                try:
+                    self.objs[dest_object].inputs[input_name].set(output_ref)
+                except ValueError:
+                    print(f'Error connecting {output_name} to {dest_object}.{input_name}')
+                    raise
                 
                 if not type(output_name) is list:
                     a_connection = {}
@@ -492,13 +504,13 @@ class Simul():
             if isinstance(obj, BaseProcessingObj):
                 self.loop.add(obj, idx)
 
-
         # Default display web server
         if 'display_server' in params['main'] and params['main']['display_server']:
             from specula.processing_objects.display_server import DisplayServer
             disp = DisplayServer(params, self.input_ref, self.output_ref, self.get_info)
             self.objs['display_server'] = disp
             self.loop.add(disp, idx+1)
+            disp.name = 'display_server'
 
         # Run simulation loop
         self.loop.run(run_time=params['main']['total_time'], dt=params['main']['time_step'], speed_report=True)
