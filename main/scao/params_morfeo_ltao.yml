@@ -116,6 +116,11 @@ prop:
                   'dm.out_layer:-1']
   outputs: ['out_on_axis_source_ef','out_ngs1_source_ef','out_ngs2_source_ef','out_ngs3_source_ef','out_ngs4_source_ef','out_ngs5_source_ef','out_ngs6_source_ef']
 
+
+launcher:
+  class:             'LaserLaunchTelescope'
+  spot_size:          1.8
+
 sh1:
   class:             'SH'
   subap_wanted_fov:  16.1                    # Requested field-of-view [arcsec]
@@ -124,7 +129,7 @@ sh1:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs1_source_ef'
   outputs:  ['out_i']
@@ -137,7 +142,7 @@ sh2:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs2_source_ef'
   outputs:  ['out_i']
@@ -150,7 +155,7 @@ sh3:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs3_source_ef'
   outputs:  ['out_i']
@@ -163,7 +168,7 @@ sh4:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs4_source_ef'
   outputs:  ['out_i']
@@ -176,7 +181,7 @@ sh5:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs5_source_ef'
   outputs:  ['out_i']
@@ -189,7 +194,7 @@ sh6:
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
   fov_ovs_coeff:     1.6                     # Force phase interpolation to a multiple of 68
-  convolGaussSpotSize: 1.8
+  laser_launch_tel_ref: 'launcher'
   inputs:
     in_ef: 'prop.out_ngs6_source_ef'
   outputs:  ['out_i']
