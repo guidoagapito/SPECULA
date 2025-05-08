@@ -308,7 +308,7 @@ class SH(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)        
-        
+
         if self._kernelobj is not None:
             if len(self._laser_launch_tel.tel_pos) != 0:
                 sodium_altitude = self.local_inputs['sodium_altitude']
@@ -469,7 +469,10 @@ class SH(BaseProcessingObj):
         self.psf = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
         self.psf_shifted = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
 
-        super().build_stream(allow_parallel=False)
+        # TODO: streams are disabled if a kernel object is used,
+        #       because there is too much code in prepare_trigger()
+        if self._kernelobj is None:
+            super().build_stream(allow_parallel=False)
 
     def get_tlt_f(self, p, c):
         '''
