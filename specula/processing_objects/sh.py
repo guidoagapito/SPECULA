@@ -342,13 +342,15 @@ class SH(BaseProcessingObj):
                     self._kernelobj.calculate_lgs_map()
                     self._kernelobj.save(self._kernel_fn)
                     print('Done')
+
+                self._kernels[:] = self._kernelobj.kernels
             else:
                 # Kernel hasn't changed, no need to reload or recalculate
                 print("Kernel unchanged, using cached version")
 
             self._kernelobj.generation_time = self.current_time
-        
-        
+
+      
 
     def trigger_code(self):
 
@@ -386,7 +388,7 @@ class SH(BaseProcessingObj):
             if self._kernelobj is not None:
                 first = i * self._lenslet.dimy
                 last = (i + 1) * self._lenslet.dimy
-                subap_kern_fft = self._kernelobj.kernels[first:last, :, :]
+                subap_kern_fft = self._kernels[first:last, :, :]
 
                 psf_fft = self.xp.fft.fft2(self.psf_shifted)
                 psf_fft *= subap_kern_fft
@@ -469,10 +471,13 @@ class SH(BaseProcessingObj):
         self.psf = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
         self.psf_shifted = self._zeros_common((self._lenslet.dimy, self._fft_size, self._fft_size), dtype=self.dtype)
 
-        # TODO: streams are disabled if a kernel object is used,
-        #       because there is too much code in prepare_trigger()
-        if self._kernelobj is None:
-            super().build_stream(allow_parallel=False)
+        if self._kernelobj is not None:
+            self._kernels = self.xp.zeros((self._lenslet.dimx * self._lenslet.dimy, 
+                                           self._fft_size, self._fft_size), dtype=self.complex_dtype)
+        else:
+            self._kernels = None
+
+        super().build_stream(allow_parallel=False)
 
     def get_tlt_f(self, p, c):
         '''
