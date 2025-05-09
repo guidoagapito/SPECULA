@@ -16,10 +16,9 @@ import yaml
 doBlockDiagram = False
 
 try:
-    import orthogram
-    doBlockDiagram = True
     from orthogram import Color, DiagramDef, write_png, Side, FontWeight, TextOrientation
     from collections import Counter
+    doBlockDiagram = True
 except ImportError as e:
     print('Optional package orthogram not installed, block diagram of the simulation will not be produced.')
 
@@ -79,7 +78,6 @@ class Simul():
             input_ref = self.objs[input_name].copyTo(target_device_idx)
         return input_ref
 
-
     def output_delay(self, output_name):
         if ':' in output_name:
             return int(output_name.split(':')[1])
@@ -119,7 +117,6 @@ class Simul():
         order_index = []
         ii = 0
         params = deepcopy(params_orig)
-        del params[self.mainParamsKeyName]
         while True:
             start = len(params)
             leaves = [name for name, pars in params.items() if self.is_leaf(pars)]
@@ -135,7 +132,6 @@ class Simul():
             print('Warning: the following objects will not be triggered:', params.keys())
         return order, order_index
 
-
     def setSimulParams(self, params):
         for key, pars in params.items():            
             classname = pars['class']
@@ -143,10 +139,10 @@ class Simul():
                 self.mainParams = pars
                 self.mainParamsKeyName = key
 
-
     def build_objects(self, params):
-        
+
         self.setSimulParams(params)
+        
         cm = CalibManager(self.mainParams['root_dir'])
         skip_pars = 'class inputs outputs'.split()
 
@@ -301,7 +297,6 @@ class Simul():
                     for output in output_ref:
                         if not isinstance(output, wanted_type):
                             raise ValueError(f'Input {input_name}: output {output} is not of type {wanted_type}')
-
 
                 try:
                     self.objs[dest_object].inputs[input_name].set(output_ref)
@@ -483,17 +478,14 @@ class Simul():
                 additional_params = yaml.safe_load(stream)
                 self.combine_params(params, additional_params)
 
-        # update also global simul params
-        self.setSimulParams(params)
-
-        # Initialize housekeeping objects
-        self.loop = LoopControl(run_time=self.mainParams['total_time'], dt=self.mainParams['time_step'])        
-
         # Actual creation code
         self.apply_overrides(params)
         self.build_objects(params)
         self.connect_objects(params)                
-        
+
+        # Initialize housekeeping objects
+        self.loop = LoopControl(run_time=self.mainParams['total_time'], dt=self.mainParams['time_step'])        
+
         if not self.isReplay:
             self.build_replay(params)
 
@@ -525,7 +517,8 @@ class Simul():
 #            print(f"Mean Strehl Ratio (@{params['psf']['wavelengthInNm']}nm) : {store.mean('sr', init=min([50, 0.1 * self.mainParams['total_time'] / self.mainParams['time_step']])) * 100.}")
 
         for obj in self.objs.values():
-            obj.finalize()
+            if isinstance(obj, BaseProcessingObj):
+                obj.finalize()
 
     def get_info(self):
         '''Quick info string intended for web interfaces'''
