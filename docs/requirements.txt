@@ -4,3 +4,4 @@ nbsphinx
 numpydoc
 sphinx-rtd-theme
 m2r
+lxml_html_clean
