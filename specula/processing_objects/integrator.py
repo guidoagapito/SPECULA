@@ -19,7 +19,6 @@ class Integrator(IirFilter):
         iir_filter_data = IirFilterData.from_gain_and_ff(int_gain, ff=ff,
                                                target_device_idx=target_device_idx)
 
-        print('simul_params', simul_params)
         # Initialize IirFilter object
         super().__init__(simul_params, iir_filter_data, delay=delay, offset=offset, og_shaper=og_shaper,
                          target_device_idx=target_device_idx, precision=precision)

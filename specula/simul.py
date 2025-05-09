@@ -437,8 +437,6 @@ class Simul():
         n_cols = max(trigger_order_idx) + 1                
         n_rows = max( list(dict(Counter(trigger_order_idx)).values()))        
         # names_to_orders = dict(zip(trigger_order, trigger_order_idx))
-        print('n_cols', n_cols)
-        print('n_rows', n_rows)
         orders_to_namelists = {}
         for order in range(n_cols):
             orders_to_namelists[order] = []
@@ -464,7 +462,6 @@ class Simul():
         for r in rows:
             d.add_row(r)        
         for c in self.connections:
-            print('connection', c)
             aconn = d.add_connection(c['start'], c['end'], buffer_fill=Color(1.0,1.0,1.0), buffer_width=1, 
                              exits=[Side.RIGHT], entrances=[Side.LEFT, Side.BOTTOM, Side.TOP])
             aconn.set_start_label(c['middle_label'],font_weight=FontWeight.BOLD, text_fill=Color(0, 0.5, 0), text_orientation=TextOrientation.HORIZONTAL)
@@ -486,7 +483,6 @@ class Simul():
                 additional_params = yaml.safe_load(stream)
                 self.combine_params(params, additional_params)
 
-        print(params)
         # update also global simul params
         self.setSimulParams(params)
 
