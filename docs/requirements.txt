@@ -3,3 +3,4 @@ sphinx>=1.7.5
 nbsphinx
 numpydoc
 sphinx-rtd-theme
+m2r
