@@ -32,7 +32,6 @@ class TestModalrec(unittest.TestCase):
 
     @cpu_and_gpu
     def test_modalrec_vs_implicit_polc(self, target_device_idx, xp):
-        target_device_idx = None
 
         # intmat (shape 6x4)
         intmat_arr = xp.array([

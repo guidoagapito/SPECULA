@@ -141,8 +141,8 @@ def compute_ifs_covmat(pupil_mask, diameter, influence_functions, r0, L0, oversa
         ft_influence_functions[:, :, act_idx] = ft_support
 
     # Generation of Phase Spectrum
-    sp_freq        = generate_distance_grid(oversampling*mask_size,dtype=dtype)/(oversampling*diameter)
-    phase_spectrum = generate_phase_spectrum(sp_freq, r0, L0)
+    sp_freq        = generate_distance_grid(oversampling*mask_size, xp=xp, dtype=dtype)/(oversampling*diameter)
+    phase_spectrum = generate_phase_spectrum(sp_freq, r0, L0, xp=xp)
     norm_factor    = npupil_mask**2 * (oversampling * diameter)**2
 
     if xp.__name__ == "cupy":
