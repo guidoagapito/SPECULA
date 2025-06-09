@@ -145,15 +145,15 @@ class FuncGenerator(BaseProcessingObj):
         if str(seed).strip() == 'auto':
             self.seed = self.xp.around(self.xp.random.random() * 1e4)
         elif seed is not None:
-            self.seed = self.xp.array(seed, dtype=self.dtype)
+            self.seed = self.to_xp(seed, dtype=self.dtype)
         else:
             self.seed = 0
 
-        self.constant = self.xp.array(constant, dtype=self.dtype) if constant is not None else 0.0
-        self.amp = self.xp.array(amp, dtype=self.dtype) if amp is not None else 0.0
-        self.freq = self.xp.array(freq, dtype=self.dtype) if freq is not None else 0.0
-        self.offset = self.xp.array(offset, dtype=self.dtype) if offset is not None else 0.0
-        self.vect_amplitude = self.xp.array(vect_amplitude, dtype=self.dtype) if vect_amplitude is not None else 0.0
+        self.constant = self.to_xp(constant, dtype=self.dtype) if constant is not None else 0.0
+        self.amp = self.to_xp(amp, dtype=self.dtype) if amp is not None else 0.0
+        self.freq = self.to_xp(freq, dtype=self.dtype) if freq is not None else 0.0
+        self.offset = self.to_xp(offset, dtype=self.dtype) if offset is not None else 0.0
+        self.vect_amplitude = self.to_xp(vect_amplitude, dtype=self.dtype) if vect_amplitude is not None else 0.0
 
         if self.type in ['SIN', 'SQUARE_WAVE', 'LINEAR', 'RANDOM', 'RANDOM_UNIFORM']:
             # Check if the parameters are scalars or arrays and have coherent sizes
@@ -174,7 +174,7 @@ class FuncGenerator(BaseProcessingObj):
                 output_size = vsize if nmodes is None else vsize * nmodes
         elif self.type in ['PUSH', 'PUSHPULL', 'TIME_HIST']:
             if time_hist is not None:
-                output_size = self.xp.array(time_hist.time_history).shape[1]
+                output_size = self.to_xp(time_hist.time_history).shape[1]
             elif nmodes is not None:
                 output_size = nmodes
         elif self.type in ['VALUE_SCHEDULE']:
@@ -240,7 +240,7 @@ class FuncGenerator(BaseProcessingObj):
         elif self.type == 'TIME_HIST':
             if time_hist is None:
                 raise ValueError('TIME_HIST keyword is mandatory for type TIME_HIST')
-            self.time_hist = self.xp.array(time_hist.time_history)
+            self.time_hist = self.to_xp(time_hist.time_history)
 
         elif self.type == 'VALUE_SCHEDULE':
             if scheduled_values is None or time_intervals is None or modes_per_group is None:
@@ -261,8 +261,8 @@ class FuncGenerator(BaseProcessingObj):
                 expanded_values.append(expanded_value)
 
             self.value_schedule = {
-                'values': self.xp.array(expanded_values, dtype=self.dtype),
-                'times': self.xp.array(time_intervals, dtype=self.dtype)
+                'values': self.to_xp(expanded_values, dtype=self.dtype),
+                'times': self.to_xp(time_intervals, dtype=self.dtype)
             }
 
         else:
@@ -320,7 +320,7 @@ class FuncGenerator(BaseProcessingObj):
         self.iter_counter += 1
 
     def get_time_hist_at_current_time(self):
-        return self.xp.array(self.time_hist[self.iter_counter])
+        return self.to_xp(self.time_hist[self.iter_counter])
 
     def setup(self):
         super().setup()
