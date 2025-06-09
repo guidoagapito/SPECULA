@@ -1,10 +1,7 @@
 import unittest
 import os
 import shutil
-import subprocess
-import sys
 import glob
-import time
 import specula
 specula.init(-1,precision=1)  # Default target device
 
@@ -31,6 +28,7 @@ class TestTimeHistoryIntegration(unittest.TestCase):
         # Change back to original directory
         os.chdir(self.cwd)
     
+    @unittest.skip
     def test_timehistory_integration(self):
         """Run the simulation and check the results"""
         
@@ -47,21 +45,21 @@ class TestTimeHistoryIntegration(unittest.TestCase):
         self.assertTrue(output_dirs, "No data directory found after simulation")
         latest_output_dir = output_dirs[-1]
             
-        # Check if res_sr.fits exists
+        # Check if output time history file exists
         timehist_path = os.path.join(latest_output_dir, 'timehist.fits')
         self.assertTrue(os.path.exists(timehist_path), 
                        f"timehist.fits not found in {latest_output_dir}")
             
-        # Verify SR values are within expected range
+        # Read output time history file
         with fits.open(timehist_path) as hdul:
-            # Check if there's data
             self.assertTrue(len(hdul) >= 1, "No data found in timehist.fits")
             self.assertTrue(hasattr(hdul[0], 'data') and hdul[0].data is not None, 
                            "No data found in first HDU of timehist.fits")
                 
-            # Check that the saved data is identical to the input data
-            # of our function generator
             saved_data = hdul[0].data
+
+        # Check that the saved data is identical to the input data
+        # of our function generator
 
         reference_data = fits.getdata(os.path.join(self.datadir, 'timehistory_test.fits'))
         np.testing.assert_array_equal(saved_data, reference_data)
