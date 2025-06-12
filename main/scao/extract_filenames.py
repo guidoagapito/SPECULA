@@ -50,14 +50,6 @@ def extract_tagged_data(yaml_file_path):
 
     return extracted
 
-def param_type(classname, parname):
-    
-    klass = import_class(classname)
-    args = inspect.getfullargspec(getattr(klass, '__init__')).args
-    hints = get_type_hints(klass)
-    partype = hints[parname]
-    return partype
-
 
 def main():
     parser = argparse.ArgumentParser(description="Extract specific keys and class values from a YAML file.")
