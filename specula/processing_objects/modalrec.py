@@ -158,7 +158,7 @@ class Modalrec(BaseProcessingObj):
             if slopes is not None:
                 slopes_time = slopes.generation_time
             else:
-                slopes_time = slopes_list[0].generaton_time
+                slopes_time = slopes_list[0].generation_time
 
             if slopes_time != self.current_time:
                 return
