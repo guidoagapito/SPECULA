@@ -44,8 +44,8 @@ class ModalAnalysis(BaseProcessingObj):
                                                  xp=self.xp, dtype=self.dtype)
             else:
                 raise ValueError(f'Invalid ifunc type {type_str}')
-
-            ifunc = IFunc(ifunc, mask=mask, nmodes=nmodes)
+            
+            ifunc = IFunc(ifunc, mask=mask, nmodes=nmodes, target_device_idx=self.target_device_idx)
             self.phase2modes = ifunc.inverse()
         elif ifunc is None and ifunc_inv is not None:
             # Use ifunc_inv directly, don't attempt to call inverse() on None

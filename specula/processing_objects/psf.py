@@ -54,10 +54,10 @@ class PSF(BaseProcessingObj):
 
         self.start_time = start_time
 
-        self.sr = BaseValue()
-        self.int_sr = BaseValue()
-        self.psf = BaseValue()
-        self.int_psf = BaseValue()
+        self.sr = BaseValue(target_device_idx=self.target_device_idx)
+        self.int_sr = BaseValue(target_device_idx=self.target_device_idx)
+        self.psf = BaseValue(target_device_idx=self.target_device_idx)
+        self.int_psf = BaseValue(target_device_idx=self.target_device_idx)
         self.ref = None
         self.count = 0
         self.first = True
@@ -75,7 +75,7 @@ class PSF(BaseProcessingObj):
         self.int_sr.value = 0
 
         self.out_size = [int(np.around(dim * self.nd/2)*2) for dim in in_ef.size]
-        self.ref = Intensity(self.out_size[0], self.out_size[1])
+        self.ref = Intensity(self.out_size[0], self.out_size[1], target_device_idx=self.target_device_idx)
 
     def calc_psf_sampling(pixel_pupil: int, pixel_pitch: float, wavelength_nm: float, psf_pixel_size_mas: float):
         """

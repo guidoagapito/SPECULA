@@ -31,7 +31,7 @@ class DataSource(BaseProcessingObj):
             if self.obj_type[k] not in ['BaseValue', 'BaseDataObj']:
                 self.outputs[k] = import_class(self.obj_type[k]).from_header(self.headers[k])
             else:
-                self.outputs[k] = BaseValue()
+                self.outputs[k] = BaseValue(target_device_idx=self.target_device_idx)
 
     def loadFromFile(self, name):
         if name in self.items:
