@@ -164,7 +164,8 @@ class IFunc(BaseDataObj):
             self._influence_function = self._influence_function[idx_modes, :]
         else:
             self._influence_function = self._influence_function[start_mode:nmodes, :]
-      
+    
+    @staticmethod
     def restore(filename, target_device_idx=None, exten=1):
         with fits.open(filename) as hdul:
             ifunc = hdul[exten].data.T
