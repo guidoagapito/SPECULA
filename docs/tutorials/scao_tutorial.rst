@@ -551,13 +551,13 @@ Create ``calib_subaps.yml`` to measure the subaperture geometry:
      class: 'ShSubapCalibrator'
      subap_on_diameter: 40                   # 40×40 subapertures
      output_tag:        'tutorial_subaps'    # Output file tag
-     energy_th:         0.25                 # 25% energy threshold
+     energy_th:         0.5                  # 50% energy threshold
      inputs:
        in_i: 'sh.out_i'                     # WFS intensity input
    
    # Short calibration run
    main_override:
-     total_time: 0.010                       # 10ms (just measure pupil)
+     total_time: 0.001                       # 0ms (just measure pupil)
    
    # Clean pupil measurement (no atmosphere)
    prop_override:
@@ -742,6 +742,7 @@ Create ``calib_im_rec.yml``:
    detector_override:
      photon_noise:   false                   # No photon noise
      readout_noise:  false                   # No read noise
+     excess_noise:   false                   # No excess noise
    
    # Remove unnecessary objects during calibration
    remove: ['atmo', 'source_science', 'psf', 'modalrec', 'integrator', 'modal_analysis', 'data_store']
