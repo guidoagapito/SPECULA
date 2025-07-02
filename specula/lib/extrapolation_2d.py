@@ -101,9 +101,13 @@ def calculate_extrapolation_indices_coeffs(mask):
                     if coefficients_fixed[i, 2*dir_idx + 1] != 0:
                         coefficients_fixed[i, 2*dir_idx + 1] *= factor
 
-    return edge_pixels_fixed, reference_indices_fixed, coefficients_fixed
+    # Calculate valid indices here
+    valid_edge_mask = (edge_pixels_fixed >= 0) & ~np.isnan(coefficients_fixed[:, 0])
+    valid_indices = np.where(valid_edge_mask)[0]
 
-def apply_extrapolation(data, edge_pixels, reference_indices, coefficients, xp=np):
+    return edge_pixels_fixed, reference_indices_fixed, coefficients_fixed, valid_indices
+
+def apply_extrapolation(data, edge_pixels, reference_indices, coefficients, valid_indices, out=None, xp=np):
     """
     Applies linear extrapolation to edge pixels using precalculated indices and coefficients.
 
@@ -111,35 +115,48 @@ def apply_extrapolation(data, edge_pixels, reference_indices, coefficients, xp=n
         data (ndarray): Input array to extrapolate.
         edge_pixels (ndarray): Linear indices of edge pixels to extrapolate.
         reference_indices (ndarray): Indices of reference pixels.
-        coefficients (ndarray): Coefficients for linear extrapolation.
+        coefficients (ndarray): Coefficients for linear extrapolation.ù
+        valid_indices (ndarray): Indices of valid edge pixels.
         xp (np): NumPy or CuPy module for array operations.
 
     Returns:
         ndarray: Array with extrapolated pixels.
     """
-    # Create a copy of the input array
-    result = data.copy()
-    flat_result = result.ravel()
+    if out is None:
+        out = data.copy()
+    flat_out = out.ravel()
     flat_data = data.ravel()
 
-    # Mask for valid coefficients (not NaN in the first column)
-    valid_edge_mask = (edge_pixels >= 0) & ~xp.isnan(coefficients[:, 0])
-    valid_indices = xp.where(valid_edge_mask)[0]
+    # Vectorized extrapolation for valid edge pixels
+    if len(valid_indices) > 0:
 
-    # Iterate over each valid edge pixel
-    for i in valid_indices:
-        edge_idx = edge_pixels[i]
-        # Initialize the extrapolated value
-        extrap_value = 0.0
+        edge_pixels = xp.asarray(edge_pixels)
+        reference_indices = xp.asarray(reference_indices)
+        coefficients = xp.asarray(coefficients)
+        valid_indices = xp.asarray(valid_indices)
 
-        # Sum contributions from all references
-        for j in range(reference_indices.shape[1]):
-            ref_idx = reference_indices[i, j]
-            if ref_idx >= 0:  # If the index is valid
-                contrib = coefficients[i, j] * flat_data[ref_idx]
-                extrap_value += contrib
+        # Extract valid edge pixels, reference indices, and coefficients
+        valid_edge_pixels = edge_pixels[valid_indices]
+        valid_ref_indices = reference_indices[valid_indices]
+        valid_coeffs = coefficients[valid_indices]
 
-        # Assign the extrapolated value
-        flat_result[edge_idx] = extrap_value
+        # Create a mask for valid reference indices (>= 0)
+        valid_ref_mask = valid_ref_indices >= 0
 
-    return result
+        # Replace invalid indices with 0 to avoid indexing errors
+        safe_ref_indices = xp.where(valid_ref_mask, valid_ref_indices, 0)
+
+        # Get data values for all reference indices at once
+        ref_data = flat_data[safe_ref_indices]  # Shape: (n_valid_edges, 8)
+
+        # Zero out contributions from invalid references
+        masked_coeffs = xp.where(valid_ref_mask, valid_coeffs, 0.0)
+
+        # Compute all contributions at once and sum across reference positions
+        contributions = masked_coeffs * ref_data  # Element-wise multiplication
+        extrap_values = xp.sum(contributions, axis=1)  # Sum across reference positions
+
+        # Assign extrapolated values to edge pixels
+        flat_out[valid_edge_pixels] = extrap_values
+
+    return out
