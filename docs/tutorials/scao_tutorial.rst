@@ -64,6 +64,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
   from specula.data_objects.ifunc import IFunc
   from specula.data_objects.ifunc_inv import IFuncInv
   from specula.data_objects.m2c import M2C
+  from specula import cpuArray
 
   def compute_and_save_influence_functions():
       """
@@ -194,13 +195,17 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
         print("\nGenerating visualization...")
 
         plt.figure(figsize=(10, 6))
-        plt.semilogy(singular_values['S1'], 'o-', label='IF Covariance')
-        plt.semilogy(singular_values['S2'], 'o-', label='Turbulence Covariance')
+        plt.semilogy(cpuArray(singular_values['S1']), 'o-', label='IF Covariance')
+        plt.semilogy(cpuArray(singular_values['S2']), 'o-', label='Turbulence Covariance')
         plt.xlabel('Mode number')
         plt.ylabel('Singular value')
         plt.title('Singular values of covariance matrices')
         plt.legend()
         plt.grid(True)
+
+        # move to CPU / numpy for plotting if required
+        kl_basis = cpuArray(kl_basis)
+        pupil_mask = cpuArray(pupil_mask)
 
         # Plot some modes
         max_modes = min(16, kl_basis.shape[0])
@@ -242,12 +247,12 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
       
       try:
           # Test IFunc loading
-          loaded_ifunc = IFunc.restore('calibration/tutorial_ifunc.fits', target_device_idx=specula.current_device_idx)
+          loaded_ifunc = IFunc.restore('calibration/tutorial_ifunc.fits')
           assert loaded_ifunc.influence_function.shape == influence_functions.shape
           print("✓ IFunc loading test passed")
           
           # Test M2C loading  
-          loaded_m2c = M2C.restore('calibration/tutorial_m2c.fits', target_device_idx=specula.current_device_idx)
+          loaded_m2c = M2C.restore('calibration/tutorial_m2c.fits')
           assert loaded_m2c.m2c.shape == kl_basis.shape
           print("✓ M2C loading test passed")
           
