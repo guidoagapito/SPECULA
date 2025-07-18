@@ -216,7 +216,7 @@ def main_simul(yml_files: list,
     if mpi:
         try:
             from mpi4py import MPI
-            import mpi4py.pickle as pkl5
+            from mpi4py.util import pkl5
             print("mpi4py import successfull. Installed version is:", MPI.Get_version())
         except ImportError:
             print("mpi4py import failed.")
@@ -240,7 +240,7 @@ def main_simul(yml_files: list,
     else:
         target_device_idx = target
 
-    init(target_device_idx, precision=1)#, rank=rank, comm=comm, mpi_dbg=mpidbg)
+    init(target_device_idx, precision=1, rank=rank, comm=comm, mpi_dbg=mpidbg)
     from specula.simul import Simul
 
     if profile:

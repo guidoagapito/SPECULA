@@ -72,8 +72,8 @@ class LoopControl(BaseTimeObj):
             # all the objects having this trigger order could be remote            
             for element in self._trigger_lists[i]:
                 element.send_outputs()
-            if process_comm is not None:
-                process_comm.barrier()
+            #if process_comm is not None:
+            #    process_comm.barrier()
 
         if process_comm is not None:
             process_comm.barrier()
@@ -128,6 +128,7 @@ class LoopControl(BaseTimeObj):
 
         for i in sorted(self._trigger_lists.keys()): 
             # all the objects having this trigger order could be remote
+            if MPI_DBG: print(process_rank, 'before check_ready', flush=True)                
             for element in self._trigger_lists[i]:
                 try:
                     element.check_ready(self._t)
@@ -138,6 +139,7 @@ class LoopControl(BaseTimeObj):
             # if MPI_DBG: print(process_rank, 'at barrier check_ready', flush=True)                
             # if MPI_DBG: print(process_rank, 'after barrier check_ready', flush=True)
 
+            if MPI_DBG: print(process_rank, 'before trigger', flush=True)                
             for element in self._trigger_lists[i]:
                 try:
                     element.trigger()
@@ -145,6 +147,7 @@ class LoopControl(BaseTimeObj):
                     print('Exception in', element.name, flush=True)
                     raise
 
+            if MPI_DBG: print(process_rank, 'before post_trigger', flush=True)                
             for element in self._trigger_lists[i]:
                 try:
                     element.post_trigger()
@@ -153,8 +156,8 @@ class LoopControl(BaseTimeObj):
                     print('Exception in', element.name, flush=True)
                     raise
 
-            if process_comm is not None:
-                process_comm.barrier()
+#            if process_comm is not None:
+#                process_comm.barrier()
 
         if self._stop_on_data and self._stop_on_data.generation_time == self._t:
             return
@@ -188,8 +191,8 @@ class LoopControl(BaseTimeObj):
                 except:
                     print('Exception in', element.name)
                     raise
-            if process_comm is not None:
-                process_comm.barrier()
+#            if process_comm is not None:
+#                process_comm.barrier()
 
         if self._profiling:
             self.stop_profiling()
