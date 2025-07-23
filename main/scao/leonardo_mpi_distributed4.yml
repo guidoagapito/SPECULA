@@ -11,8 +11,8 @@ pupilstop_override: { target_rank: 0 }
 ifunc_m4_override: { target_device_idx: 0, target_rank: 0 }
 m2c_m4_override: { target_device_idx: 0, target_rank: 0 }
 dm1_override: { target_device_idx: 0, target_rank: 0 }
-dm2_override: { target_device_idx: 0, target_rank: 0 }
-dm3_override: { target_device_idx: 0, target_rank: 0 }
+dm2_override: { target_device_idx: 1, target_rank: 0 }
+dm3_override: { target_device_idx: 2, target_rank: 0 }
 
 sh_lgs1_override: { class: 'DistributedSH', n_slices: 4, target_device_idx: 0, target_rank: 1 }
 sh_lgs2_override: { class: 'DistributedSH', n_slices: 4, target_device_idx: 0, target_rank: 2 }
@@ -48,16 +48,16 @@ slopec_ngs2_override: { target_device_idx: 0, target_rank: 0 }
 slopec_ngs3_override: { target_device_idx: 0, target_rank: 0 }
 
 sh_ref1_override: { target_device_idx: 0, target_rank: 0 }
-sh_ref2_override: { target_device_idx: 0, target_rank: 0 }
-sh_ref3_override: { target_device_idx: 0, target_rank: 0 }
+sh_ref2_override: { target_device_idx: 1, target_rank: 0 }
+sh_ref3_override: { target_device_idx: 2, target_rank: 0 }
 
 detector_ref1_override: { target_device_idx: 0, target_rank: 0 }
-detector_ref2_override: { target_device_idx: 0, target_rank: 0 }
-detector_ref3_override: { target_device_idx: 0, target_rank: 0 }
+detector_ref2_override: { target_device_idx: 1, target_rank: 0 }
+detector_ref3_override: { target_device_idx: 2, target_rank: 0 }
 
 slopec_ref1_override: { target_device_idx: 0, target_rank: 0 }
-slopec_ref2_override: { target_device_idx: 0, target_rank: 0 }
-slopec_ref3_override: { target_device_idx: 0, target_rank: 0 }
+slopec_ref2_override: { target_device_idx: 1, target_rank: 0 }
+slopec_ref3_override: { target_device_idx: 2, target_rank: 0 }
 
 subtract_ref_override: { value2_remap_data: 'ref_input_index2.fits' }
 
