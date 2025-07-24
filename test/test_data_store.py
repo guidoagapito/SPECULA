@@ -15,12 +15,12 @@ from test.specula_testlib import cpu_and_gpu
 
 
 class TestDataStore(unittest.TestCase):
-   
+
     def setUp(self):
         self.tmp_dir = os.path.join(os.path.dirname(__file__), 'tmp_data_store')
         if not os.path.exists(self.tmp_dir):
             os.mkdir(self.tmp_dir)
-    
+
     def tearDown(self):
        shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
