@@ -1,4 +1,5 @@
 from specula import fuse, show_in_profiler, RAD2ASEC
+from specula.lib.interp2d import Interp2D 
 
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_value import BaseValue
@@ -39,13 +40,15 @@ class ModulatedPyramid(BaseProcessingObj):
                  pup_margin: int = 2,
                  fft_res: float = 3.0,
                  fp_obs: float = None,
-                 pup_shifts = (0.0, 0.0),
+                 #pup_shifts = (0.0, 0.0),
                  pyr_tlt_coeff: float = None,
                  pyr_edge_def_ld: float = 0.0,
                  pyr_tip_def_ld: float = 0.0,
                  pyr_tip_maya_ld: float = 0.0,
                  min_pup_dist: float = None,
                  rotAnglePhInDeg: float = 0.0,
+                 xShiftPhInPixel: float = 0.0,    # same as SH
+                 yShiftPhInPixel: float = 0.0,    # same as SH
                  target_device_idx: int = None,
                  precision: int = None
                 ):
@@ -54,8 +57,7 @@ class ModulatedPyramid(BaseProcessingObj):
         self.simul_params = simul_params
         self.pixel_pupil = self.simul_params.pixel_pupil
         self.pixel_pitch = self.simul_params.pixel_pitch
-       
-        
+
         result = self.calc_geometry(self.pixel_pupil, self.pixel_pitch, wavelengthInNm, fov, pup_diam, ccd_side=output_resolution,
                                             fov_errinf=fov_errinf, fov_errsup=fov_errsup, pup_dist=pup_dist, pup_margin=pup_margin,
                                             fft_res=fft_res, min_pup_dist=min_pup_dist)
@@ -88,7 +90,13 @@ class ModulatedPyramid(BaseProcessingObj):
         self.pyr_tip_def_ld = pyr_tip_def_ld
         self.pyr_tip_maya_ld = pyr_tip_maya_ld
         self.rotAnglePhInDeg = rotAnglePhInDeg
-        self.pup_shifts = pup_shifts
+        self.xShiftPhInPixel = xShiftPhInPixel
+        self.yShiftPhInPixel = yShiftPhInPixel
+
+        # interpolation settings
+        self.interp = None
+        self._do_interpolation = False
+        self._wf_interpolated = None
 
         min_mod_step = round(max([1., mod_amp / 2. * 8.])) * 2.
         if mod_step is None:
@@ -374,7 +382,9 @@ class ModulatedPyramid(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
+        # Update input reference
         self.in_ef = self.local_inputs['in_ef']
+                
         #if self.extended_source_in_on and self.extSourcePsf is not None:
         #    if self.extSourcePsf.generation_time == self.current_time:
         #        if self.xp.sum(self.xp.abs(self.extSourcePsf.value)) > 0:
@@ -383,19 +393,18 @@ class ModulatedPyramid(BaseProcessingObj):
         #            self.ffv = self.flux_factor_vector[:, self.xp.newaxis, self.xp.newaxis]
         #            self.factor = 1.0 / self.xp.sum(self.flux_factor_vector)
 
-        #if self.rotAnglePhInDeg != 0:
-        #    self.ef_size = self.in_ef.size
-        #    A = (self.ROT_AND_SHIFT_IMAGE(self.in_ef.A, self.rotAnglePhInDeg, [0, 0], 1, use_interpolate=True) >= 0.5).astype(self.xp.uint8)
-        #    phi_at_lambda = self.ROT_AND_SHIFT_IMAGE(self.in_ef.phi_at_lambda(self.wavelength_in_nm), self.rotAnglePhInDeg, [0, 0], 1, use_interpolate=True)
-        #    self.ef[:] = self.xp.complex64(self.xp.rebin(A, (self.ef_size[0] * self.fov_res, self.ef_size[1] * self.fov_res)) + 
-        #                      self.xp.rebin(phi_at_lambda, (self.ef_size[0] * self.fov_res, self.ef_size[1] * self.fov_res)) * 1j)
-        #else:
-        #if self.fov_res != 1:
-        #self.ef[:] = self.xp.complex64(self.xp.rebin(self.in_ef.A, (self.ef_size[0] * self.fov_res, self.ef_size[1] * self.fov_res)) + 
-        #                        self.xp.rebin(self.in_ef.phi_at_lambda(self.wavelength_in_nm), (self.ef_size[0] * self.fov_res, self.ef_size[1] * self.fov_res)) * 1j)
-        #else:
+        # Apply interpolation if needed (like SH)
+        if self._do_interpolation:
+            # Interpolate amplitude and phase separately
+            self.interp.interpolate(self.in_ef.A, out=self._wf_interpolated.A)
+            self.interp.interpolate(self.in_ef.phaseInNm, out=self._wf_interpolated.phaseInNm)
 
-        self.in_ef.ef_at_lambda(self.wavelength_in_nm, out=self.ef)
+            # Copy other properties
+            self._wf_interpolated.S0 = self.in_ef.S0
+            self._wf_interpolated.pixel_pitch = self.in_ef.pixel_pitch
+
+        # Always use self._wf_interpolated for calculations (like SH uses self._wf1)
+        self._wf_interpolated.ef_at_lambda(self.wavelength_in_nm, out=self.ef)
 
     def trigger_code(self):
         u_tlt_const = self.ef * self.tlt_f
@@ -423,7 +432,8 @@ class ModulatedPyramid(BaseProcessingObj):
     def post_trigger(self):
         super().post_trigger()
 
-        phot = self.in_ef.S0 * self.xp.sum(self.in_ef.A) * (self.in_ef.pixel_pitch ** 2)
+        # Always use the working field (like SH always uses self._wf1)
+        phot = self._wf_interpolated.S0 * self.xp.sum(self._wf_interpolated.A) * (self._wf_interpolated.pixel_pitch ** 2)
         self.pup_pyr_tot *= (phot / self.xp.sum(self.pup_pyr_tot)) * self.transmission
         
 #        if phot == 0: slows down?
@@ -458,11 +468,46 @@ class ModulatedPyramid(BaseProcessingObj):
         self.psf_bfm.generation_time = self.current_time
         self.out_transmission.value = self.transmission
         self.out_transmission.generation_time = self.current_time
-    
+
     def setup(self):
         super().setup()
 
+        # Get input electric field
+        in_ef = self.local_inputs['in_ef']
+
+        # Determine if interpolation is needed (like in SH)
+        if self.rotAnglePhInDeg != 0 or self.xShiftPhInPixel != 0 or self.yShiftPhInPixel != 0:
+            self._do_interpolation = True
+
+            # Create the interpolated field (like SH does with self._wf1)
+            self._wf_interpolated = ElectricField(
+                self.fft_sampling,
+                self.fft_sampling,
+                in_ef.pixel_pitch,
+                target_device_idx=self.target_device_idx,
+                precision=self.precision
+            )
+
+            # Create the interpolator (like in SH)
+            self.interp = Interp2D(
+                in_ef.size,
+                (self.fft_sampling, self.fft_sampling),
+                self.rotAnglePhInDeg,
+                self.xShiftPhInPixel,
+                self.yShiftPhInPixel,
+                dtype=self.dtype,
+                xp=self.xp
+            )
+        else:
+            self._do_interpolation = False
+            # Use the original field directly (like SH does)
+            self._wf_interpolated = in_ef
+
+        # Store reference to input field (like SH does)
+        self.in_ef = in_ef
+
         super().build_stream()
+
         if not self.extended_source_in_on:
             if self.mod_steps < self.xp.around(2 * self.xp.pi * self.mod_amp):
                 raise Exception(f'Number of modulation steps is too small ({self.mod_steps}), it must be at least 2*pi times the modulation amplitude ({self.xp.around(2 * self.xp.pi * self.mod_amp)})!')
