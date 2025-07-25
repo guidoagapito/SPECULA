@@ -3,7 +3,7 @@ import os
 import shutil
 import glob
 import specula
-specula.init(0)
+specula.init(0,precision=1)
 
 from specula import np
 from specula.simul import Simul
@@ -20,6 +20,7 @@ class TestPyramidSimulation(unittest.TestCase):
         os.makedirs(os.path.join(self.calibdir, 'phasescreens'), exist_ok=True)
         self.phasescreen_path = os.path.join(self.calibdir, 'phasescreens',
                                    'ps_seed1_dim1024_pixpit0.050_L025.0000_single.fits')
+        
         # Get current working directory
         self.cwd = os.getcwd()
 
