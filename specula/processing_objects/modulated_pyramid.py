@@ -100,6 +100,7 @@ class ModulatedPyramid(BaseProcessingObj):
         self._wf_interpolated = None
         self.pup_shift_interp = None
         self._do_pup_shift = False
+        self._pup_pyr_interpolated = None
 
         min_mod_step = round(max([1., mod_amp / 2. * 8.])) * 2.
         if mod_step is None:
@@ -445,9 +446,9 @@ class ModulatedPyramid(BaseProcessingObj):
         # Apply pupil shifts using the dedicated interpolator
         # Note: this is a static shift, not a time-varying one as in PASSATA
         if self._do_pup_shift:
-            self.pup_shift_interp.interpolate(self.pup_pyr_tot, out=self.pup_pyr_tot)
+            self.pup_shift_interp.interpolate(self.pup_pyr_tot, out=self._pup_pyr_interpolated)
 
-        ccd_internal = toccd(self.pup_pyr_tot, (self.toccd_side, self.toccd_side), xp=self.xp)
+        ccd_internal = toccd(self._pup_pyr_interpolated, (self.toccd_side, self.toccd_side), xp=self.xp)
 
         if self.final_ccd_side > self.toccd_side:
             delta = (self.final_ccd_side - self.toccd_side) // 2
@@ -508,6 +509,9 @@ class ModulatedPyramid(BaseProcessingObj):
             pup_shiftx = float(self.pup_shifts[0]) * imscale
             pup_shifty = float(self.pup_shifts[1]) * imscale
 
+            # Create the interpolated pupil pyramid array
+            self._pup_pyr_interpolated = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
+
             self.pup_shift_interp = Interp2D(
                 (self.fft_totsize, self.fft_totsize),     # Input shape
                 (self.fft_totsize, self.fft_totsize),     # Output shape (same)
@@ -520,6 +524,8 @@ class ModulatedPyramid(BaseProcessingObj):
             self._do_pup_shift = True
         else:
             self._do_pup_shift = False
+            # Use the original pupil pyramid array directly
+            self._pup_pyr_interpolated = self.pup_pyr_tot
 
         # Store reference to input field (like SH does)
         self.in_ef = in_ef
