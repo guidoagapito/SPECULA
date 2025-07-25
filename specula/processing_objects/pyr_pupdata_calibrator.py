@@ -141,15 +141,13 @@ class PyrPupdataCalibrator(BaseProcessingObj):
         y, x = self.xp.mgrid[0:h, 0:w]
         r = self.xp.sqrt((x - center[0])**2 + (y - center[1])**2)
 
-        profile = []
+        profile = self.xp.zeros(n_bins)
         for i in range(n_bins):
             r_inner = (i / n_bins) * max_radius
             r_outer = ((i + 1) / n_bins) * max_radius
             mask = (r >= r_inner) & (r < r_outer)
             if self.xp.any(mask):
-                profile.append(self.xp.mean(image[mask]))
-            else:
-                profile.append(0)
+                profile[i] = self.xp.mean(image[mask])
 
         return self.xp.array(profile)
 
