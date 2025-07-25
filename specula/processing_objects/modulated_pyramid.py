@@ -40,7 +40,7 @@ class ModulatedPyramid(BaseProcessingObj):
                  pup_margin: int = 2,
                  fft_res: float = 3.0,
                  fp_obs: float = None,
-                 #pup_shifts = (0.0, 0.0),
+                 pup_shifts = (0.0, 0.0),
                  pyr_tlt_coeff: float = None,
                  pyr_edge_def_ld: float = 0.0,
                  pyr_tip_def_ld: float = 0.0,
@@ -92,6 +92,7 @@ class ModulatedPyramid(BaseProcessingObj):
         self.rotAnglePhInDeg = rotAnglePhInDeg
         self.xShiftPhInPixel = xShiftPhInPixel
         self.yShiftPhInPixel = yShiftPhInPixel
+        self.pup_shifts = pup_shifts
 
         # interpolation settings
         self.interp = None
@@ -438,17 +439,12 @@ class ModulatedPyramid(BaseProcessingObj):
         
 #        if phot == 0: slows down?
 #            print('WARNING: total intensity at PYR entrance is zero')
-        # TODO handle shifts as an input from a func generator (for time-varying shifts)
-        #if self.pup_shifts is not None and self.pup_shifts != (0.0, 0.0):
-        #    image = self.xp.pad(self.pup_pyr_tot, 1, mode='constant')
-        #    imscale = float(self.fft_totsize) / float(self.toccd_side)
-#            pup_shiftx = self.pup_shifts[0] * imscale
-#            pup_shifty = self.pup_shifts[1] * imscale
 
-#            image = self.interpolate(image, self.xp.arange(self.fft_totsize + 2) - pup_shiftx, 
-#                                     self.xp.arange(self.fft_totsize + 2) - pup_shifty, grid=True, missing=0)
-#            self.pup_pyr_tot = image[1:-1, 1:-1]
-        
+        # Apply pupil shifts using the dedicated interpolator
+        # Note: this is a static shift, not a time-varying one as in PASSATA
+        if self._do_pup_shift:
+            self.pup_shift_interp.interpolate(self.pup_pyr_tot, out=self.pup_pyr_tot)
+
         ccd_internal = toccd(self.pup_pyr_tot, (self.toccd_side, self.toccd_side), xp=self.xp)
 
         if self.final_ccd_side > self.toccd_side:
@@ -502,6 +498,26 @@ class ModulatedPyramid(BaseProcessingObj):
             self._do_interpolation = False
             # Use the original field directly (like SH does)
             self._wf_interpolated = in_ef
+
+        # Create separate interpolator for pup_shifts if needed
+        if self.pup_shifts != (0.0, 0.0):
+            # Calculate scaling factor from FFT size to CCD size
+            imscale = float(self.fft_totsize) / float(self.toccd_side)
+            pup_shiftx = float(self.pup_shifts[0]) * imscale
+            pup_shifty = float(self.pup_shifts[1]) * imscale
+
+            self.pup_shift_interp = Interp2D(
+                (self.fft_totsize, self.fft_totsize),     # Input shape
+                (self.fft_totsize, self.fft_totsize),     # Output shape (same)
+                rotInDeg=0,                               # No rotation
+                rowShiftInPixels=pup_shifty,              # Y shift
+                colShiftInPixels=pup_shiftx,              # X shift
+                dtype=self.dtype,
+                xp=self.xp
+            )
+            self._do_pup_shift = True
+        else:
+            self._do_pup_shift = False
 
         # Store reference to input field (like SH does)
         self.in_ef = in_ef
