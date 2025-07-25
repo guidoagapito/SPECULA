@@ -3,7 +3,7 @@ import os
 import shutil
 import glob
 import specula
-specula.init(-1,precision=1)  # Default target device
+specula.init(0)
 
 from specula import np
 from specula.simul import Simul
