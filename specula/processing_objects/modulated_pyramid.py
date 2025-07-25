@@ -1,4 +1,5 @@
-from specula import fuse, show_in_profiler, RAD2ASEC
+from specula import cpuArray, fuse, show_in_profiler, RAD2ASEC
+from specula.lib.extrapolation_2d import calculate_extrapolation_indices_coeffs, apply_extrapolation
 from specula.lib.interp2d import Interp2D 
 
 from specula.base_processing_obj import BaseProcessingObj
@@ -98,6 +99,10 @@ class ModulatedPyramid(BaseProcessingObj):
         self.interp = None
         self._do_interpolation = False
         self._wf_interpolated = None
+        self._edge_pixels = None
+        self._reference_indices = None
+        self._coefficients = None
+        self._valid_indices = None
         self.pup_shift_interp = None
         self._do_pup_shift = False
         self._pup_pyr_interpolated = None
@@ -399,9 +404,33 @@ class ModulatedPyramid(BaseProcessingObj):
 
         # Apply interpolation if needed (like SH)
         if self._do_interpolation:
+
+            if self._edge_pixels is None:
+                # Compute once indices and coefficients
+                self._edge_pixels, self._reference_indices, self._coefficients, self._valid_indices = calculate_extrapolation_indices_coeffs(
+                    cpuArray(self.in_ef.A)
+                )
+
+                # convert to xp
+                self._edge_pixels = self.to_xp(self._edge_pixels)
+                self._reference_indices = self.to_xp(self._reference_indices)
+                self._coefficients = self.to_xp(self._coefficients)
+                self._valid_indices = self.to_xp(self._valid_indices)
+
+            self.phase_extrapolated[:] = self.in_ef.phaseInNm
+            _ = apply_extrapolation(
+                self.in_ef.phaseInNm,
+                self._edge_pixels,
+                self._reference_indices,
+                self._coefficients,
+                self._valid_indices,
+                out=self.phase_extrapolated,
+                xp=self.xp
+            )
+
             # Interpolate amplitude and phase separately
             self.interp.interpolate(self.in_ef.A, out=self._wf_interpolated.A)
-            self.interp.interpolate(self.in_ef.phaseInNm, out=self._wf_interpolated.phaseInNm)
+            self.interp.interpolate(self.phase_extrapolated, out=self._wf_interpolated.phaseInNm)
 
             # Copy other properties
             self._wf_interpolated.S0 = self.in_ef.S0
@@ -529,6 +558,8 @@ class ModulatedPyramid(BaseProcessingObj):
 
         # Store reference to input field (like SH does)
         self.in_ef = in_ef
+        if self._do_interpolation:
+            self.phase_extrapolated = in_ef.phaseInNm.copy()
 
         super().build_stream()
 
