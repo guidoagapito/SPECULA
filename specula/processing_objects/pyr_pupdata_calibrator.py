@@ -74,7 +74,7 @@ class PyrPupdataCalibrator(BaseProcessingObj):
         ]
 
         # Quadrant offsets
-        offsets = [[cx-dim, cy-dim], [cx, cy-dim], [cx-dim, cy], [cx, cy]]
+        offsets = self.xp.array([[cx-dim, cy-dim], [cx, cy-dim], [cx-dim, cy], [cx, cy]])
 
         centers = self.xp.zeros((4, 2))
         radii = self.xp.zeros(4)
