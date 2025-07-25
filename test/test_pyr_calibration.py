@@ -43,7 +43,7 @@ class TestPyrPupdataCalibration(unittest.TestCase):
         self.assertTrue(os.path.exists(self.pupdata_ref_path), f"Reference file {self.pupdata_ref_path} does not exist")
 
         # Run the simulation for calibration
-        yml_files = ['params_scao_pyr_test.yml','calib_scao_pyr_test_pupdata.yml']
+        yml_files = ['params_scao_pyr_test.yml','params_scao_pyr_test_pupdata.yml']
         simul = Simul(*yml_files)
         simul.run()
 
@@ -71,7 +71,7 @@ class TestPyrPupdataCalibration(unittest.TestCase):
         os.chdir(os.path.dirname(__file__))
 
         # Run the simulation for calibration
-        yml_files = ['params_scao_pyr_test.yml','calib_scao_pyr_test_pupdata.yml']
+        yml_files = ['params_scao_pyr_test.yml','params_scao_pyr_test_pupdata.yml']
         simul = Simul(*yml_files)
         simul.run()
 

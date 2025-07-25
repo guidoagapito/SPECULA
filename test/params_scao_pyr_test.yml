@@ -136,6 +136,6 @@ psf:
 
 data_store:
   class:             'DataStore'
-  store_dir:         './output'             # Data result directory: 'store_dir'/TN/
+  store_dir:         './data'             # Data result directory: 'store_dir'/TN/
   inputs:    
     input_list: [ 'res_ef-prop.out_on_axis_source_ef']
