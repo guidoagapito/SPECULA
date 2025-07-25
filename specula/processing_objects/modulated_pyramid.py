@@ -400,8 +400,6 @@ class ModulatedPyramid(BaseProcessingObj):
         # Apply interpolation if needed (like SH)
         if self._do_interpolation:
             # Interpolate amplitude and phase separately
-            if self.in_ef.A.dtype != self.dtype:
-                self.in_ef.A = self.xp.asarray(self.in_ef.A, dtype=self.dtype)
             self.interp.interpolate(self.in_ef.A, out=self._wf_interpolated.A)
             self.interp.interpolate(self.in_ef.phaseInNm, out=self._wf_interpolated.phaseInNm)
 
