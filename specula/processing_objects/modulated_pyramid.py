@@ -400,6 +400,8 @@ class ModulatedPyramid(BaseProcessingObj):
         # Apply interpolation if needed (like SH)
         if self._do_interpolation:
             # Interpolate amplitude and phase separately
+            if self.in_ef.A.dtype != self.dtype:
+                self.in_ef.A = self.xp.asarray(self.in_ef.A, dtype=self.dtype)
             self.interp.interpolate(self.in_ef.A, out=self._wf_interpolated.A)
             self.interp.interpolate(self.in_ef.phaseInNm, out=self._wf_interpolated.phaseInNm)
 
@@ -480,8 +482,8 @@ class ModulatedPyramid(BaseProcessingObj):
 
             # Create the interpolated field (like SH does with self._wf1)
             self._wf_interpolated = ElectricField(
-                self.fft_sampling,
-                self.fft_sampling,
+                in_ef.size[0],
+                in_ef.size[0],
                 in_ef.pixel_pitch,
                 target_device_idx=self.target_device_idx,
                 precision=self.precision
@@ -490,7 +492,7 @@ class ModulatedPyramid(BaseProcessingObj):
             # Create the interpolator (like in SH)
             self.interp = Interp2D(
                 in_ef.size,
-                (self.fft_sampling, self.fft_sampling),
+                in_ef.size,
                 self.rotAnglePhInDeg,
                 self.xShiftPhInPixel,
                 self.yShiftPhInPixel,
