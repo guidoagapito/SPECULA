@@ -2,7 +2,7 @@ import unittest
 import os
 import shutil
 import specula
-specula.init(-1, precision=1)
+specula.init(0)
 
 from specula.simul import Simul
 from astropy.io import fits
