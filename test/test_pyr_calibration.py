@@ -12,14 +12,15 @@ class TestPyrPupdataCalibration(unittest.TestCase):
     """Test Pyramid PupData calibration by comparing generated calibration files with reference ones"""
 
     def setUp(self):
-        self.testdir = os.path.dirname(__file__)
-        self.calibdir = os.path.join(self.testdir, 'calib')
-        self.datadir = os.path.join(self.testdir, 'data')
-        os.makedirs(self.calibdir, exist_ok=True)
-        os.makedirs(self.datadir, exist_ok=True)
+        self.calibdir = os.path.join(os.path.dirname(__file__), 'calib')
+        self.datadir = os.path.join(os.path.dirname(__file__), 'data')
+        
+        """Set up test by ensuring calibration directory exists"""
+        # Make sure the calib directory exists
+        os.makedirs(os.path.join(self.calibdir, 'pupils'), exist_ok=True)
 
         self.pupdata_ref_path = os.path.join(self.datadir, 'scao_pupdata_ref.fits')
-        self.pupdata_path = os.path.join(self.calibdir, 'scao_pupdata.fits')
+        self.pupdata_path = os.path.join(self.calibdir, 'pupils', 'scao_pupdata.fits')
 
         self._cleanFiles()
         self.cwd = os.getcwd()
@@ -35,16 +36,14 @@ class TestPyrPupdataCalibration(unittest.TestCase):
     def test_pyr_pupdata_calibration(self):
         """Test Pyramid PupData calibration by comparing generated calibration file with reference"""
 
-        os.chdir(self.testdir)
+        # Change to test directory
+        os.chdir(os.path.dirname(__file__))
 
         # Check if reference file exists
         self.assertTrue(os.path.exists(self.pupdata_ref_path), f"Reference file {self.pupdata_ref_path} does not exist")
 
         # Run the simulation for calibration
-        yml_files = [
-            os.path.join(self.testdir, '../main/scao/params_scao.yml'),
-            os.path.join(self.testdir, '../main/scao/calib_pyr_pupdata.yml')
-        ]
+        yml_files = ['params_scao_pyr_test.yml','calib_scao_pyr_test_pupdata.yml']
         simul = Simul(*yml_files)
         simul.run()
 
@@ -68,13 +67,11 @@ class TestPyrPupdataCalibration(unittest.TestCase):
     def test_create_reference_file(self):
         """Create reference file for Pyramid PupData calibration"""
 
-        os.chdir(self.testdir)
+        # Change to test directory
+        os.chdir(os.path.dirname(__file__))
 
         # Run the simulation for calibration
-        yml_files = [
-            os.path.join(self.testdir, '../main/scao/params_scao.yml'),
-            os.path.join(self.testdir, '../main/scao/calib_pyr_pupdata.yml')
-        ]
+        yml_files = ['params_scao_pyr_test.yml','calib_scao_pyr_test_pupdata.yml']
         simul = Simul(*yml_files)
         simul.run()
 
