@@ -98,6 +98,8 @@ class ModulatedPyramid(BaseProcessingObj):
         self.interp = None
         self._do_interpolation = False
         self._wf_interpolated = None
+        self.pup_shift_interp = None
+        self._do_pup_shift = False
 
         min_mod_step = round(max([1., mod_amp / 2. * 8.])) * 2.
         if mod_step is None:
