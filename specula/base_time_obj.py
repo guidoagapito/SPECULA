@@ -53,6 +53,7 @@ class BaseTimeObj:
             from cupyx.scipy.ndimage import shift as ndimage_shift
             from cupyx.scipy.ndimage import center_of_mass as ndimage_center_of_mass
             from cupyx.scipy.fft import ifft2 as scipy_ifft2
+            from cupyx.scipy.fft import idct, dct
             from cupyx.scipy.linalg import lu_factor, lu_solve
 
             self._target_device.use()
@@ -64,6 +65,7 @@ class BaseTimeObj:
             from scipy.ndimage import shift as ndimage_shift
             from scipy.ndimage import center_of_mass as ndimage_center_of_mass
             from scipy.fft import ifft2 as scipy_ifft2
+            from scipy.fftpack import idct, dct
             from scipy.linalg import lu_factor, lu_solve
             self.PerformanceWarning = None
 
@@ -73,6 +75,8 @@ class BaseTimeObj:
         self._lu_factor = lu_factor
         self._lu_solve = lu_solve
         self._scipy_ifft2 = scipy_ifft2
+        self.dct = dct
+        self.idct = idct
 
     def init_logging(self, level=None):
         name = getattr(self, 'name', None)
