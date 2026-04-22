@@ -11,61 +11,20 @@ from specula import process_rank
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_data_obj import BaseDataObj
 
+
 from specula.log import get_specula_logger
 from specula.loop_control import LoopControl
-from specula.lib.utils import import_class, get_type_hints, remove_suffix
+from specula.lib.utils import import_class, get_type_hints, remove_suffix, resolve_type
 from specula.calib_manager import CalibManager
 from specula.processing_objects.data_store import DataStore
 from specula.connections import InputList, InputValue
 
 import yaml
 import hashlib
+import matplotlib.pyplot as plt
 
 
 Output = namedtuple('Output', 'obj_name output_key delay ref input_name')
-UNION_ORIGINS = (typing.Union,) + ((types.UnionType,) if hasattr(types, 'UnionType') else ())
-
-
-def _resolve_dataobj_type(type_arg, owner_class):
-    """Resolve a concrete data-object class from a container type argument."""
-    if isinstance(type_arg, type):
-        return type_arg
-
-    ref_name = None
-    if isinstance(type_arg, typing.ForwardRef):
-        ref_name = type_arg.__forward_arg__
-    elif isinstance(type_arg, str):
-        ref_name = type_arg
-
-    if not ref_name:
-        return None
-
-    ref_name = ref_name.strip("'\"")
-    candidate_names = [ref_name]
-    if '.' in ref_name:
-        candidate_names.append(ref_name.rsplit('.', 1)[-1])
-
-    namespaces = []
-    init_method = getattr(owner_class, '__init__', None)
-    if init_method is not None:
-        namespaces.append(getattr(init_method, '__globals__', {}))
-    namespaces.append(vars(owner_class))
-
-    for namespace in namespaces:
-        for candidate_name in candidate_names:
-            candidate = namespace.get(candidate_name)
-            if isinstance(candidate, type):
-                return candidate
-
-    for candidate_name in candidate_names:
-        try:
-            candidate = import_class(candidate_name)
-        except (ImportError, AttributeError, ModuleNotFoundError):
-            continue
-        if isinstance(candidate, type):
-            return candidate
-
-    return None
 
 
 def computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name):
@@ -73,8 +32,6 @@ def computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name):
     rr = int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**6
     return rr
 
-
-import matplotlib.pyplot as plt
 
 mplcolors = plt.get_cmap("tab10").colors
 
@@ -456,33 +413,16 @@ class Simul():
                     elif not isinstance(value, (list, tuple)):
                         raise ValueError(f'Parameter {name} must be a list of tags')
                     elif parname in hints:
-                        partype = hints[parname]
-                        type_candidates = []
-                        union_origin = typing.get_origin(partype)
-                        if union_origin in UNION_ORIGINS:
-                            type_candidates = [arg for arg in typing.get_args(partype)
-                                               if arg is not type(None)]
-                        else:
-                            type_candidates = [partype]
-
-                        value_type = None
-                        for candidate in type_candidates:
-                            origin = typing.get_origin(candidate)
-                            args_t = typing.get_args(candidate)
-                            if origin in (list, typing.List, tuple) and len(args_t) >= 1:
-                                resolved_type = _resolve_dataobj_type(args_t[0], klass)
-                                if resolved_type is not None:
-                                    value_type = resolved_type
-                                    break
-
-                        if value_type is None:
-                            raise ValueError(f'Parameter {parname} must be typed as list[DataObjType]')
+                        try:
+                            partype = resolve_type(hints[parname], require_list=True)
+                        except TypeError:
+                            raise ValueError(f'Parameter {parname} must be typed as List[DataObjType]')
 
                         loaded = []
                         for tag in value:
-                            filename = cm.filename(value_type.__name__, tag)
+                            filename = cm.filename(partype.__name__, tag)
                             print('Restoring:', filename)
-                            obj = value_type.restore(filename, target_device_idx=target_device_idx)
+                            obj = partype.restore(filename, target_device_idx=target_device_idx)
                             obj.printMemUsage()
                             obj.tag = tag
                             loaded.append(obj)
@@ -498,33 +438,16 @@ class Simul():
                     elif not isinstance(value, dict):
                         raise ValueError(f'Parameter {name} must be a dictionary of tags')
                     elif parname in hints:
-                        partype = hints[parname]
-                        type_candidates = []
-                        union_origin = typing.get_origin(partype)
-                        if union_origin in UNION_ORIGINS:
-                            type_candidates = [arg for arg in typing.get_args(partype)
-                                               if arg is not type(None)]
-                        else:
-                            type_candidates = [partype]
-
-                        value_type = None
-                        for candidate in type_candidates:
-                            origin = typing.get_origin(candidate)
-                            args_t = typing.get_args(candidate)
-                            if origin in (dict, typing.Dict) and len(args_t) == 2:
-                                resolved_type = _resolve_dataobj_type(args_t[1], klass)
-                                if resolved_type is not None:
-                                    value_type = resolved_type
-                                    break
-
-                        if value_type is None:
-                            raise ValueError(f'Parameter {parname} must be typed as dict[str, DataObjType]')
+                        try:
+                            partype = resolve_type(hints[parname], require_dict=True)
+                        except TypeError:
+                            raise ValueError(f'Parameter {parname} must be typed as Dict[str, DataObjType]')
 
                         loaded = {}
                         for dict_key, tag in value.items():
-                            filename = cm.filename(value_type.__name__, tag)
+                            filename = cm.filename(partype.__name__, tag)
                             print('Restoring:', filename)
-                            obj = value_type.restore(filename, target_device_idx=target_device_idx)
+                            obj = partype.restore(filename, target_device_idx=target_device_idx)
                             obj.printMemUsage()
                             obj.tag = tag
                             loaded[dict_key] = obj
@@ -556,16 +479,8 @@ class Simul():
                     if value is None:
                         pars2[parname] = None
                     elif parname in hints:
-                        partype = hints[parname]
+                        partype = resolve_type(hints[parname])
 
-                        # Handle Optional and Union types (for python <3.11)
-                        if hasattr(partype, "__origin__") and partype.__origin__ is typing.Union:
-                            # Extract actual class type from Optional/Union
-                            # (first non-None type argument)
-                            for arg in partype.__args__:
-                                if arg is not type(None):  # Skip NoneType
-                                    partype = arg
-                                    break
                         # data objects are restored into each process (multiple copies), target_rank is not checked
                         filename = cm.filename(parname, value)  # TODO use partype instead of parname?
                         self.logger.info(f'Restoring: {filename}')
