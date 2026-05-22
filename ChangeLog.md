@@ -9,6 +9,7 @@
 
 ### Interface changes
 
+- Removed simul\_params argument from IirFilter, Integrator and other related processing objects
 - Outputs for SpeculaInput and derived objects like TerminalInput must be typed with :int, :float or :str
 
 ### Other

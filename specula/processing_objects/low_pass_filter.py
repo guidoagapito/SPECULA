@@ -2,7 +2,8 @@
 from specula.processing_objects.iir_filter import IirFilter
 from specula.data_objects.iir_filter_data import IirFilterData
 from specula.data_objects.simul_params import SimulParams
-    
+
+
 class LowPassFilter(IirFilter):
     """
     Low pass filter processing object.
@@ -30,7 +31,7 @@ class LowPassFilter(IirFilter):
                                                         target_device_idx=target_device_idx)
 
         # Initialize IirFilter object
-        super().__init__(simul_params, iir_filter_data, delay=delay,
+        super().__init__(iir_filter_data, delay=delay,
                          target_device_idx=target_device_idx, precision=precision)
 
     @classmethod
