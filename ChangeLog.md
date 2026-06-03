@@ -15,6 +15,7 @@
 
 ### Other
 
+- Fixed vecWeiPixRadT extraction in ShSlopec
 - Fixed output\_names in PhaseScreenCube
 - ...
 
