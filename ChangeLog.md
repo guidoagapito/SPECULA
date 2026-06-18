@@ -14,6 +14,7 @@
 - Removed simul\_params argument from IirFilter, Integrator and other related processing objects
 - Outputs for SpeculaInput and derived objects like TerminalInput must be typed with :int, :float or :str
 - Renamed MmsePistonUnwrapper to SoftLimiter and moved the module to specula.processing_objects.soft_limiter
+- Added stroke thresholding for dm class
 - Added open\_loop\_estimate parameter to OpticalGainEstimator.
 - Enabled start and end time (start\_time and end\_time parameters) in FieldAnalyser.
 
