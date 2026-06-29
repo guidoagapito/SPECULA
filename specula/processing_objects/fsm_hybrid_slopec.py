@@ -5,18 +5,11 @@ from specula.data_objects.subap_data import SubapData
 from specula.lib.utils import unravel_index_2d
 from specula.processing_objects.slopec import Slopec
 
-# Conditional import for correlation on GPU
-import scipy.ndimage as ndimage_cpu
-try:
-    import cupyx.scipy.ndimage as ndimage_gpu
-except ImportError:
-    ndimage_gpu = None
-
 
 class FsmHybridSlopec(Slopec):
     """
     FSM-Guided Kinematic Hybrid Tracker processing object.
-    Computes Shack-Hartmann slopes using Spatial Correlation (Matched Filter),
+    Computes Shack-Hartmann slopes using Fast Fourier Transform (FFT) Correlation,
     a global kinematic predictor (Swarm Tracking), and a Finite State Machine 
     for extreme low-SNR target environments.
     """
@@ -65,14 +58,24 @@ class FsmHybridSlopec(Slopec):
         self.miss_counter = self.xp.zeros(n_subaps, dtype=self.xp.int32)
         self.is_locked = self.xp.zeros(n_subaps, dtype=self.xp.bool_)
 
-        # --- Grids and Static Template Generation ---
+        # --- Grids Generation ---
         self.x_grid = self.xp.arange(np_sub, dtype=self.dtype)
         self.y_grid = self.xp.arange(np_sub, dtype=self.dtype)
         self.xx, self.yy = self.xp.meshgrid(self.x_grid, self.y_grid)
 
-        # Static Analytical Template
-        self.template = self._generate_gaussian(cntrd, cntrd, self.fwhm_pix)
-        self.template /= self.xp.sum(self.template)
+        # --- Static Analytical Template (FFT Centered) ---
+        # For circular cross-correlation, the template must be centered at index (0,0)
+        half_np = np_sub // 2
+        dx_wrap = self.xp.where(self.x_grid > half_np - 1, self.x_grid - np_sub, self.x_grid)
+        dy_wrap = self.xp.where(self.y_grid > half_np - 1, self.y_grid - np_sub, self.y_grid)
+        xx_wrap, yy_wrap = self.xp.meshgrid(dx_wrap, dy_wrap)
+
+        sigma = self.fwhm_pix / (2.0 * self.xp.sqrt(2.0 * self.xp.log(2.0)))
+        template_centered = self.xp.exp(-(xx_wrap**2 + yy_wrap**2) / (2 * sigma**2))
+        template_centered /= self.xp.sum(template_centered)
+
+        # Precompute the FFT of the template for extreme speed
+        self.fft_template = self.xp.fft.fft2(template_centered[None, :, :], axes=(1, 2))
 
     @classmethod
     def output_names(cls):
@@ -94,19 +97,18 @@ class FsmHybridSlopec(Slopec):
 
     def _generate_gaussian(self, x_pos, y_pos, fwhm):
         """
-        Generates 2D Gaussian masks. Natively handles both scalar centers 
-        (for the static template) and vector centers (for dynamic tracking priors).
+        Generates 2D Gaussian masks on the physical sensor grid.
+        Natively handles both scalar and vector centers.
         """
         sigma = fwhm / (2.0 * self.xp.sqrt(2.0 * self.xp.log(2.0)))
-        
+
         if self.xp.isscalar(x_pos):
             dx = self.xx - x_pos
             dy = self.yy - y_pos
         else:
-            # Broadcasting for N subapertures
             dx = self.xx[None, :, :] - x_pos[:, None, None]
             dy = self.yy[None, :, :] - y_pos[:, None, None]
-            
+
         return self.xp.exp(-(dx**2 + dy**2) / (2 * sigma**2))
 
     def trigger_code(self):
@@ -124,21 +126,19 @@ class FsmHybridSlopec(Slopec):
         n_subaps = self.nsubaps()
         np_sub = self.subapdata.np_sub
 
-        # 0. Extract and reshape pixels into a 3D cube: (n_subaps, np_sub, np_sub)
+        # 0. Extract, reshape and cast pixels to ensure type consistency
         idx2d = unravel_index_2d(self.subap_idx, in_pixels.shape, self.xp)
-        pixels = in_pixels[idx2d].reshape(n_subaps, np_sub, np_sub)
+        pixels = in_pixels[idx2d].reshape(n_subaps, np_sub, np_sub).astype(self.dtype)
 
-        # 1. Base Spatial Correlation (The Likelihood)
-        ndimage = ndimage_gpu if self.xp.__name__ == 'cupy' else ndimage_cpu
-        
-        # Correlate independently over the first axis by passing template as (1, Y, X)
-        corr_map = ndimage.correlate(pixels, self.template[None, :, :], mode='constant', cval=0.0)
+        # 1. Base Spatial Correlation (The Likelihood) via FFT
+        fft_pixels = self.xp.fft.fft2(pixels, axes=(1, 2))
+        corr_map = self.xp.fft.ifft2(fft_pixels * self.xp.conj(self.fft_template), axes=(1, 2)).real
 
         # Calculate Correlation SNR
         c_mean = self.xp.mean(corr_map, axis=(1, 2))
         c_std = self.xp.std(corr_map, axis=(1, 2))
         c_max = self.xp.max(corr_map, axis=(1, 2))
-        
+
         c_std_safe = self.xp.maximum(c_std, 1e-6)
         snr_corr = (c_max - c_mean) / c_std_safe
         valid_snr = snr_corr >= self.snr_thr
@@ -147,8 +147,8 @@ class FsmHybridSlopec(Slopec):
         if self.xp.any(self.is_locked):
             vx_valid = self.state_x1[self.is_locked] - self.state_x2[self.is_locked]
             vy_valid = self.state_y1[self.is_locked] - self.state_y2[self.is_locked]
-            
-            # Median elegantly rejects single-subaperture outliers
+
+            # Median gracefully rejects single-subaperture outliers
             v_global_x = self.xp.median(vx_valid)
             v_global_y = self.xp.median(vy_valid)
         else:
@@ -161,7 +161,7 @@ class FsmHybridSlopec(Slopec):
         # 3. Bayesian Spatial Prior (Kinematic Masking)
         prior_gauss = self._generate_gaussian(x_pred, y_pred, self.prior_sigma)
         spatial_prior = (1.0 - self.prior_floor) * prior_gauss + self.prior_floor
-        
+
         # Flat prior for subapertures in Acquisition State
         spatial_prior = self.xp.where(
             self.is_locked[:, None, None], 
@@ -176,13 +176,10 @@ class FsmHybridSlopec(Slopec):
         y_idx = flat_idx // np_sub
         x_idx = flat_idx % np_sub
 
-        # Correct the correlation index shift for even-sized grids.
-        # ndimage.correlate origin for size N is internally at N // 2.
-        cntrd = (np_sub - 1) / 2.0
-        center_offset = (np_sub // 2) - cntrd
-
-        x_coarse = x_idx - center_offset
-        y_coarse = y_idx - center_offset
+        # Align coarse indices to physical center avoiding half-pixel grid bias
+        offset = 0.5 if np_sub % 2 == 0 else 0.0
+        x_coarse = x_idx + offset
+        y_coarse = y_idx + offset
 
         # 5. Fine Tracking (Dynamic WCoG)
         dynamic_weight = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
@@ -192,7 +189,7 @@ class FsmHybridSlopec(Slopec):
         x_est = self.xp.sum(self.xx[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
         y_est = self.xp.sum(self.yy[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
 
-        # Fallback to coarse coordinates if flux is perfectly zero
+        # Fallback to coarse coordinates if flux is exactly zero
         zero_flux_mask = flux_sum < 1e-6
         x_est = self.xp.where(zero_flux_mask, x_coarse.astype(self.dtype), x_est)
         y_est = self.xp.where(zero_flux_mask, y_coarse.astype(self.dtype), y_est)
@@ -214,11 +211,11 @@ class FsmHybridSlopec(Slopec):
         new_lock_counter[valid_acq] += 1
         new_state_x1[valid_acq] = x_est[valid_acq]
         new_state_y1[valid_acq] = y_est[valid_acq]
-        
+
         lock_achieved = valid_acq & (new_lock_counter >= self.lock_frames_req)
         new_is_locked[lock_achieved] = True
         new_miss_counter[lock_achieved] = 0
-        
+
         new_lock_counter[invalid_acq] = 0
 
         # --- B. TRACKING MODE ---
@@ -259,8 +256,6 @@ class FsmHybridSlopec(Slopec):
         self.flux_per_subaperture_vector.value[:] = flux_sum
         self.total_counts.value[0] = self.xp.sum(flux_sum)
         self.subap_counts.value[0] = self.xp.mean(flux_sum)
-
-        # self.logger.debug(f"Locked subaps: {self.xp.sum(self.is_locked)}/{n_subaps}")
 
     def post_trigger(self):
         super().post_trigger()
