@@ -173,21 +173,29 @@ class FsmHybridSlopec(Slopec):
 
         # 4. Coarse Peak Extraction
         flat_idx = self.xp.argmax(weighted_corr.reshape(n_subaps, -1), axis=1)
-        y_int = flat_idx // np_sub
-        x_int = flat_idx % np_sub
+        y_idx = flat_idx // np_sub
+        x_idx = flat_idx % np_sub
+
+        # Correct the correlation index shift for even-sized grids.
+        # ndimage.correlate origin for size N is internally at N // 2.
+        cntrd = (np_sub - 1) / 2.0
+        center_offset = (np_sub // 2) - cntrd
+
+        x_coarse = x_idx - center_offset
+        y_coarse = y_idx - center_offset
 
         # 5. Fine Tracking (Dynamic WCoG)
-        dynamic_weight = self._generate_gaussian(x_int, y_int, self.fwhm_pix)
+        dynamic_weight = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
         weighted_img = self.xp.maximum(pixels, 0.0) * dynamic_weight
         flux_sum = self.xp.sum(weighted_img, axis=(1, 2))
-        
+
         x_est = self.xp.sum(self.xx[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
         y_est = self.xp.sum(self.yy[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
 
-        # Fallback to integer coordinates if flux is perfectly zero
+        # Fallback to coarse coordinates if flux is perfectly zero
         zero_flux_mask = flux_sum < 1e-6
-        x_est = self.xp.where(zero_flux_mask, x_int.astype(self.dtype), x_est)
-        y_est = self.xp.where(zero_flux_mask, y_int.astype(self.dtype), y_est)
+        x_est = self.xp.where(zero_flux_mask, x_coarse.astype(self.dtype), x_est)
+        y_est = self.xp.where(zero_flux_mask, y_coarse.astype(self.dtype), y_est)
 
         # ========================================================
         # 6. FINITE STATE MACHINE (Vectorized Logical Updates)
