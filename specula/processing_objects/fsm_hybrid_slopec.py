@@ -63,15 +63,18 @@ class FsmHybridSlopec(Slopec):
         self.y_grid = self.xp.arange(np_sub, dtype=self.dtype)
         self.xx, self.yy = self.xp.meshgrid(self.x_grid, self.y_grid)
 
-        # --- Static Analytical Template (FFT Centered) ---
-        # For circular cross-correlation, the template must be centered at index (0,0)
+        # --- Static Analytical Template (FFT Centered & Shifted) ---
         half_np = np_sub // 2
         dx_wrap = self.xp.where(self.x_grid > half_np - 1, self.x_grid - np_sub, self.x_grid)
         dy_wrap = self.xp.where(self.y_grid > half_np - 1, self.y_grid - np_sub, self.y_grid)
         xx_wrap, yy_wrap = self.xp.meshgrid(dx_wrap, dy_wrap)
 
+        # Shift the template by half-pixel for even grids. 
+        # This forces the correlation of a perfectly centered spot to peak EXACTLY 
+        # on an integer index, eliminating numerical noise ambiguity in argmax.
+        self.offset = 0.5 if np_sub % 2 == 0 else 0.0
         sigma = self.fwhm_pix / (2.0 * self.xp.sqrt(2.0 * self.xp.log(2.0)))
-        template_centered = self.xp.exp(-(xx_wrap**2 + yy_wrap**2) / (2 * sigma**2))
+        template_centered = self.xp.exp(-((xx_wrap - self.offset)**2 + (yy_wrap - self.offset)**2) / (2 * sigma**2))
         template_centered /= self.xp.sum(template_centered)
 
         # Precompute the FFT of the template for extreme speed
@@ -159,7 +162,8 @@ class FsmHybridSlopec(Slopec):
         y_pred = self.state_y1 + 0.5 * v_global_y
 
         # 3. Bayesian Spatial Prior (Kinematic Masking)
-        prior_gauss = self._generate_gaussian(x_pred, y_pred, self.prior_sigma)
+        # Because the correlation map is shifted by self.offset, the prior must match its grid
+        prior_gauss = self._generate_gaussian(x_pred - self.offset, y_pred - self.offset, self.prior_sigma)
         spatial_prior = (1.0 - self.prior_floor) * prior_gauss + self.prior_floor
 
         # Flat prior for subapertures in Acquisition State
@@ -176,10 +180,9 @@ class FsmHybridSlopec(Slopec):
         y_idx = flat_idx // np_sub
         x_idx = flat_idx % np_sub
 
-        # Align coarse indices to physical center avoiding half-pixel grid bias
-        offset = 0.5 if np_sub % 2 == 0 else 0.0
-        x_coarse = x_idx + offset
-        y_coarse = y_idx + offset
+        # Transform correlation indices back to true physical coordinates
+        x_coarse = x_idx + self.offset
+        y_coarse = y_idx + self.offset
 
         # 5. Fine Tracking (Dynamic WCoG)
         dynamic_weight = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
