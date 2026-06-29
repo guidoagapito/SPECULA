@@ -1,5 +1,3 @@
-import numpy as np
-
 from specula.base_processing_obj import OutputDesc
 from specula.data_objects.subap_data import SubapData
 from specula.lib.utils import unravel_index_2d
@@ -32,7 +30,7 @@ class FsmHybridSlopec(Slopec):
         self.snr_thr = snr_thr
         self.prior_sigma = prior_sigma
         self.prior_floor = prior_floor
-        
+
         # Hysteresis logic parameters
         self.lock_frames_req = lock_frames_req
         self.max_missed_frames = max_missed_frames
@@ -69,8 +67,8 @@ class FsmHybridSlopec(Slopec):
         dy_wrap = self.xp.where(self.y_grid > half_np - 1, self.y_grid - np_sub, self.y_grid)
         xx_wrap, yy_wrap = self.xp.meshgrid(dx_wrap, dy_wrap)
 
-        # Shift the template by half-pixel for even grids. 
-        # This forces the correlation of a perfectly centered spot to peak EXACTLY 
+        # Shift the template by half-pixel for even grids.
+        # This forces the correlation of a perfectly centered spot to peak EXACTLY
         # on an integer index, eliminating numerical noise ambiguity in argmax.
         self.offset = 0.5 if np_sub % 2 == 0 else 0.0
         sigma = self.fwhm_pix / (2.0 * self.xp.sqrt(2.0 * self.xp.log(2.0)))
@@ -168,8 +166,8 @@ class FsmHybridSlopec(Slopec):
 
         # Flat prior for subapertures in Acquisition State
         spatial_prior = self.xp.where(
-            self.is_locked[:, None, None], 
-            spatial_prior, 
+            self.is_locked[:, None, None],
+            spatial_prior,
             self.xp.ones_like(spatial_prior)
         )
 
@@ -249,16 +247,96 @@ class FsmHybridSlopec(Slopec):
         self.miss_counter = new_miss_counter
 
         # --- Output Slopes to the Reconstructor ---
-        # Slopec expects values relative to the nominal center
+        # Slopec expects values relative to the nominal center AND normalized
+        # to match the [-1, 1] range standard used by ShSlopec.
         cntrd = (np_sub - 1) / 2.0
-        self.slopes.xslopes = self.state_x1 - cntrd
-        self.slopes.yslopes = self.state_y1 - cntrd
+        norm_factor = np_sub / 2.0
+
+        self.slopes.xslopes = (self.state_x1 - cntrd) / norm_factor
+        self.slopes.yslopes = (self.state_y1 - cntrd) / norm_factor
         self.slopes.generation_time = self.current_time
 
         # Update telemetry
         self.flux_per_subaperture_vector.value[:] = flux_sum
         self.total_counts.value[0] = self.xp.sum(flux_sum)
         self.subap_counts.value[0] = self.xp.mean(flux_sum)
+
+        # plot for debugging
+        debug_plot = False
+        if debug_plot:
+            import matplotlib.pyplot as plt
+            from specula import cpuArray
+            subap_to_plot = 0
+
+            fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+            # Estraiamo lo stato corrente per rendere il plot condizionale
+            is_locked_curr = bool(self.is_locked[subap_to_plot])
+
+            # --- 1. Raw Pixel Image (Spot) ---
+            ax = axes[0, 0]
+            im1 = ax.imshow(cpuArray(pixels[subap_to_plot]), cmap='hot')
+            ax.axhline(cntrd, color='w', linestyle=':', alpha=0.3)
+            ax.axvline(cntrd, color='w', linestyle=':', alpha=0.3)
+            ax.set_title(f'Subap {subap_to_plot}: Raw Spot (Pixels)')
+            plt.colorbar(im1, ax=ax)
+            ax.set_xlabel('X [pix]')
+            ax.set_ylabel('Y [pix]')
+
+            # --- 2. Correlation Map ---
+            ax = axes[0, 1]
+            im2 = ax.imshow(cpuArray(corr_map[subap_to_plot]), cmap='viridis')
+            ax.axhline(cntrd, color='w', linestyle=':', alpha=0.3)
+            ax.axvline(cntrd, color='w', linestyle=':', alpha=0.3)
+            # Mark coarse peak
+            ax.plot(cpuArray(x_idx[subap_to_plot]), cpuArray(y_idx[subap_to_plot]), 'r+', markersize=15, markeredgewidth=2, label='Coarse Peak')
+
+            # Mostra la predizione solo se siamo in Tracking
+            if is_locked_curr:
+                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset, 'c*', markersize=15, label='Prediction')
+
+            ax.set_title(f'Subap {subap_to_plot}: Correlation Map\nSNR={snr_corr[subap_to_plot]:.2f} (thr={self.snr_thr})')
+            plt.colorbar(im2, ax=ax)
+            ax.legend(loc='upper right', fontsize=9)
+            ax.set_xlabel('X [pix]')
+            ax.set_ylabel('Y [pix]')
+
+            # --- 3. Spatial Prior (Weight Mask) ---
+            ax = axes[1, 0]
+            # Forziamo vmin=0.0 e vmax=1.0 per avere coerenza visiva
+            im3 = ax.imshow(cpuArray(spatial_prior[subap_to_plot]), cmap='bone', vmin=0.0, vmax=1.0)
+
+            title_prior = "(GAUSSIAN - Tracking)" if is_locked_curr else "(FLAT - Acquisition)"
+            ax.set_title(f'Subap {subap_to_plot}: Spatial Prior Mask\n{title_prior}')
+            plt.colorbar(im3, ax=ax)
+
+            if is_locked_curr:
+                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset, 'r+', markersize=15, markeredgewidth=2, label='Prior Center')
+                ax.legend(loc='upper right', fontsize=9)
+
+            ax.set_xlabel('X [pix]')
+            ax.set_ylabel('Y [pix]')
+
+            # --- 4. Weighted Image (WCoG) ---
+            ax = axes[1, 1]
+            im4 = ax.imshow(cpuArray(weighted_img[subap_to_plot]), cmap='hot')
+            ax.axhline(cntrd, color='w', linestyle='--', alpha=0.4, linewidth=1)
+            ax.axvline(cntrd, color='w', linestyle='--', alpha=0.4, linewidth=1, label='Nominal Center')
+
+            # Mark final WCoG position
+            ax.plot(cpuArray(x_est[subap_to_plot]), cpuArray(y_est[subap_to_plot]), 'g*', markersize=20, label=f'WCoG Est: ({x_est[subap_to_plot]:.2f}, {y_est[subap_to_plot]:.2f})')
+            ax.set_title(f'Subap {subap_to_plot}: Weighted Image (WCoG)\nFlux={flux_sum[subap_to_plot]:.1f}')
+            plt.colorbar(im4, ax=ax)
+            ax.legend(loc='upper right', fontsize=9)
+            ax.set_xlabel('X [pix]')
+            ax.set_ylabel('Y [pix]')
+
+            # --- Global FSM state info ---
+            fig.suptitle(f'FSM State: Locked={is_locked_curr} | Lock Counter={self.lock_counter[subap_to_plot]} | Miss Counter={self.miss_counter[subap_to_plot]}',
+                         fontsize=14, fontweight='bold', color='green' if is_locked_curr else 'red')
+
+            plt.tight_layout()
+            plt.show()
 
     def post_trigger(self):
         super().post_trigger()
