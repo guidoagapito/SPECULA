@@ -77,7 +77,7 @@ class FsmHybridSlopec(Slopec):
                  prior_floor: float = 0.10,
                  lock_frames_req: int = 3,
                  max_missed_frames: int = 10,
-                 max_v: float = 0.5,
+                 max_v: float = 0.3,
                  leash_alpha: float = 0.5,
                  acq_radius_sq: float = 4.0,
                  ema_alpha: float = 0.3,
