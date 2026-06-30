@@ -8,8 +8,8 @@ class FsmHybridSlopec(Slopec):
     """
     FSM-Guided Kinematic Hybrid Tracker processing object.
     Implements a Dual-Brain architecture (Radar EMA + Instantaneous Sniper)
-    with an Asymmetric Kinematic Leash to compute Shack-Hartmann slopes robustly 
-    in extreme low-SNR, flickering, and high-dynamics closed-loop environments.
+    with an Asymmetric Kinematic Leash and Spatial Gatekeeping to compute 
+    Shack-Hartmann slopes robustly in extreme low-SNR and closed-loop environments.
     """
 
     def __init__(self,
@@ -211,13 +211,20 @@ class FsmHybridSlopec(Slopec):
         y_coarse_single = y_idx_single + self.offset
 
         # ------------------------------------------------------------------
-        # THREE-TRACK CONFIDENCE LOGIC
+        # THREE-TRACK CONFIDENCE LOGIC & SPATIAL GATEKEEPER
         # ------------------------------------------------------------------
-        use_track2 = ~sniper_yes & radar_yes
-        use_track3 = ~sniper_yes & ~radar_yes
-        
-        # CRITICAL FIX: A valid hit is ANY hit with sufficient SNR. 
-        # The kinematic leash restrains the WCoG mask, but DOES NOT invalidate the hit.
+        dist_single_to_ema_sq = (x_coarse_single - x_coarse_ema)**2 + (y_coarse_single - y_coarse_ema)**2
+        sniper_consistent = dist_single_to_ema_sq <= self.acq_radius_sq
+
+        # Track 1: Sniper YES and is either already tracking or consistent with Radar
+        use_track1 = sniper_yes & (self.is_locked | sniper_consistent)
+
+        # Track 2: Fallback to Radar if Sniper fails or is inconsistent
+        use_track2 = radar_yes & ~use_track1
+
+        # Track 3: Total signal loss
+        use_track3 = ~radar_yes & ~use_track1
+
         valid_hit = ~use_track3
 
         # Choose baseline target source coordinates from the corresponding track
@@ -227,6 +234,7 @@ class FsmHybridSlopec(Slopec):
         # ------------------------------------------------------------------
         # ASYMMETRIC SPRING LEASH CONSTRAINT
         # Allows proportional speed towards the center, clips outwards noise.
+        # This constraint ONLY shapes the WCoG mask position; it does NOT invalidate the hit.
         # ------------------------------------------------------------------
         dx_raw = x_coarse_raw - self.state_x1
         dy_raw = y_coarse_raw - self.state_y1
