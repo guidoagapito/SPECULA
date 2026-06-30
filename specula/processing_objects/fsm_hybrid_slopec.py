@@ -189,23 +189,16 @@ class FsmHybridSlopec(Slopec):
         idx2d = unravel_index_2d(self.subap_idx, in_pixels.shape, self.xp)
         pixels = in_pixels[idx2d].reshape(n_subaps, np_sub, np_sub).astype(self.dtype)
 
-        # 1. Update Exponential Moving Averages (EMA)
-        # Flush the EMA memory for subapertures that are starting completely fresh (Hard Drop)
-        reset_ema = (self.miss_counter >= self.max_missed_frames)[:, None, None]
+        raw_flux_sum = self.xp.sum(pixels, axis=(1, 2))
 
-        self.ema_pixels = self.xp.where(
-            reset_ema, pixels,
-            self.ema_alpha * pixels + (1.0 - self.ema_alpha) * self.ema_pixels
-        )
+        # 1. Update Exponential Moving Averages (EMA)
+        self.ema_pixels = self.ema_alpha * pixels + (1.0 - self.ema_alpha) * self.ema_pixels
 
         # 2. Base Spatial Correlation (The Likelihood) via FFT
         fft_pixels = self.xp.fft.fft2(pixels, axes=(1, 2))
         corr_map = self.xp.fft.ifft2(fft_pixels * self.xp.conj(self.fft_template), axes=(1, 2)).real
 
-        self.ema_corr = self.xp.where(
-            reset_ema, corr_map, 
-            self.ema_alpha * corr_map + (1.0 - self.ema_alpha) * self.ema_corr
-        )
+        self.ema_corr = self.ema_alpha * corr_map + (1.0 - self.ema_alpha) * self.ema_corr
 
         # ------------------------------------------------------------------
         # THE RADAR (EMA Detection)
@@ -225,6 +218,13 @@ class FsmHybridSlopec(Slopec):
         x_coarse_ema = x_idx_ema + self.offset
         y_coarse_ema = y_idx_ema + self.offset
 
+        single_mean = self.xp.mean(corr_map, axis=(1, 2))
+        single_std = self.xp.maximum(self.xp.std(corr_map, axis=(1, 2)), 1e-6)
+
+        flat_idx_raw = self.xp.argmax(corr_map.reshape(n_subaps, -1), axis=1)
+        c_max_raw = corr_map.reshape(n_subaps, -1)[self.xp.arange(n_subaps), flat_idx_raw]
+        snr_sniper_unweighted = (c_max_raw - single_mean) / single_std
+
         # ------------------------------------------------------------------
         # KINEMATIC PREDICTION (Swarm Tracking)
         # ------------------------------------------------------------------
@@ -236,18 +236,14 @@ class FsmHybridSlopec(Slopec):
         else:
             v_global_x, v_global_y = 0.0, 0.0
 
-        x_pred = self.state_x1 + 0.5 * v_global_x
-        y_pred = self.state_y1 + 0.5 * v_global_y
+        x_pred = self.state_x1 + v_global_x
+        y_pred = self.state_y1 + v_global_y
 
         # ------------------------------------------------------------------
-        # THE SNIPER (Instantaneous Single Frame Detection)
+        # BAYESIAN PRIOR & WEIGHTED SNIPER
         # ------------------------------------------------------------------
-        c_mean_single = self.xp.mean(corr_map, axis=(1, 2))
-        c_std_single = self.xp.maximum(self.xp.std(corr_map, axis=(1, 2)), 1e-6)
-
-        # Bypass prior if Radar confirms an extremely strong signal
-        override_mask = (snr_radar > self.snr_strong_thr) | ~self.is_locked
-        prior_gauss = self._generate_gaussian(x_pred - self.offset, y_pred - self.offset, self.prior_sigma)
+        override_mask = (snr_radar > self.snr_strong_thr) | (snr_sniper_unweighted > self.snr_strong_thr) | ~self.is_locked
+        prior_gauss = self._generate_gaussian(x_pred, y_pred, self.prior_sigma)
         spatial_prior = self.xp.where(
             override_mask[:, None, None],
             self.xp.ones_like(prior_gauss),
@@ -258,7 +254,7 @@ class FsmHybridSlopec(Slopec):
         flat_idx_single = self.xp.argmax(weighted_corr.reshape(n_subaps, -1), axis=1)
 
         c_max_single = corr_map.reshape(n_subaps, -1)[self.xp.arange(n_subaps), flat_idx_single]
-        snr_sniper = (c_max_single - c_mean_single) / c_std_single
+        snr_sniper = (c_max_single - single_mean) / single_std
         sniper_yes = snr_sniper >= self.snr_thr
 
         y_idx_single = flat_idx_single // np_sub
@@ -267,7 +263,7 @@ class FsmHybridSlopec(Slopec):
         y_coarse_single = y_idx_single + self.offset
 
         # ------------------------------------------------------------------
-        # THREE-TRACK CONFIDENCE LOGIC & SPATIAL GATEKEEPER
+        # THREE-TRACK LOGIC & SPRING LEASH
         # ------------------------------------------------------------------
         dist_single_to_ema_sq = (x_coarse_single - x_coarse_ema)**2 + (y_coarse_single - y_coarse_ema)**2
         sniper_consistent = dist_single_to_ema_sq <= self.acq_radius_sq
@@ -280,8 +276,6 @@ class FsmHybridSlopec(Slopec):
 
         # Track 3: Total signal loss
         use_track3 = ~radar_yes & ~use_track1
-
-        valid_hit = ~use_track3
 
         # Choose baseline target source coordinates from the corresponding track
         x_coarse_raw = self.xp.where(use_track2, x_coarse_ema, x_coarse_single)
@@ -313,17 +307,33 @@ class FsmHybridSlopec(Slopec):
         y_coarse = self.xp.where(self.is_locked, self.state_y1 + dy_clipped, y_coarse_raw)
 
         # ------------------------------------------------------------------
-        # FINE TRACKING (Dynamic WCoG)
+        # FINE TRACKING (Iterative Dynamic WCoG)
         # ------------------------------------------------------------------
-        # Wcog data source changes based on track confidence to prevent noise division
         wcog_pixels = self.xp.where(use_track2[:, None, None], self.ema_pixels, pixels)
 
-        dynamic_weight = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
-        weighted_img = self.xp.maximum(wcog_pixels, 0.0) * dynamic_weight
-        flux_sum = self.xp.sum(weighted_img, axis=(1, 2))
+        # Pass 1: Coarse centering (Subject to Grid Bias)
+        dynamic_weight_1 = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
+        weighted_img_1 = self.xp.maximum(wcog_pixels, 0.0) * dynamic_weight_1
 
-        x_est = self.xp.sum(self.xx[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
-        y_est = self.xp.sum(self.yy[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
+        flux_sum_1 = self.xp.sum(weighted_img_1, axis=(1, 2))
+        x_est_1 = self.xp.sum(self.xx[None, :, :] * weighted_img_1, axis=(1, 2)) / self.xp.maximum(flux_sum_1, 1e-6)
+        y_est_1 = self.xp.sum(self.yy[None, :, :] * weighted_img_1, axis=(1, 2)) / self.xp.maximum(flux_sum_1, 1e-6)
+
+        zero_flux_mask = flux_sum_1 < 1e-6
+        x_est_1 = self.xp.where(zero_flux_mask, x_coarse.astype(self.dtype), x_est_1)
+        y_est_1 = self.xp.where(zero_flux_mask, y_coarse.astype(self.dtype), y_est_1)
+
+        # Pass 2: Fine sub-pixel centering (Eliminates Grid Bias)
+        dynamic_weight_2 = self._generate_gaussian(x_est_1, y_est_1, self.fwhm_pix)
+        weighted_img_2 = self.xp.maximum(wcog_pixels, 0.0) * dynamic_weight_2
+
+        flux_sum = self.xp.sum(weighted_img_2, axis=(1, 2))
+        x_est = self.xp.sum(self.xx[None, :, :] * weighted_img_2, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
+        y_est = self.xp.sum(self.yy[None, :, :] * weighted_img_2, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
+
+        # Fallback in case of total numerical failure
+        x_est = self.xp.where(zero_flux_mask, x_est_1, x_est)
+        y_est = self.xp.where(zero_flux_mask, y_est_1, y_est)
 
         # Protection against math errors
         zero_flux_mask = flux_sum < 1e-6
@@ -341,6 +351,7 @@ class FsmHybridSlopec(Slopec):
 
         # --- A. ACQUISITION MODE ---
         acq_mask = ~self.is_locked
+        valid_hit = ~use_track3
         valid_acq = acq_mask & valid_hit
         invalid_acq = acq_mask & ~valid_hit
 
@@ -388,15 +399,17 @@ class FsmHybridSlopec(Slopec):
         new_state_x1[fading_trk] = x_pred[fading_trk]
         new_state_y1[fading_trk] = y_pred[fading_trk]
 
-        # For the drop logic, anyone who isn't nominal is an invalid_trk step
+        # --- C. DROP LOGIC & EMA FLUSH ---
         invalid_trk = trk_mask & ~use_track1
-
-        # --- C. DROP LOGIC ---
         lock_lost = invalid_trk & (new_miss_counter >= self.max_missed_frames)
         new_is_locked[lock_lost] = False
         new_lock_counter[lock_lost] = 0
-        
-        # Ensure miss_counter is zeroed out for all unlocked subapertures
+
+        # Flush ghost images exactly upon dropping lock
+        ll_mask = lock_lost[:, None, None]
+        self.ema_pixels = self.xp.where(ll_mask, pixels, self.ema_pixels)
+        self.ema_corr = self.xp.where(ll_mask, corr_map, self.ema_corr)
+
         new_miss_counter[~new_is_locked] = 0
 
         # --- Update Global Memory ---
@@ -408,21 +421,21 @@ class FsmHybridSlopec(Slopec):
         self.lock_counter = new_lock_counter
         self.miss_counter = new_miss_counter
 
-        # --- Output Slopes to the Reconstructor ---
+        # --- Output Slopes (SAFEGUARD RESTORED) ---
         norm_factor = np_sub / 2.0
 
         raw_slope_x = (self.state_x1 - cntrd) / norm_factor
         raw_slope_y = (self.state_y1 - cntrd) / norm_factor
 
-        # Output exactly 0.0 if not locked to maintain DM inertia
+        # THIS PREVENTS DM EXPLOSION DURING ACQUISITION!
         self.slopes.xslopes = self.xp.where(self.is_locked, raw_slope_x, 0.0)
         self.slopes.yslopes = self.xp.where(self.is_locked, raw_slope_y, 0.0)
         self.slopes.generation_time = self.current_time
 
-        # Update telemetry
-        self.flux_per_subaperture_vector.value[:] = flux_sum
-        self.total_counts.value[0] = self.xp.sum(flux_sum)
-        self.subap_counts.value[0] = self.xp.mean(flux_sum)
+        # Update Telemetry
+        self.flux_per_subaperture_vector.value[:] = raw_flux_sum
+        self.total_counts.value[0] = self.xp.sum(raw_flux_sum)
+        self.subap_counts.value[0] = self.xp.mean(raw_flux_sum)
 
         # plot for debugging
         debug_plot = False
