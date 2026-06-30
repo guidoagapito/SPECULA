@@ -7,9 +7,9 @@ from specula.processing_objects.slopec import Slopec
 class FsmHybridSlopec(Slopec):
     """
     FSM-Guided Kinematic Hybrid Tracker processing object.
-    Implements a Dual-Brain architecture (Radar Moving Average + Instantaneous Sniper)
-    with a Kinematic Leash constraint to compute Shack-Hartmann slopes robustly 
-    in extreme low-SNR and flickering environments.
+    Implements a Dual-Brain architecture (Radar EMA + Instantaneous Sniper)
+    with an Asymmetric Kinematic Leash to compute Shack-Hartmann slopes robustly 
+    in extreme low-SNR, flickering, and high-dynamics closed-loop environments.
     """
 
     def __init__(self,
@@ -22,8 +22,9 @@ class FsmHybridSlopec(Slopec):
                  lock_frames_req: int = 3,
                  max_missed_frames: int = 10,
                  max_v: float = 0.5,
+                 leash_alpha: float = 0.5,
                  acq_radius_sq: float = 4.0,
-                 ma_frames: int = 3,
+                 ema_alpha: float = 0.3,
                  **kwargs):
 
         self.subapdata = subapdata
@@ -40,8 +41,9 @@ class FsmHybridSlopec(Slopec):
         self.lock_frames_req = lock_frames_req
         self.max_missed_frames = max_missed_frames
         self.max_v = max_v
+        self.leash_alpha = leash_alpha
         self.acq_radius_sq = acq_radius_sq
-        self.ma_frames = ma_frames
+        self.ema_alpha = ema_alpha
 
         # Output declarations
         self.outputs['out_subapdata'] = self.subapdata
@@ -64,10 +66,9 @@ class FsmHybridSlopec(Slopec):
         self.miss_counter = self.xp.zeros(n_subaps, dtype=self.xp.int32)
         self.is_locked = self.xp.zeros(n_subaps, dtype=self.xp.bool_)
 
-        # Circular sliding window buffers (The "Radar" FIR approach)
-        self.pixel_buffer = self.xp.zeros((self.ma_frames, n_subaps, np_sub, np_sub), dtype=self.dtype)
-        self.corr_buffer = self.xp.zeros((self.ma_frames, n_subaps, np_sub, np_sub), dtype=self.dtype)
-        self.buffer_idx = 0
+        # Exponential Moving Average buffers (The "Radar")
+        self.ema_pixels = self.xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
+        self.ema_corr = self.xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
 
         # --- Grids Generation ---
         self.x_grid = self.xp.arange(np_sub, dtype=self.dtype)
@@ -126,41 +127,47 @@ class FsmHybridSlopec(Slopec):
         in_pixels = self.local_inputs['in_pixels'].pixels
         n_subaps = self.nsubaps()
         np_sub = self.subapdata.np_sub
+        cntrd = (np_sub - 1) / 2.0
 
         # 0. Extract raw pixels
         idx2d = unravel_index_2d(self.subap_idx, in_pixels.shape, self.xp)
         pixels = in_pixels[idx2d].reshape(n_subaps, np_sub, np_sub).astype(self.dtype)
 
-        # 1. Base Spatial Correlation (The Likelihood) via FFT
+        # 1. Update Exponential Moving Averages (EMA)
+        # Flush the EMA memory for subapertures that are starting completely fresh (Hard Drop)
+        reset_ema = (self.miss_counter >= self.max_missed_frames)[:, None, None]
+
+        self.ema_pixels = self.xp.where(
+            reset_ema, pixels,
+            self.ema_alpha * pixels + (1.0 - self.ema_alpha) * self.ema_pixels
+        )
+
+        # 2. Base Spatial Correlation (The Likelihood) via FFT
         fft_pixels = self.xp.fft.fft2(pixels, axes=(1, 2))
         corr_map = self.xp.fft.ifft2(fft_pixels * self.xp.conj(self.fft_template), axes=(1, 2)).real
 
-        # Push new frames into circular sliding window buffers FIRST
-        self.pixel_buffer[self.buffer_idx] = pixels
-        self.corr_buffer[self.buffer_idx] = corr_map
-        self.buffer_idx = (self.buffer_idx + 1) % self.ma_frames
-
-        # Compute the true, finite Moving Average (MA)
-        ma_pixels = self.xp.mean(self.pixel_buffer, axis=0)
-        ma_corr = self.xp.mean(self.corr_buffer, axis=0)
+        self.ema_corr = self.xp.where(
+            reset_ema, corr_map, 
+            self.ema_alpha * corr_map + (1.0 - self.ema_alpha) * self.ema_corr
+        )
 
         # ------------------------------------------------------------------
-        # THE RADAR (Moving Average Detection)
+        # THE RADAR (EMA Detection)
         # Evaluates the global presence of the star over recent frames.
         # ------------------------------------------------------------------
-        ma_mean = self.xp.mean(ma_corr, axis=(1, 2))
-        ma_std = self.xp.maximum(self.xp.std(ma_corr, axis=(1, 2)), 1e-6)
+        ema_mean = self.xp.mean(self.ema_corr, axis=(1, 2))
+        ema_std = self.xp.maximum(self.xp.std(self.ema_corr, axis=(1, 2)), 1e-6)
 
-        flat_idx_ma = self.xp.argmax(ma_corr.reshape(n_subaps, -1), axis=1)
-        c_max_ma = ma_corr.reshape(n_subaps, -1)[self.xp.arange(n_subaps), flat_idx_ma]
+        flat_idx_ema = self.xp.argmax(self.ema_corr.reshape(n_subaps, -1), axis=1)
+        c_max_ema = self.ema_corr.reshape(n_subaps, -1)[self.xp.arange(n_subaps), flat_idx_ema]
 
-        snr_radar = (c_max_ma - ma_mean) / ma_std
+        snr_radar = (c_max_ema - ema_mean) / ema_std
         radar_yes = snr_radar >= self.snr_thr
 
-        y_idx_ma = flat_idx_ma // np_sub
-        x_idx_ma = flat_idx_ma % np_sub
-        x_coarse_ma = x_idx_ma + self.offset
-        y_coarse_ma = y_idx_ma + self.offset
+        y_idx_ema = flat_idx_ema // np_sub
+        x_idx_ema = flat_idx_ema % np_sub
+        x_coarse_ema = x_idx_ema + self.offset
+        y_coarse_ema = y_idx_ema + self.offset
 
         # ------------------------------------------------------------------
         # KINEMATIC PREDICTION (Swarm Tracking)
@@ -208,21 +215,44 @@ class FsmHybridSlopec(Slopec):
         # ------------------------------------------------------------------
         use_track2 = ~sniper_yes & radar_yes
         use_track3 = ~sniper_yes & ~radar_yes
+        
+        # CRITICAL FIX: A valid hit is ANY hit with sufficient SNR. 
+        # The kinematic leash restrains the WCoG mask, but DOES NOT invalidate the hit.
         valid_hit = ~use_track3
 
         # Choose baseline target source coordinates from the corresponding track
-        x_coarse_raw = self.xp.where(use_track2, x_coarse_ma, x_coarse_single)
-        y_coarse_raw = self.xp.where(use_track2, y_coarse_ma, y_coarse_single)
+        x_coarse_raw = self.xp.where(use_track2, x_coarse_ema, x_coarse_single)
+        y_coarse_raw = self.xp.where(use_track2, y_coarse_ema, y_coarse_single)
 
-        # KINEMATIC LEASH CONSTRAINT: Restrict mask jumps if Locked
-        dx = x_coarse_raw - self.state_x1
-        dy = y_coarse_raw - self.state_y1
-        
-        x_coarse = self.xp.where(self.is_locked, self.state_x1 + self.xp.clip(dx, -self.max_v, self.max_v), x_coarse_raw)
-        y_coarse = self.xp.where(self.is_locked, self.state_y1 + self.xp.clip(dy, -self.max_v, self.max_v), y_coarse_raw)
+        # ------------------------------------------------------------------
+        # ASYMMETRIC SPRING LEASH CONSTRAINT
+        # Allows proportional speed towards the center, clips outwards noise.
+        # ------------------------------------------------------------------
+        dx_raw = x_coarse_raw - self.state_x1
+        dy_raw = y_coarse_raw - self.state_y1
 
-        # 5. Fine Tracking (Dynamic WCoG)
-        wcog_pixels = self.xp.where(use_track2[:, None, None], ma_pixels, pixels)
+        x_rel = self.state_x1 - cntrd
+        y_rel = self.state_y1 - cntrd
+
+        # X-Axis limits
+        limit_pos_x = self.xp.where(x_rel > 0, self.max_v, self.xp.maximum(self.max_v, self.leash_alpha * self.xp.abs(x_rel)))
+        limit_neg_x = self.xp.where(x_rel > 0, -self.xp.maximum(self.max_v, self.leash_alpha * self.xp.abs(x_rel)), -self.max_v)
+
+        # Y-Axis limits
+        limit_pos_y = self.xp.where(y_rel > 0, self.max_v, self.xp.maximum(self.max_v, self.leash_alpha * self.xp.abs(y_rel)))
+        limit_neg_y = self.xp.where(y_rel > 0, -self.xp.maximum(self.max_v, self.leash_alpha * self.xp.abs(y_rel)), -self.max_v)
+
+        dx_clipped = self.xp.clip(dx_raw, limit_neg_x, limit_pos_x)
+        dy_clipped = self.xp.clip(dy_raw, limit_neg_y, limit_pos_y)
+
+        x_coarse = self.xp.where(self.is_locked, self.state_x1 + dx_clipped, x_coarse_raw)
+        y_coarse = self.xp.where(self.is_locked, self.state_y1 + dy_clipped, y_coarse_raw)
+
+        # ------------------------------------------------------------------
+        # FINE TRACKING (Dynamic WCoG)
+        # ------------------------------------------------------------------
+        # Wcog data source changes based on track confidence to prevent noise division
+        wcog_pixels = self.xp.where(use_track2[:, None, None], self.ema_pixels, pixels)
 
         dynamic_weight = self._generate_gaussian(x_coarse, y_coarse, self.fwhm_pix)
         weighted_img = self.xp.maximum(wcog_pixels, 0.0) * dynamic_weight
@@ -231,12 +261,13 @@ class FsmHybridSlopec(Slopec):
         x_est = self.xp.sum(self.xx[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
         y_est = self.xp.sum(self.yy[None, :, :] * weighted_img, axis=(1, 2)) / self.xp.maximum(flux_sum, 1e-6)
 
+        # Protection against math errors
         zero_flux_mask = flux_sum < 1e-6
         x_est = self.xp.where(zero_flux_mask, x_coarse.astype(self.dtype), x_est)
         y_est = self.xp.where(zero_flux_mask, y_coarse.astype(self.dtype), y_est)
 
         # ========================================================
-        # 6. FINITE STATE MACHINE (Vectorized Updates)
+        # FINITE STATE MACHINE (Vectorized Updates)
         # ========================================================
         new_is_locked = self.is_locked.copy()
         new_lock_counter = self.lock_counter.copy()
@@ -281,18 +312,12 @@ class FsmHybridSlopec(Slopec):
         new_state_x1[invalid_trk] = x_pred[invalid_trk]
         new_state_y1[invalid_trk] = y_pred[invalid_trk]
 
+        # --- C. DROP LOGIC ---
         lock_lost = invalid_trk & (new_miss_counter >= self.max_missed_frames)
         new_is_locked[lock_lost] = False
         new_lock_counter[lock_lost] = 0
         
-        # --- C. BUFFER FLUSHING & SAFEGUARDS ---
-        # Flush the MA buffers ONLY for the subapertures that just lost lock
-        ll_mask = lock_lost[:, None, None]
-        self.pixel_buffer = self.xp.where(ll_mask[None, :, :, :], pixels[None, :, :, :], self.pixel_buffer)
-        self.corr_buffer = self.xp.where(ll_mask[None, :, :, :], corr_map[None, :, :, :], self.corr_buffer)
-
-        # CRITICAL FIX: Ensure miss_counter is zeroed out for all unlocked subapertures
-        # This prevents the system from carrying a zombie miss counter of 10 into ACQ mode!
+        # Ensure miss_counter is zeroed out for all unlocked subapertures
         new_miss_counter[~new_is_locked] = 0
 
         # --- Update Global Memory ---
@@ -305,12 +330,12 @@ class FsmHybridSlopec(Slopec):
         self.miss_counter = new_miss_counter
 
         # --- Output Slopes to the Reconstructor ---
-        cntrd = (np_sub - 1) / 2.0
         norm_factor = np_sub / 2.0
 
         raw_slope_x = (self.state_x1 - cntrd) / norm_factor
         raw_slope_y = (self.state_y1 - cntrd) / norm_factor
 
+        # Output exactly 0.0 if not locked to maintain DM inertia
         self.slopes.xslopes = self.xp.where(self.is_locked, raw_slope_x, 0.0)
         self.slopes.yslopes = self.xp.where(self.is_locked, raw_slope_y, 0.0)
         self.slopes.generation_time = self.current_time
@@ -321,11 +346,11 @@ class FsmHybridSlopec(Slopec):
         self.subap_counts.value[0] = self.xp.mean(flux_sum)
 
         # plot for debugging
-        #debug_plot = False
-        if self.t_to_seconds(self.current_time) < 1.75:
-            debug_plot = False
-        else:
-            debug_plot = True
+        debug_plot = False
+        #if self.t_to_seconds(self.current_time) < 1.75:
+        #    debug_plot = False
+        #else:
+        #    debug_plot = True
         if debug_plot:
             import matplotlib.pyplot as plt
             from specula import cpuArray
@@ -340,7 +365,7 @@ class FsmHybridSlopec(Slopec):
             if t3:
                 track_str = "Track 3: HOLD (Fading)"
             elif t2:
-                track_str = "Track 2: MA WCoG (Flickering)"
+                track_str = "Track 2: EMA WCoG (Flickering)"
             else:
                 track_str = "Track 1: INSTANT WCoG (Strong Hit)"
 
@@ -381,29 +406,29 @@ class FsmHybridSlopec(Slopec):
             ax.set_xlabel('X [pix]')
             ax.set_ylabel('Y [pix]')
 
-            # --- 3. MA Pixels (Radar Memory) ---
+            # --- 3. EMA Pixels (Radar Memory) ---
             ax = axes[1, 0]
-            im3 = ax.imshow(cpuArray(ma_pixels[subap_to_plot]), cmap='hot')
+            im3 = ax.imshow(cpuArray(self.ema_pixels[subap_to_plot]), cmap='hot')
             ax.axhline(cntrd, color='w', linestyle=':', alpha=0.3)
             ax.axvline(cntrd, color='w', linestyle=':', alpha=0.3)
             
             ax.plot(cpuArray(x_est[subap_to_plot]),
                     cpuArray(y_est[subap_to_plot]), 'g*', markersize=16, label='Final Est')
-            ax.set_title(f'Subap {subap_to_plot}: Moving Average Pixels')
+            ax.set_title(f'Subap {subap_to_plot}: EMA Pixels')
             plt.colorbar(im3, ax=ax)
 
-            # --- 4. MA Correlation Map (Radar) ---
+            # --- 4. EMA Correlation Map (Radar) ---
             ax = axes[1, 1]
-            im4 = ax.imshow(cpuArray(ma_corr[subap_to_plot]), cmap='viridis')
+            im4 = ax.imshow(cpuArray(self.ema_corr[subap_to_plot]), cmap='viridis')
             ax.axhline(cntrd, color='w', linestyle=':', alpha=0.3)
             ax.axvline(cntrd, color='w', linestyle=':', alpha=0.3)
             
-            ax.plot(cpuArray(x_idx_ma[subap_to_plot]),
-                    cpuArray(y_idx_ma[subap_to_plot]),
+            ax.plot(cpuArray(x_idx_ema[subap_to_plot]),
+                    cpuArray(y_idx_ema[subap_to_plot]),
                     marker='D', color='orange', markerfacecolor='none',
-                    markersize=16, markeredgewidth=1.0, linestyle='', label='MA Peak')
+                    markersize=16, markeredgewidth=1.0, linestyle='', label='EMA Peak')
             
-            ax.set_title(f'MA Correlation Map\nRadar SNR = {snr_radar[subap_to_plot]:.2f}')
+            ax.set_title(f'EMA Correlation Map\nRadar SNR = {snr_radar[subap_to_plot]:.2f}')
             plt.colorbar(im4, ax=ax)
             ax.legend(loc='upper right', fontsize=9)
             ax.set_xlabel('X [pix]')
@@ -419,4 +444,3 @@ class FsmHybridSlopec(Slopec):
     def post_trigger(self):
         super().post_trigger()
         self.outputs['out_subapdata'].generation_time = self.current_time
-    
