@@ -21,6 +21,7 @@ class FsmHybridSlopec(Slopec):
                  prior_floor: float = 0.10,
                  lock_frames_req: int = 3,
                  max_missed_frames: int = 10,
+                 fast_relock_frames: int = 3,
                  max_v: float = 0.5,
                  acq_radius_sq: float = 2.0,
                  **kwargs):
@@ -38,6 +39,7 @@ class FsmHybridSlopec(Slopec):
         # Hysteresis and kinematic limits
         self.lock_frames_req = lock_frames_req
         self.max_missed_frames = max_missed_frames
+        self.fast_relock_frames = fast_relock_frames
         self.max_v = max_v
         self.acq_radius_sq = acq_radius_sq
 
@@ -141,14 +143,15 @@ class FsmHybridSlopec(Slopec):
         fft_pixels = self.xp.fft.fft2(pixels, axes=(1, 2))
         corr_map = self.xp.fft.ifft2(fft_pixels * self.xp.conj(self.fft_template), axes=(1, 2)).real
 
-        # Calculate Correlation SNR
+        # Maintain global statistics of the correlation map (the background noise floor)
         c_mean = self.xp.mean(corr_map, axis=(1, 2))
         c_std = self.xp.std(corr_map, axis=(1, 2))
-        c_max = self.xp.max(corr_map, axis=(1, 2))
-
         c_std_safe = self.xp.maximum(c_std, 1e-6)
-        snr_corr = (c_max - c_mean) / c_std_safe
-        valid_snr = snr_corr >= self.snr_thr
+
+        # GLOBAL SNR (The Radar): Is there a bright spot ANYWHERE in the sub-aperture?
+        c_max_global = self.xp.max(corr_map, axis=(1, 2))
+        snr_global = (c_max_global - c_mean) / c_std_safe
+        valid_global_snr = snr_global >= self.snr_thr
 
         # 2. Kinematic Prediction (Swarm Tracking via Global Tip-Tilt)
         if self.xp.any(self.is_locked):
@@ -167,26 +170,31 @@ class FsmHybridSlopec(Slopec):
         y_pred = self.state_y1 + 0.5 * v_global_y
 
         # 3. Bayesian Spatial Prior (Kinematic Masking)
-        # Because the correlation map is shifted by self.offset, the prior must match its grid
+        # Flat prior for subapertures in Acquisition State OR when SNR is extremely high
+        override_mask = (snr_global > self.snr_strong_thr) | ~self.is_locked
+
         prior_gauss = self._generate_gaussian(x_pred - self.offset, y_pred - self.offset, self.prior_sigma)
-        spatial_prior = (1.0 - self.prior_floor) * prior_gauss + self.prior_floor
-
-        # Flat prior for subapertures in Acquisition State OR when SNR is extremely high (Bypass)
-        strong_snr_mask = snr_corr > self.snr_strong_thr
-        override_mask = strong_snr_mask | ~self.is_locked
-
         spatial_prior = self.xp.where(
             override_mask[:, None, None],
-            self.xp.ones_like(spatial_prior),
-            spatial_prior
+            self.xp.ones_like(prior_gauss),
+            (1.0 - self.prior_floor) * prior_gauss + self.prior_floor
         )
 
         weighted_corr = corr_map * spatial_prior
 
         # 4. Coarse Peak Extraction
-        flat_idx = self.xp.argmax(weighted_corr.reshape(n_subaps, -1), axis=1)
+        corr_map_flat = corr_map.reshape(n_subaps, -1)
+        weighted_corr_flat = weighted_corr.reshape(n_subaps, -1)
+
+        flat_idx = self.xp.argmax(weighted_corr_flat, axis=1)
         y_idx = flat_idx // np_sub
         x_idx = flat_idx % np_sub
+
+        # LOCAL SNR (The Tracker Confidence): What is the SNR of the SPECIFIC peak we chose?
+        # This prevents the FSM from hallucinating a lock on noise when the real star jumps out of the prior.
+        c_max_local = corr_map_flat[self.xp.arange(n_subaps), flat_idx]
+        snr_local = (c_max_local - c_mean) / c_std_safe
+        valid_local_snr = snr_local >= self.snr_thr
 
         # Transform correlation indices back to true physical coordinates
         x_coarse = x_idx + self.offset
@@ -206,7 +214,7 @@ class FsmHybridSlopec(Slopec):
         y_est = self.xp.where(zero_flux_mask, y_coarse.astype(self.dtype), y_est)
 
         # ========================================================
-        # 6. FINITE STATE MACHINE (Vectorized Logical Updates)
+        # 6. FINITE STATE MACHINE (Confidence Matrix Logic)
         # ========================================================
         new_is_locked = self.is_locked.copy()
         new_lock_counter = self.lock_counter.copy()
@@ -216,8 +224,8 @@ class FsmHybridSlopec(Slopec):
 
         # --- A. ACQUISITION MODE ---
         acq_mask = ~self.is_locked
-        valid_acq = acq_mask & valid_snr
-        invalid_acq = acq_mask & ~valid_snr
+        valid_acq = acq_mask & valid_local_snr
+        invalid_acq = acq_mask & ~valid_local_snr
 
         # Calculate spatial consistency: new peak must be close to the previous one
         dist_sq = (x_est - self.state_x1)**2 + (y_est - self.state_y1)**2
@@ -242,19 +250,31 @@ class FsmHybridSlopec(Slopec):
 
         # --- B. TRACKING MODE ---
         trk_mask = self.is_locked
-        valid_trk = trk_mask & valid_snr
-        invalid_trk = trk_mask & ~valid_snr
+        valid_trk = trk_mask & valid_local_snr
+        invalid_trk = trk_mask & ~valid_local_snr
 
         new_miss_counter[valid_trk] = 0
         new_state_x1[valid_trk] = x_est[valid_trk]
         new_state_y1[valid_trk] = y_est[valid_trk]
 
-        new_miss_counter[invalid_trk] += 1
         # Kinematic HOLD: advance blindly via global tip-tilt prediction
+        new_miss_counter[invalid_trk] += 1
         new_state_x1[invalid_trk] = x_pred[invalid_trk]
         new_state_y1[invalid_trk] = y_pred[invalid_trk]
 
-        lock_lost = invalid_trk & (new_miss_counter >= self.max_missed_frames)
+        # --- C. DROP LOGIC (The Confidence Matrix) ---
+        # Condition 1: Pure fading. Global SNR is low, Local SNR is low.
+        # Action: Wait patiently up to max_missed_frames.
+        slow_drop = invalid_trk & ~valid_global_snr & (new_miss_counter >= self.max_missed_frames)
+
+        # Condition 2: Persistent Anomaly. Global SNR is high (star is there!), but Local SNR is low (outside mask).
+        # Action: It's likely a DM step. Drop lock quickly to re-acquire the global peak.
+        fast_drop = invalid_trk & valid_global_snr & (new_miss_counter >= self.fast_relock_frames)
+
+        # Absolute failsafe
+        hard_drop = invalid_trk & (new_miss_counter >= self.max_missed_frames)
+
+        lock_lost = slow_drop | fast_drop | hard_drop
         new_is_locked[lock_lost] = False
         new_lock_counter[lock_lost] = 0
 
@@ -276,8 +296,8 @@ class FsmHybridSlopec(Slopec):
         raw_slope_x = (self.state_x1 - cntrd) / norm_factor
         raw_slope_y = (self.state_y1 - cntrd) / norm_factor
 
-        # Only output slopes if the sub-aperture is firmly locked.
-        # During acquisition (Locked=False), we output exactly 0.0 to prevent
+        # CRITICAL FIX: Only output slopes if the sub-aperture is firmly locked.
+        # During acquisition (Locked=False), we output exactly 0.0 to prevent 
         # the DM from moving the spot and breaking the spatial consistency check.
         self.slopes.xslopes = self.xp.where(self.is_locked, raw_slope_x, 0.0)
         self.slopes.yslopes = self.xp.where(self.is_locked, raw_slope_y, 0.0)
@@ -290,7 +310,7 @@ class FsmHybridSlopec(Slopec):
 
         # plot for debugging
         #debug_plot = False
-        if self.t_to_seconds(self.current_time) < 2.0:
+        if self.t_to_seconds(self.current_time) < 1.75:
             debug_plot = False
         else:
             debug_plot = True
@@ -331,7 +351,7 @@ class FsmHybridSlopec(Slopec):
                         marker='s', color='cyan', markerfacecolor='none', 
                         markersize=16, markeredgewidth=1.0, linestyle='', label='Prediction')
 
-            ax.set_title(f'Subap {subap_to_plot}: Correlation Map\nSNR={snr_corr[subap_to_plot]:.2f} (thr={self.snr_thr})')
+            ax.set_title(f'Subap {subap_to_plot}: Correlation Map\nLocal SNR={snr_local[subap_to_plot]:.2f} | Global SNR={snr_global[subap_to_plot]:.2f}')
             plt.colorbar(im2, ax=ax)
             ax.legend(loc='upper right', fontsize=9)
             ax.set_xlabel('X [pix]')
