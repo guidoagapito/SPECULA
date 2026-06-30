@@ -16,10 +16,13 @@ class FsmHybridSlopec(Slopec):
                  subapdata: SubapData,
                  fwhm_pix: float = 1.5,
                  snr_thr: float = 3.5,
+                 snr_strong_thr: float = 15.0,
                  prior_sigma: float = 5.0,
                  prior_floor: float = 0.10,
                  lock_frames_req: int = 3,
                  max_missed_frames: int = 10,
+                 max_v: float = 0.5,
+                 acq_radius_sq: float = 2.0,
                  **kwargs):
 
         self.subapdata = subapdata
@@ -28,12 +31,15 @@ class FsmHybridSlopec(Slopec):
         # Tracker physical parameters
         self.fwhm_pix = fwhm_pix
         self.snr_thr = snr_thr
+        self.snr_strong_thr = snr_strong_thr
         self.prior_sigma = prior_sigma
         self.prior_floor = prior_floor
 
-        # Hysteresis logic parameters
+        # Hysteresis and kinematic limits
         self.lock_frames_req = lock_frames_req
         self.max_missed_frames = max_missed_frames
+        self.max_v = max_v
+        self.acq_radius_sq = acq_radius_sq
 
         # Output declarations
         self.outputs['out_subapdata'] = self.subapdata
@@ -149,9 +155,10 @@ class FsmHybridSlopec(Slopec):
             vx_valid = self.state_x1[self.is_locked] - self.state_x2[self.is_locked]
             vy_valid = self.state_y1[self.is_locked] - self.state_y2[self.is_locked]
 
-            # Median gracefully rejects single-subaperture outliers
-            v_global_x = self.xp.median(vx_valid)
-            v_global_y = self.xp.median(vy_valid)
+            # Median gracefully rejects single-subaperture outliers.
+            # Clip limits the physical slew rate to avoid unrealistic DM jumps.
+            v_global_x = self.xp.clip(self.xp.median(vx_valid), -self.max_v, self.max_v)
+            v_global_y = self.xp.clip(self.xp.median(vy_valid), -self.max_v, self.max_v)
         else:
             v_global_x = 0.0
             v_global_y = 0.0
@@ -164,11 +171,14 @@ class FsmHybridSlopec(Slopec):
         prior_gauss = self._generate_gaussian(x_pred - self.offset, y_pred - self.offset, self.prior_sigma)
         spatial_prior = (1.0 - self.prior_floor) * prior_gauss + self.prior_floor
 
-        # Flat prior for subapertures in Acquisition State
+        # Flat prior for subapertures in Acquisition State OR when SNR is extremely high (Bypass)
+        strong_snr_mask = snr_corr > self.snr_strong_thr
+        override_mask = strong_snr_mask | ~self.is_locked
+
         spatial_prior = self.xp.where(
-            self.is_locked[:, None, None],
-            spatial_prior,
-            self.xp.ones_like(spatial_prior)
+            override_mask[:, None, None],
+            self.xp.ones_like(spatial_prior),
+            spatial_prior
         )
 
         weighted_corr = corr_map * spatial_prior
@@ -209,15 +219,26 @@ class FsmHybridSlopec(Slopec):
         valid_acq = acq_mask & valid_snr
         invalid_acq = acq_mask & ~valid_snr
 
-        new_lock_counter[valid_acq] += 1
+        # Calculate spatial consistency: new peak must be close to the previous one
+        dist_sq = (x_est - self.state_x1)**2 + (y_est - self.state_y1)**2
+        is_consistent = dist_sq <= self.acq_radius_sq
+        is_first_hit = self.lock_counter == 0
+
+        consistent_acq = valid_acq & (is_consistent | is_first_hit)
+        inconsistent_acq = valid_acq & ~is_consistent
+
+        # Logic for the lock counter
+        new_lock_counter[consistent_acq] += 1
+        new_lock_counter[inconsistent_acq] = 1  # Found a valid but distant peak, restart counter
+        new_lock_counter[invalid_acq] = 0
+
+        # Always update the position if a valid signal is found (consistent or not)
         new_state_x1[valid_acq] = x_est[valid_acq]
         new_state_y1[valid_acq] = y_est[valid_acq]
 
         lock_achieved = valid_acq & (new_lock_counter >= self.lock_frames_req)
         new_is_locked[lock_achieved] = True
         new_miss_counter[lock_achieved] = 0
-
-        new_lock_counter[invalid_acq] = 0
 
         # --- B. TRACKING MODE ---
         trk_mask = self.is_locked
@@ -252,8 +273,14 @@ class FsmHybridSlopec(Slopec):
         cntrd = (np_sub - 1) / 2.0
         norm_factor = np_sub / 2.0
 
-        self.slopes.xslopes = (self.state_x1 - cntrd) / norm_factor
-        self.slopes.yslopes = (self.state_y1 - cntrd) / norm_factor
+        raw_slope_x = (self.state_x1 - cntrd) / norm_factor
+        raw_slope_y = (self.state_y1 - cntrd) / norm_factor
+
+        # Only output slopes if the sub-aperture is firmly locked.
+        # During acquisition (Locked=False), we output exactly 0.0 to prevent
+        # the DM from moving the spot and breaking the spatial consistency check.
+        self.slopes.xslopes = self.xp.where(self.is_locked, raw_slope_x, 0.0)
+        self.slopes.yslopes = self.xp.where(self.is_locked, raw_slope_y, 0.0)
         self.slopes.generation_time = self.current_time
 
         # Update telemetry
@@ -262,7 +289,11 @@ class FsmHybridSlopec(Slopec):
         self.subap_counts.value[0] = self.xp.mean(flux_sum)
 
         # plot for debugging
-        debug_plot = False
+        #debug_plot = False
+        if self.t_to_seconds(self.current_time) < 2.0:
+            debug_plot = False
+        else:
+            debug_plot = True
         if debug_plot:
             import matplotlib.pyplot as plt
             from specula import cpuArray
@@ -270,7 +301,7 @@ class FsmHybridSlopec(Slopec):
 
             fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-            # Estraiamo lo stato corrente per rendere il plot condizionale
+            # Extract current state for conditional plotting
             is_locked_curr = bool(self.is_locked[subap_to_plot])
 
             # --- 1. Raw Pixel Image (Spot) ---
@@ -288,12 +319,17 @@ class FsmHybridSlopec(Slopec):
             im2 = ax.imshow(cpuArray(corr_map[subap_to_plot]), cmap='viridis')
             ax.axhline(cntrd, color='w', linestyle=':', alpha=0.3)
             ax.axvline(cntrd, color='w', linestyle=':', alpha=0.3)
-            # Mark coarse peak
-            ax.plot(cpuArray(x_idx[subap_to_plot]), cpuArray(y_idx[subap_to_plot]), 'r+', markersize=15, markeredgewidth=2, label='Coarse Peak')
 
-            # Mostra la predizione solo se siamo in Tracking
+            # Mark coarse peak: Empty red circle, thin edge
+            ax.plot(cpuArray(x_idx[subap_to_plot]), cpuArray(y_idx[subap_to_plot]),
+                    marker='o', color='red', markerfacecolor='none',
+                    markersize=16, markeredgewidth=1.0, linestyle='', label='Coarse Peak')
+
+            # Show prediction only if in Tracking: Empty cyan square, thin edge
             if is_locked_curr:
-                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset, 'c*', markersize=15, label='Prediction')
+                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset,
+                        marker='s', color='cyan', markerfacecolor='none', 
+                        markersize=16, markeredgewidth=1.0, linestyle='', label='Prediction')
 
             ax.set_title(f'Subap {subap_to_plot}: Correlation Map\nSNR={snr_corr[subap_to_plot]:.2f} (thr={self.snr_thr})')
             plt.colorbar(im2, ax=ax)
@@ -303,7 +339,6 @@ class FsmHybridSlopec(Slopec):
 
             # --- 3. Spatial Prior (Weight Mask) ---
             ax = axes[1, 0]
-            # Forziamo vmin=0.0 e vmax=1.0 per avere coerenza visiva
             im3 = ax.imshow(cpuArray(spatial_prior[subap_to_plot]), cmap='bone', vmin=0.0, vmax=1.0)
 
             title_prior = "(GAUSSIAN - Tracking)" if is_locked_curr else "(FLAT - Acquisition)"
@@ -311,7 +346,10 @@ class FsmHybridSlopec(Slopec):
             plt.colorbar(im3, ax=ax)
 
             if is_locked_curr:
-                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset, 'r+', markersize=15, markeredgewidth=2, label='Prior Center')
+                # Empty blue diamond for the prior
+                ax.plot(cpuArray(x_pred[subap_to_plot]) - self.offset, cpuArray(y_pred[subap_to_plot]) - self.offset,
+                        marker='D', color='dodgerblue', markerfacecolor='none', 
+                        markersize=14, markeredgewidth=1.0, linestyle='', label='Prior Center')
                 ax.legend(loc='upper right', fontsize=9)
 
             ax.set_xlabel('X [pix]')
@@ -323,8 +361,8 @@ class FsmHybridSlopec(Slopec):
             ax.axhline(cntrd, color='w', linestyle='--', alpha=0.4, linewidth=1)
             ax.axvline(cntrd, color='w', linestyle='--', alpha=0.4, linewidth=1, label='Nominal Center')
 
-            # Mark final WCoG position
-            ax.plot(cpuArray(x_est[subap_to_plot]), cpuArray(y_est[subap_to_plot]), 'g*', markersize=20, label=f'WCoG Est: ({x_est[subap_to_plot]:.2f}, {y_est[subap_to_plot]:.2f})')
+            # Mark final WCoG position: Green star
+            ax.plot(cpuArray(x_est[subap_to_plot]), cpuArray(y_est[subap_to_plot]), 'g*', markersize=15, label=f'WCoG Est: ({x_est[subap_to_plot]:.2f}, {y_est[subap_to_plot]:.2f})')
             ax.set_title(f'Subap {subap_to_plot}: Weighted Image (WCoG)\nFlux={flux_sum[subap_to_plot]:.1f}')
             plt.colorbar(im4, ax=ax)
             ax.legend(loc='upper right', fontsize=9)
