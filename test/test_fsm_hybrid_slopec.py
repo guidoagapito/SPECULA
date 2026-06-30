@@ -45,21 +45,17 @@ class TestFsmHybridSlopec(unittest.TestCase):
 
         # Provide the total empty CCD array shape
         ccd_shape = (n_sub_side * subap_npx, n_sub_side * subap_npx)
-
         return subapdata, ccd_shape
 
-    def generate_spots(self, ccd_shape, subapdata, xp, fwhm=1.5, flux=100.0, bg=1.0):
-        """
-        Generates a dummy CCD with perfect Gaussian spots at the center 
-        of each sub-aperture to simulate a high SNR environment.
-        """
+    def generate_spots(self, ccd_shape, subapdata, xp, fwhm=1.5, flux=100.0, bg=1.0, shift_dx=0.0):
+        """Generates Gaussian spots with an optional sub-pixel shift along the X axis."""
         np_sub = subapdata.np_sub
         n_subaps = subapdata.n_subaps
 
         ccd = np.full(ccd_shape, bg, dtype=np.float32)
         cntrd = (np_sub - 1) / 2.0
 
-        x = np.arange(np_sub) - cntrd
+        x = np.arange(np_sub) - cntrd - shift_dx
         y = np.arange(np_sub) - cntrd
         xx, yy = np.meshgrid(x, y)
 
@@ -82,9 +78,7 @@ class TestFsmHybridSlopec(unittest.TestCase):
 
     @cpu_and_gpu
     def test_fsm_acquisition_and_tracking(self, target_device_idx, xp):
-        """
-        Verifies the Finite State Machine (FSM) transition from Acquisition to Tracking.
-        """
+        """Verifies the Finite State Machine transition from Acquisition to Tracking."""
         lock_frames_req = 3
         subap_npx = 32
         t = int(1e9)
@@ -104,7 +98,7 @@ class TestFsmHybridSlopec(unittest.TestCase):
         # Create a frame with perfect spots (very high SNR)
         good_frame = self.generate_spots(ccd_shape, subapdata, xp)
 
-        # --- TEST 1: Bootstrap (Acquisition Phase) ---
+        # --- TEST 1: Bootstrap Sequence ---
         for i in range(1, lock_frames_req + 1):
             pixels.pixels = good_frame
             pixels.generation_time = t * i
@@ -131,10 +125,7 @@ class TestFsmHybridSlopec(unittest.TestCase):
 
     @cpu_and_gpu
     def test_fsm_hold_and_miss_counter(self, target_device_idx, xp):
-        """
-        Verifies that an empty frame does not break the loop instantly, 
-        but increments the miss_counter sending the sub-aperture into Hold.
-        """
+        """Verifies that an invalid frame triggers the Hold mode and increments miss_counter."""
         lock_frames_req = 2
         max_missed_frames = 5
         subap_npx = 32
@@ -152,9 +143,9 @@ class TestFsmHybridSlopec(unittest.TestCase):
         slopec.inputs['in_pixels'].set(pixels)
 
         good_frame = self.generate_spots(ccd_shape, subapdata, xp)
-        bad_frame = xp.full(ccd_shape, 1.0, dtype=xp.float32) # Only constant background
+        bad_frame = xp.full(ccd_shape, 1.0, dtype=xp.float32)
 
-        # 1. Force the Lock
+        # 1. Force the Lock state
         for i in range(1, lock_frames_req + 1):
             pixels.pixels = good_frame
             pixels.generation_time = t * i
@@ -184,20 +175,18 @@ class TestFsmHybridSlopec(unittest.TestCase):
 
     @cpu_and_gpu
     def test_fsm_vs_sh_slopec_normalization(self, target_device_idx, xp):
-        """
-        Verifies that the FSM Hybrid Slopec outputs slopes with the exact same
-        normalization (scale) as the standard ShSlopec when given identical data.
-        """
+        """Verifies slope scale normalization against standard ShSlopec under tracking conditions."""
         subap_npx = 32
+        lock_frames_req = 3
         t = int(1e9)
 
         subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx=subap_npx)
         pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
 
-        # Create an image with a spot exactly 1 pixel shifted to the right (+X)
-        shifted_frame = self.generate_spots(ccd_shape, subapdata, xp, fwhm=1.5, flux=1000.0, bg=0.0)
-        # Apply a manual roll to shift the data mathematically by 1 pixel along X
-        shifted_frame = xp.roll(shifted_frame, shift=1, axis=1)
+        # Generate a continuous sequence with a 1-pixel shift to the right (+X)
+        shifted_frame = self.generate_spots(ccd_shape, subapdata, xp, fwhm=1.5, flux=1000.0, bg=0.0, shift_dx=1.0)
+        
+        # 1. Execute Standard ShSlopec
         pixels.pixels = shifted_frame
         pixels.generation_time = t
 
@@ -210,18 +199,20 @@ class TestFsmHybridSlopec(unittest.TestCase):
 
         slopes_sh_x = cpuArray(slopec_sh.outputs['out_slopes'].xslopes)
 
-        # 2. Run FSM Hybrid Slopec (Needs 3 frames to reach Tracking state,
-        # but Acquisition mode outputs valid WCoG slopes anyway)
-        slopec_fsm = FsmHybridSlopec(subapdata, target_device_idx=target_device_idx)
+        # 2. Execute FSM Hybrid Slopec
+        # We MUST complete the bootstrap loop to engage tracking, otherwise output slopes are zeroed out.
+        slopec_fsm = FsmHybridSlopec(subapdata, lock_frames_req=lock_frames_req, target_device_idx=target_device_idx)
         slopec_fsm.inputs['in_pixels'].set(pixels)
-        slopec_fsm.check_ready(t)
-        slopec_fsm.trigger()
-        slopec_fsm.post_trigger()
 
+        for i in range(1, lock_frames_req + 1):
+            pixels.generation_time = t * i
+            slopec_fsm.check_ready(t * i)
+            slopec_fsm.trigger()
+            slopec_fsm.post_trigger()
+
+        self.assertTrue(np.all(cpuArray(slopec_fsm.is_locked)), "FSM failed to achieve lock during testing scale")
         slopes_fsm_x = cpuArray(slopec_fsm.outputs['out_slopes'].xslopes)
 
-        # Verify the outputs match exactly in magnitude
-        # We use a slight tolerance because FSM does WCoG on a correlated mask
-        # while standard SH does basic CoG/WCoG, but the scale MUST be the same.
+        # Cross-compare magnitudes
         np.testing.assert_allclose(slopes_fsm_x, slopes_sh_x, rtol=1e-2, atol=1e-3,
-                err_msg="Normalization mismatch between FSM and standard ShSlopec!")
+                err_msg="Normalization mismatch between FSM and standard ShSlopec under tracking state!")

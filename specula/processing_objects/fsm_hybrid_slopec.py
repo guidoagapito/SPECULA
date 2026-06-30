@@ -7,9 +7,65 @@ from specula.processing_objects.slopec import Slopec
 class FsmHybridSlopec(Slopec):
     """
     FSM-Guided Kinematic Hybrid Tracker processing object.
-    Implements a Dual-Brain architecture (Radar EMA + Instantaneous Sniper)
-    with an Asymmetric Kinematic Leash and Spatial Gatekeeping to compute 
-    Shack-Hartmann slopes robustly in extreme low-SNR and closed-loop environments.
+
+    Implements a Dual-Brain architecture that balances an instantaneous "Sniper" 
+    target extractor against a historical Exponential Moving Average (EMA) "Radar".
+    Designed specifically to guarantee robust Shack-Hartmann centroiding and closed-loop 
+    stability in extreme low-SNR target environments subject to photon Poisson 
+    flickering and aggressive mirror dynamics.
+
+    Parameters
+    ----------
+    subapdata : SubapData
+        SPECULA object containing the sub-aperture geometry, pixel indexing, 
+        and valid pupil masks.
+    fwhm_pix : float [pixels], optional
+        Full Width at Half Maximum of the expected nominal spot profile, 
+        expressed in pixels. Used to scale the matched filter template and 
+        the dynamic WCoG gaussian weighting window. Default is 1.5.
+    snr_thr : float [1], optional
+        Significance threshold for the signal-to-noise ratio. Applies to both 
+        the instantaneous sniper map and the historical radar map to declare 
+        a valid detection. Default is 3.5.
+    snr_strong_thr : float [1], optional
+        SNR threshold above which a signal is considered absolutely dominant. 
+        When exceeded, the spatial prior kinematic mask is bypassed to prevent 
+        spatial lag during massive, unpredicted slews. Default is 15.0.
+    prior_sigma : float [pixels], optional
+        Standard deviation (in pixels) of the Gaussian spatial prior mask. 
+        Defines the statistical search radius around the kinematically 
+        predicted spot center during tracking mode. Default is 5.0.
+    prior_floor : float [1], optional
+        The baseline probability transmission floor of the spatial prior mask. 
+        Guarantees that a valid spot far from the prediction is attenuated 
+        but never mathematically zeroed out. Default is 0.10.
+    lock_frames_req : int [1], optional
+        Hysteresis parameter defining the number of consecutive, spatially 
+        consistent valid frames required to transition the Finite State Machine 
+        from Acquisition to Tracking mode. Default is 3.
+    max_missed_frames : int [1], optional
+        The maximum number of consecutive invalid frames allowed before the FSM 
+        declares a total fading state, drops the lock, and flushes the 
+        historical memory. Default is 10.
+    max_v : float [pixels/frame], optional
+        Maximum physical slew rate expected per frame under nominal atmospheric 
+        and mechanical perturbations, in pixels. Used as the baseline bounding 
+        limit for the kinematic leash and global tip-tilt prediction. Default is 0.5.
+    leash_alpha : float [1], optional
+        Proportional gain of the asymmetric closed-loop spring leash. Scales the 
+        permissible spot step size towards the nominal center of the sub-aperture, 
+        modeling the corrector mirror's restorative force. Default is 0.5.
+    acq_radius_sq : float [pixels^2], optional
+        Maximum squared spatial distance (in square pixels) permitted between 
+        consecutive centroid estimates during acquisition, or between the sniper 
+        and radar peaks, to declare spatial consistency. Default is 4.0.
+    ema_alpha : float [1], optional
+        The smoothing factor of the Exponential Moving Average filter. Determines 
+        the temporal weight of the current frame relative to history for the 
+        background "Radar" image accumulation. Default is 0.3.
+    **kwargs : dict
+        Additional keyword arguments passed to the base `Slopec` constructor 
+        (e.g., `target_device_idx`, `dtype`).
     """
 
     def __init__(self,
@@ -308,17 +364,32 @@ class FsmHybridSlopec(Slopec):
 
         # --- B. TRACKING MODE ---
         trk_mask = self.is_locked
-        valid_trk = trk_mask & valid_hit
-        invalid_trk = trk_mask & ~valid_hit
 
-        new_miss_counter[valid_trk] = 0
-        new_state_x1[valid_trk] = x_est[valid_trk]
-        new_state_y1[valid_trk] = y_est[valid_trk]
+        # We consider a tracking frame fully nominal ONLY if the instantaneous Sniper sees it.
+        # If we are relying on Track 2 (EMA fallback), we still update the state with x_est
+        # (which comes from EMA pixels) to keep the loop moving, but we let the miss_counter rise!
+        nominal_trk = trk_mask & use_track1
+        flicker_trk = trk_mask & use_track2
+        fading_trk  = trk_mask & use_track3
 
-        # Soft-Hold (Track 3)
-        new_miss_counter[invalid_trk] += 1
-        new_state_x1[invalid_trk] = x_pred[invalid_trk]
-        new_state_y1[invalid_trk] = y_pred[invalid_trk]
+        # Nominal Tracking: Zero misses, update state with instant WCoG
+        new_miss_counter[nominal_trk] = 0
+        new_state_x1[nominal_trk] = x_est[nominal_trk]
+        new_state_y1[nominal_trk] = y_est[nominal_trk]
+
+        # Flicker Tracking (EMA Fallback): Increment miss, but STILL update state with EMA WCoG!
+        # This keeps the slopes fluid and active, preventing DM steps while accounting for the miss.
+        new_miss_counter[flicker_trk] += 1
+        new_state_x1[flicker_trk] = x_est[flicker_trk]
+        new_state_y1[flicker_trk] = y_est[flicker_trk]
+
+        # Total Fading (Track 3): Increment miss, blind cinematic prediction update
+        new_miss_counter[fading_trk] += 1
+        new_state_x1[fading_trk] = x_pred[fading_trk]
+        new_state_y1[fading_trk] = y_pred[fading_trk]
+
+        # For the drop logic, anyone who isn't nominal is an invalid_trk step
+        invalid_trk = trk_mask & ~use_track1
 
         # --- C. DROP LOGIC ---
         lock_lost = invalid_trk & (new_miss_counter >= self.max_missed_frames)
