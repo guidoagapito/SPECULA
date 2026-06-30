@@ -226,7 +226,7 @@ class FsmHybridSlopec(Slopec):
         snr_sniper_unweighted = (c_max_raw - single_mean) / single_std
 
         # ------------------------------------------------------------------
-        # KINEMATIC PREDICTION (Swarm Tracking)
+        # KINEMATIC PREDICTION (Swarm Tracking & Anti-Sawtooth)
         # ------------------------------------------------------------------
         if self.xp.any(self.is_locked):
             vx_valid = self.state_x1[self.is_locked] - self.state_x2[self.is_locked]
@@ -236,8 +236,13 @@ class FsmHybridSlopec(Slopec):
         else:
             v_global_x, v_global_y = 0.0, 0.0
 
-        x_pred = self.state_x1 + v_global_x
-        y_pred = self.state_y1 + v_global_y
+        # EXPONENTIAL SUPPRESSION (Leaky Integrator)
+        # Decays the velocity vector exponentially for subapertures in Hold/Flicker mode
+        # to prevent runaway integration (sawtooth oscillations) during signal loss.
+        velocity_damping = self.xp.power(0.5, self.miss_counter.astype(self.dtype))
+
+        x_pred = self.state_x1 + v_global_x * velocity_damping
+        y_pred = self.state_y1 + v_global_y * velocity_damping
 
         # ------------------------------------------------------------------
         # BAYESIAN PRIOR & WEIGHTED SNIPER
