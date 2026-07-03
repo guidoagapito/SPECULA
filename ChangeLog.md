@@ -24,6 +24,7 @@
 
 ### Other
 
+- Fixed BaseOperation using stale/uninitialized input values when in\_value1 or in\_value2 had never been generated
 - Fixed vecWeiPixRadT extraction in ShSlopec
 - Fixed output\_names in PhaseScreenCube
 - Fixed PhaseScreenCube crash on GPU due to np.searchsorted called on a cupy array
