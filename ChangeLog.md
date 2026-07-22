@@ -37,6 +37,7 @@
 - Bumped synim requirement to 1.2.2 (was 1.1.3)
 - Optimization of the compute\_ifs\_covmat function
 - Added Fraunhofer far field propagation
+- Fixed silent misparsing/confusing errors in split\_output() when an object, alias or output name contained a reserved '.', '-' or ':' character; added early validation of YAML section names in Simul
 - ...
 
 ## [1.0.3] - 2026-05-18
