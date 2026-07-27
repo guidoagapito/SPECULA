@@ -35,7 +35,8 @@ class FieldAnalyser:
                  start_time: float = 0.1,
                  end_time: Optional[float] = None,
                  display: bool = False,
-                 log_level: Optional[str] = None,):
+                 log_level: Optional[str] = None,
+                 on_missing_downstream_consumers: str = 'error',):
 
         self.data_dir = Path(data_dir)
         self.tracking_number = tracking_number
@@ -44,6 +45,12 @@ class FieldAnalyser:
         self.start_time = start_time
         self.end_time = end_time
         self.display = display
+        if on_missing_downstream_consumers not in ('error', 'warn', 'ignore'):
+            raise ValueError(
+                "on_missing_downstream_consumers must be one of 'error', 'warn', 'ignore', "
+                f"got {on_missing_downstream_consumers!r}"
+            )
+        self.on_missing_downstream_consumers = on_missing_downstream_consumers
         self.logger = get_specula_logger(__name__)
         if log_level is not None:
             self.logger.setLevel(log_level)
@@ -176,7 +183,9 @@ class FieldAnalyser:
         but with modified DataStore input_list containing only DM commands
         """
         simul = Simul('dummy.yaml')
-        replay_params = simul.build_targeted_replay(self.params, 'prop', set_store_dir=str(self.tn_dir))
+        replay_params = simul.build_targeted_replay(
+            self.params, 'prop', set_store_dir=str(self.tn_dir),
+            on_missing_downstream_consumers=self.on_missing_downstream_consumers)
         self._validate_replay_inputs_are_not_downsampled(replay_params)
         simul.inject_recorded_seeds(replay_params, self._get_saved_replay_seeds())
         replay_precision = self._get_saved_replay_precision()
