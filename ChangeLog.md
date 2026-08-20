@@ -5,12 +5,27 @@
 
 ### New processing and data objects
 
+- Added Finite State Machine Hybrid Slopec processing object.
+
+### Interface changes
+
+- ...
+
+### Other
+
+- ...
+
+## [1.0.4] - 2026-08-19
+
+### New processing and data objects
+
 - Added IntValue, FloatValue and StringValue as specialized containers for scalars and strings, to be used in place of BaseValue where needed.
 - Added DisplayRecorder processing object
 - Added Phasescreen data object.
 - Added Phase Extractor processing object.
 - Added CLOSE gain optimizer processing object.
-- Added Finite State Machine Hybrid Slopec processing object.
+- Added RoundToMultiple processing object.
+- Added EfReplay class (specula.ef_replay): replays a list of existing ElectricField/Layer outputs (e.g. an ElectricFieldCombinator or a DM's out_layer) exactly as they were in a past run, by targeting the existing object(s) directly with Simul.build_targeted_replay instead of synthesizing new off-axis sources like FieldAnalyser does. Complements FieldAnalyser for cases where a disturbance was injected downstream of AtmoPropagation (see FieldAnalyser's new "Limitation" tutorial section) and the exact original direction/sensor is what's needed. Added docs/tutorials/ef\_replay\_tutorial.rst and test\_ef\_replay.py
 
 ### Interface changes
 
@@ -23,6 +38,10 @@
 - Enabled start and end time (start\_time and end\_time parameters) in FieldAnalyser.
 - Added "out_window_id" output to all displays to support video recording
 - Added "beam_center" for uplink beam in pixel. Used for Fresnel propagation to indicate if beam is not located in the center.
+- Added pupil\_mask parameter to SprintShSynim, forwarded to BaseSprintEstimator as the WFS-side pupil (previously silently fell back to dm.mask, e.g. missing spider obscuration); added regression test in test\_sprint.py
+- Enabled pyr_tlt_coeffs for the modulated_pyramid, allowing to correctly set different tilt coefficients for the pyramid faces
+- Extracted FieldAnalyser's shared replay machinery (params loading, replay precision/downsampling checks, temp-simulation execution) into a new BaseReplayAnalyser base class, reused by EfReplay; pure refactor, no behavior change (mock patch targets for Simul/specula in test\_field\_analyser.py moved to specula.base\_replay\_analyser accordingly)
+- Added "out_slopes_map" output to Slopec (and thus to all its subclasses, e.g. PyrSlopec, ShSlopec): a 2d remap of the slopes vector (shape (2, size\_x, size\_y) for a single subaperture, reusing the existing single\_mask/display\_map/get2d() machinery), useful to store slopes in DataStore with a (timesteps, 2, size\_x, size\_y) shape instead of a flat vector. Added "out_pixels_subap" (raw, pre-threshold pixel intensities of the 4 pyramid pupils, shape (4, size\_x, size\_y)) and "out_pixels_subap_sum" (their sum, shape (size\_x, size\_y), e.g. for scintillation analysis) outputs to PyrSlopec. Added PupData.local_display_map() helper. No changes needed to DataStore, which already saves whatever shape an output's get_value() returns.
 
 ### Other
 
@@ -33,15 +52,17 @@
 - Fixed output\_names in PhaseScreenCube
 - Fixed PhaseScreenCube crash on GPU due to np.searchsorted called on a cupy array
 - Fixed start\_time bug in WindowedIntegration
-- Fixed SprintShSynim not forwarding pupil\_mask to BaseSprintEstimator (silently fell back to dm.mask instead of the WFS-side pupil, e.g. missing spider obscuration); added regression test in test\_sprint.py
 - Fixed SprintShSynim's \_plot\_debug\_info passing GPU (cupy) arrays directly to matplotlib without cpuArray() conversion, crashing on GPU
 - Corrected SprintShSynim's docstring/perturbation labels for enable\_wpup\_magn\_xy: params [4]/[5] are anamorphosis\_90/anamorphosis\_45 (functional in SynIM via compute\_im\_synim), not independent magn\_x/magn\_y as previously (incorrectly) documented as "not yet implemented"
 - Added regression test (test\_sprint\_anamorphic\_magnification\_is\_functional) verifying enable\_wpup\_magn\_xy's anamorphosis\_90/anamorphosis\_45 parameters actually affect the computed nominal IM
-- Bumped synim requirement to 1.2.2 (was 1.1.3)
+- SPRINT logger lever changed to debug for intermediate steps
+- Bumped synim requirement to 1.2.3 (was 1.1.3)
 - Optimization of the compute\_ifs\_covmat function
 - Added Fraunhofer far field propagation
 - Fixed silent misparsing/confusing errors in split\_output() when an object, alias or output name contained a reserved '.', '-' or ':' character; added early validation of YAML section names in Simul
-- ...
+- Fixed A size in get_pyr_tlt, adding a round (rather than flooring by default) to avoid cases where the pyramid tilt mask (pyr_tlt) and the focal plane mask (fp_mask) could be of different sizes when using an odd number of pixels across the pupil
+- Updated calculation of power loss such that reference PSF also uses Fresnel propagation
+- Fixed ModulatedPyramid/ModulatedDoubleRoof.calc\_pyr\_geometry producing pupils smaller than the requested pup\_diam pixels whenever pup\_dist was large enough to trigger the fft\_res\_min increase (roughly pup\_dist > 1.73 \* pup\_diam with default pup\_margin): fft\_totsize grew with the bumped fft\_res, but toccd\_side (the internal CCD side the FFT-plane pupils are rebinned to via toccd()) stayed frozen at the value computed from the pre-bump, nominal fft\_res, shrinking the sub-pupils after rebinning. toccd\_side is now recomputed from the final fft\_res returned by calc\_geometry. Added regression test in test\_pyr.py
 
 ## [1.0.3] - 2026-05-18
 
