@@ -355,6 +355,86 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                         f"instead of written in place somewhere in calc_slopes_nofor()")
 
     @cpu_and_gpu
+    def test_stream_enable_matches_eager_over_a_long_evolving_sequence(self, target_device_idx, xp):
+        """
+        Differential test: two otherwise-identical instances, one with
+        stream_enable=False (plain eager trigger_code() every frame) and one
+        with stream_enable=True (CUDA-graph-captured on GPU, still eager on
+        CPU since build_stream() is a no-op there), fed the exact same long,
+        varying sequence of frames (changing flux, shift and noise, written
+        IN PLACE like a real detector). Every frame's xslopes/yslopes/w_out
+        must match closely between the two.
+
+        This is the test that should catch any future regression where the
+        graph-captured path silently diverges from eager execution (e.g. a
+        piece of persistent state accidentally reassigned instead of written
+        in place, so it freezes at its capture-time value on replay) --
+        exactly the class of bug `stream_enable` was introduced to guard
+        against in the Task 2 CUDA-graph work. It intentionally does NOT
+        cover configuration mistakes upstream of this class (e.g. a stale
+        k_wiener left over in a yml from an earlier experiment) -- eager and
+        captured execution of the SAME wrong config still agree with each
+        other, matching-but-wrong is a real failure mode this test cannot
+        see, only a divergence between the two paths.
+        """
+        subap_npx = 16
+        subapdata_a, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_a = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_b = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        kwargs = dict(fwhm_pix=1.5, k_wiener=10.0, b_reg=0.5, ron_e=1.0,
+                     w_ema_alpha=0.2, target_device_idx=target_device_idx)
+        eager = AdaptiveShrinkageSlopec(subapdata_a, stream_enable=False, **kwargs)
+        captured = AdaptiveShrinkageSlopec(subapdata_b, stream_enable=True, **kwargs)
+        eager.inputs['in_pixels'].set(pixels_a)
+        captured.inputs['in_pixels'].set(pixels_b)
+        eager.setup()
+        captured.setup()
+
+        if target_device_idx >= 0:
+            self.assertIsNotNone(captured.cuda_graph,
+                "expected a captured graph on GPU for the stream_enable=True instance")
+        self.assertIsNone(eager.cuda_graph,
+                          "stream_enable=False must never capture a graph")
+
+        rng = np.random.RandomState(7)
+        t = int(1e9)
+        for i in range(150):
+            flux = float(rng.choice([0.0, 1.0, 10.0, 1e3, 1e5]))
+            shift_dx = float(rng.uniform(-0.4, 0.4))
+            shift_dy = float(rng.uniform(-0.4, 0.4))
+            noise_std = float(rng.uniform(0.0, 1.5))
+            frame = self.generate_spots(ccd_shape, subapdata_a, xp, flux=flux, bg=0.5,
+                                        shift_dx=shift_dx, shift_dy=shift_dy,
+                                        noise_std=noise_std)
+            # In place, exactly like a real CCD -- required for the captured
+            # graph to actually see each new frame (see the other CUDA-graph
+            # test above).
+            pixels_a.pixels[:] = frame
+            pixels_b.pixels[:] = frame
+            pixels_a.generation_time = t
+            pixels_b.generation_time = t
+
+            eager.check_ready(t); eager.trigger(); eager.post_trigger()
+            captured.check_ready(t); captured.trigger(); captured.post_trigger()
+            t += int(1e9)
+
+            xe = cpuArray(eager.outputs['out_slopes'].xslopes)
+            xc = cpuArray(captured.outputs['out_slopes'].xslopes)
+            ye = cpuArray(eager.outputs['out_slopes'].yslopes)
+            yc = cpuArray(captured.outputs['out_slopes'].yslopes)
+            we = cpuArray(eager.w_out)
+            wc = cpuArray(captured.w_out)
+
+            np.testing.assert_allclose(xc, xe, atol=1e-4, rtol=1e-4,
+                err_msg=f"frame {i}: xslopes diverged between eager and captured execution")
+            np.testing.assert_allclose(yc, ye, atol=1e-4, rtol=1e-4,
+                err_msg=f"frame {i}: yslopes diverged between eager and captured execution")
+            np.testing.assert_allclose(wc, we, atol=1e-4, rtol=1e-4,
+                err_msg=f"frame {i}: w_out diverged between eager and captured execution")
+
+    @cpu_and_gpu
     def test_background_only_frame_gives_low_confidence_not_spurious_slope(self, target_device_idx, xp):
         """
         A frame with no spot at all (pure background + read noise) must not
