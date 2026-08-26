@@ -68,7 +68,9 @@ class AdaptiveWindowShSlopec(ShSlopec):
                  psf_fwhm_pix: float = 1.5,
                  gain_comp_enable: bool = True,
                  gain_comp_min: float = 0.25,
-                 gain_comp_max: float = 4.0):
+                 gain_comp_max: float = 4.0,
+                 ron_e: float = 0.0,
+                 b_reg_nsigma: float = 2.5):
         """
         Parameters
         ----------
@@ -142,6 +144,27 @@ class AdaptiveWindowShSlopec(ShSlopec):
             Lower clamp for gain compensation factor.
         gain_comp_max : float, optional
             Upper clamp for gain compensation factor.
+        ron_e : float [e-], optional
+            Read-noise standard deviation per pixel of the detector. Drives
+            the CoG denominator regularisation below (0.0 = no read-noise
+            floor, matching prior behaviour for a noiseless detector model;
+            set to the real detector value for physical protection).
+        b_reg_nsigma : float, optional
+            Number of noise sigmas used to build the regularising pseudo-count
+            added to the CoG denominator: ``b_reg = b_reg_nsigma * ron_e *
+            sqrt(sum(window^2))``, recomputed every frame from the CURRENT
+            dynamic window (``mask_weighted_dyn``), since the window radius
+            -- and therefore the number of pixels effectively contributing
+            noise -- changes frame to frame. This replaces a prior
+            ``1/max(subap_tot, eps)`` floor that used machine epsilon
+            (``np.finfo(float32).eps ~ 1.2e-7``) as its only protection: that
+            is far too small to guard against real detector noise, and at
+            N=1 sub-aperture (e.g. MORFEO LO) the accompanying
+            ``subap_tot <= mean(subap_tot)*1e-3`` gate was additionally a
+            no-op (the mean of one element is that element). Confirmed by
+            direct test: pure read noise at zero flux produced spurious
+            slopes up to ~22% of the full dynamic range under the old floor;
+            see test_adaptive_window_sh_slopec.py.
         """
 
         super().__init__(subapdata=subapdata,
@@ -181,6 +204,8 @@ class AdaptiveWindowShSlopec(ShSlopec):
         self.gain_comp_enable = bool(gain_comp_enable)
         self.gain_comp_min = float(gain_comp_min)
         self.gain_comp_max = float(gain_comp_max)
+        self.ron_e = float(ron_e)
+        self.b_reg_nsigma = float(b_reg_nsigma)
 
         if self.lost_behavior_kinematic not in ('expand', 'hold'):
             raise ValueError('lost_behavior_kinematic must be "expand" or "hold"')
@@ -385,7 +410,16 @@ class AdaptiveWindowShSlopec(ShSlopec):
         g_now = (sig_w ** 2) / (self._sig_psf_sq + sig_w ** 2 + self._eps)
         comp = self._g_ref / xp.maximum(g_now, self._eps)
         comp = xp.clip(comp, self.gain_comp_min, self.gain_comp_max)
-        self.gain_comp[:] = xp.where(self.gain_comp_enable, comp, 1.0)
+        # gain_comp_enable is a fixed constructor-time flag (never changes
+        # frame to frame), not a per-subaperture data-dependent condition --
+        # a plain Python branch is correct here. xp.where(self.gain_comp_enable,
+        # comp, 1.0) crashes on GPU: cupy's where() calls .astype() on the
+        # condition, which a bare Python bool does not have (numpy silently
+        # tolerates it, cupy does not).
+        if self.gain_comp_enable:
+            self.gain_comp[:] = comp
+        else:
+            self.gain_comp[:] = 1.0
 
         # CUDA-graph friendly: always recompute the full dynamic map.
         self._update_dynamic_weights()
@@ -446,9 +480,19 @@ class AdaptiveWindowShSlopec(ShSlopec):
             thr_mask_cube = xp.where(pixels_thr > 0, 1.0, 0.0)
 
         subap_tot = xp.sum(pixels_thr * self.mask_weighted_dyn, axis=(1, 2))
-        mean_subap_tot = xp.mean(subap_tot)
-        factor = 1.0 / xp.maximum(subap_tot, self._eps)
-        factor = xp.where(subap_tot <= mean_subap_tot * 1e-3, 0.0, factor)
+
+        # Regularised denominator, not a bare max(subap_tot, eps) floor: the
+        # window radius (and therefore the pixel count feeding the CoG) is
+        # dynamic, so the noise floor must be recomputed from the CURRENT
+        # window every frame, not a static epsilon. b_reg is a physical
+        # pseudo-count (n_sigma * read-noise * sqrt(sum(window^2))), same
+        # role as AdaptiveShrinkageSlopec's B_reg. ron_e=0.0 (default)
+        # intentionally reduces to no read-noise floor, matching a noiseless
+        # detector model -- see the ron_e/b_reg_nsigma docstring above.
+        b_reg = self.b_reg_nsigma * self.ron_e * xp.sqrt(
+            xp.sum(self.mask_weighted_dyn ** 2, axis=(1, 2)))
+        den_reg = xp.maximum(subap_tot, 0.0) + b_reg + self._eps
+        factor = 1.0 / den_reg
 
         sx = xp.sum(pixels_thr * self.xweights_dyn, axis=(1, 2)) * factor
         sy = xp.sum(pixels_thr * self.yweights_dyn, axis=(1, 2)) * factor

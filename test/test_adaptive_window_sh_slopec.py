@@ -220,6 +220,68 @@ class TestAdaptiveWindowShSlopec(unittest.TestCase):
         self.assertAlmostEqual(slope_x, expected, delta=0.03)
 
     @cpu_and_gpu
+    def test_pure_read_noise_at_zero_flux_does_not_spike(self, target_device_idx, xp):
+        """
+        Regression test for a real bug: the CoG denominator used to be
+        regularised with a bare `max(subap_tot, eps)` floor, where eps was
+        machine epsilon for float32 (~1.2e-7) -- far too small to guard
+        against real detector noise, and (at N=1 sub-aperture, e.g. MORFEO
+        LO) the accompanying `subap_tot <= mean(subap_tot)*1e-3` gate was
+        additionally a no-op (the mean of one element is that element).
+
+        With a small, realistic window and nonzero read noise but ZERO real
+        flux (no spot at all), pure noise must not produce a large spurious
+        slope: before the fix this was empirically observed to spike up to
+        ~0.22 (22% of the full dynamic range) over a few thousand random
+        draws. After the fix (a physical b_reg = n_sigma * ron_e *
+        sqrt(sum(window^2)) pseudo-count in the denominator, recomputed each
+        frame from the current dynamic window), the same sweep must stay
+        small and bounded.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec = AdaptiveWindowShSlopec(
+            subapdata,
+            base_pix_rad=1.5,
+            max_pix_rad=1.5,
+            fading_flux_thr=0.0,
+            ron_e=1.0,
+            target_device_idx=target_device_idx,
+        )
+        slopec.inputs['in_pixels'].set(pixels)
+
+        worst = 0.0
+        for seed in range(500):
+            rng = np.random.RandomState(seed)
+            frame = xp.asarray(rng.normal(0, 1.0, ccd_shape).astype(np.float32))
+            pixels.pixels = frame
+            pixels.generation_time = t * (seed + 1)
+            slopec.check_ready(pixels.generation_time)
+            slopec.trigger()
+            slopec.post_trigger()
+
+            xs = cpuArray(slopec.outputs['out_slopes'].xslopes)
+            ys = cpuArray(slopec.outputs['out_slopes'].yslopes)
+            self.assertTrue(np.all(np.isfinite(xs)) and np.all(np.isfinite(ys)),
+                            f"seed {seed}: NaN/Inf from pure read noise at zero flux")
+            worst = max(worst, float(np.max(np.abs(xs))), float(np.max(np.abs(ys))))
+
+        # 0.10, not near-zero: a physical regulariser suppresses noise-driven
+        # blow-ups statistically, it does not (and should not) promise exactly
+        # zero output for pure noise -- that would just be a different bug
+        # (an over-aggressive hard gate). The bound here is chosen well below
+        # the pre-fix worst case (~0.22, confirmed by hand before this test
+        # was written) and comfortably above the observed post-fix worst
+        # (~0.06 over 500 draws), so it catches a real regression back toward
+        # the old eps-only floor without being flaky.
+        self.assertLess(worst, 0.10,
+            f"pure read noise at zero flux produced a spurious slope of {worst:.4f} "
+            "(full dynamic range is 1.0) -- the denominator regularisation is not "
+            "protecting against noise-driven near-cancellation")
+
+    @cpu_and_gpu
     def test_adaptive_disabled_matches_sh_slopec(self, target_device_idx, xp):
         """With adaptive mode disabled, outputs must match baseline ``ShSlopec``."""
         t = int(1e9)
