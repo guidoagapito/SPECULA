@@ -10,10 +10,11 @@
 ### Interface changes
 
 - Added `pyr_max_side_ld` to `ModulatedPyramid` and its derived classes to cap the radial support of the pyramid surface in lambda/D units, forcing values outside the support radius to zero and enabling a central fifth pupil.
+- Added `compute_single_im` (bool, default True) to `ImCalibrator` to optionally skip populating the `out_single_im` per-mode output (the output itself is always present, empty when disabled). When True (default, unchanged behavior) this costs an O(nmodes) Python loop on every `trigger_code()` call (not just push-pull events) plus roughly double the fixed memory (one extra Intmat per mode); set to False to skip that loop/memory when nothing downstream consumes `out_single_im` (only `out_intmat` is used elsewhere in this codebase) -- needed for large-nmodes, long calibrations.
 
 ### Other
 
-- ...
+- `IFunc.inverse()` now computes the pseudoinverse via the smaller of the two Gram matrices (`specula.lib.fast_pinv`) instead of calling `xp.linalg.pinv` directly on the full influence-function matrix. Mathematically identical result (including in the rank-deficient case), but substantially faster for the typical case of many pixels and few modes -- measured 3x-8x on real KL/zonal influence-function bases, with the speedup growing with pixel count. Added test\_fast\_pinv.py.
 
 ## [1.0.4] - 2026-08-19
 
