@@ -23,8 +23,8 @@ fringe-jump ambiguity.
 * Wiring the :class:`SoftLimiter` into the loop between the integrator and
   the DM, using the two :class:`Recmat` objects Part 2 produced
 * Using the differential petal inverse from Part 1 as an independent,
-  ground-truth diagnostic of the true petal state -- separate from
-  anything the loop itself estimates or corrects
+  ground-truth diagnostic of the true petal state, separate from anything
+  the loop itself estimates or corrects
 * Comparing a Classical loop (Soft-Limiter leak gain forced to zero)
   against the Soft-Limiter loop on the same turbulence, and reading the
   fringe-order/Strehl diagnostics that show the difference
@@ -32,8 +32,8 @@ fringe-jump ambiguity.
 **Prerequisites:**
 
 * :ref:`elt_segmented_dm_tutorial` and
-  :ref:`elt_petal_mmse_reconstructor_tutorial` completed -- the full,
-  ELT-class run, not a shrunk-down one -- so that the pupil,
+  :ref:`elt_petal_mmse_reconstructor_tutorial` completed: the full,
+  ELT-class run, not a shrunk-down one, so that the pupil,
   influence-function, modal-basis and MMSE-reconstructor products they
   produce are available by tag
 * Basic familiarity with closed-loop AO control (integrators, interaction
@@ -45,13 +45,11 @@ fringe-jump ambiguity.
 
    **This is not a quick tutorial to run either.** Both the interaction
    matrix calibration (a push-pull over 4000 modes) and the closed loop
-   itself (30 s of simulated time at a pyramid WFS frame rate, with a
-   240x240-pixel detector) are substantially more expensive than anything
-   in Part 1 or Part 2. A GPU is strongly recommended -- pass its index to
-   ``specula.init()`` as in the previous parts -- and even then, expect
-   this to take considerably longer than the few minutes Part 2 needed. As
-   in Part 1, treat any duration as configuration- and hardware-dependent
-   and budget accordingly; run it as a background job.
+   itself (30 s of simulated time, 240x240-pixel detector) are
+   substantially more expensive than Part 1 or Part 2. A GPU is strongly
+   recommended (pass its index to ``specula.init()`` as before), and even
+   then, expect this to take considerably longer than the few minutes
+   Part 2 needed. Run it as a background job.
 
 The problem, briefly
 -----------------------
@@ -63,7 +61,7 @@ WFS cannot tell a petal piston offset from that same offset plus an
 integer number of sensing wavelengths, so a plain integrator has no way to
 correct the integer part and will let it drift. The Soft-Limiter drains
 that unobservable component from the accumulated command with a leak
-gain, retaining the fractional (observable, correctable) part -- see the
+gain, retaining the fractional (observable, correctable) part. See the
 paper this tutorial series accompanies for the full derivation. This part
 closes the loop and shows the effect in practice.
 
@@ -77,7 +75,7 @@ the pupilstop (``ELT39_6petals``), the KL-mode DM influence functions
 (``ELT39_6petals_inv``), and the two MMSE reconstructor
 :class:`Recmat` objects (``ELT39_modes_to_petals_mmse`` and
 ``ELT39_petals_to_modes``). A SPECULA simulation YAML file references
-these purely by tag -- there is no Python restoration code to write for
+these purely by tag; there is no Python restoration code to write for
 this part, only YAML.
 
 Step 2: Calibrating the pyramid pupil geometry
@@ -115,7 +113,7 @@ same pupil-sampling parameters as Part 1: 400x400 pixels,
 39 m/400 px pixel pitch). The ``_override``/``remove`` blocks here follow
 the same convention used throughout this tutorial series and in
 :ref:`scao_basic_tutorial`: layer on top of a shared base file rather than
-duplicating it. This step is cheap -- a single frame.
+duplicating it. This step is cheap: a single frame.
 
 Step 3: Calibrating the classical interaction and reconstruction matrices
 ------------------------------------------------------------------------------
@@ -151,13 +149,12 @@ pseudoinverse.
 This reuses the same ``dm``/``pushpull`` blocks already implied by the DM
 defined in Part 1 (``ifunc_object: 'ELT39_KL4000'``, ``nmodes: 4000``): a
 :class:`PushPullGenerator` steps through all 4000 modes one at a time
-while :class:`ImCalibrator` records the corresponding slopes, exactly the
-generic pattern in :ref:`scao_basic_tutorial`. As a sanity check once this
+while :class:`ImCalibrator` records the corresponding slopes, the same
+generic pattern as :ref:`scao_basic_tutorial`. As a sanity check once this
 finishes, ``rec @ im`` should come out as a clean 4000x4000 identity
 (diagonal at 1.0 to within numerical noise, everything else at machine
-noise) -- if it doesn't, look at the WFS/DM sign convention before going
-any further, since a closed loop will amplify rather than mask a mistake
-here.
+noise). If it doesn't, look at the WFS/DM sign convention before going any
+further: a closed loop will amplify rather than mask a mistake here.
 
 Step 4: The closed-loop simulation
 ---------------------------------------
@@ -266,23 +263,31 @@ Step 3. That residual then goes through a per-mode-group IIR filter,
    **Why not one flat gain for all 4000 modes.** It is not a matter of
    robustness or noise: at 8th magnitude the WFS SNR is good, and a flat
    gain would be robust enough on that count alone. The real reason is
-   that the optical gain of the pyramid itself is not flat across modes -- how
-   much slope signal a given amount of wavefront error produces depends
-   strongly on spatial frequency -- so a single loop gain applied
-   uniformly across the whole basis over- or under-drives large parts of
-   it; there is no single number that is simultaneously right for every
-   mode. A mild forgetting factor (leak) on the higher-order bands also
-   helps for a different reason: it limits how much spatial aliasing of
-   the turbulence those modes can accumulate in the loop. ``temporal_filter``
-   above groups the 4000 modes into six bands (sizes given by ``n_modes``)
-   and gives each its own IIR pole via ``num``/``den``, from the lowest
-   modes (band 1, closest to a plain integrator) to the highest (band 6,
-   fastest pole, mildly leaky). See :doc:`control_stability_analysis` for
-   the transfer-function convention these coefficients follow and how to
-   derive/verify a per-band pole from a stability margin. This is a
-   deliberately coarse, six-band scheme tuned for this pupil/DM
+   that the optical gain of the pyramid is not flat across modes -- how
+   much slope signal a given wavefront error produces depends strongly on
+   spatial frequency -- so a single loop gain over- or under-drives large
+   parts of the basis. A mild leak on the higher-order bands also limits
+   how much spatial aliasing of the turbulence those modes can
+   accumulate. ``temporal_filter`` groups the 4000 modes into six bands
+   (sizes given by ``n_modes``), each with its own IIR pole via
+   ``num``/``den``: bands 2-6 are plain leaky integrators of increasing
+   leak (band 2 closest to a pure integrator, band 6 fastest and mildly
+   leaky). See :doc:`control_stability_analysis` for the transfer-function
+   convention and how to derive/verify a per-band pole from a stability
+   margin. This is a deliberately coarse scheme tuned for this pupil/DM
    configuration at 1.0 arcsec seeing, not a real per-mode optimization --
-   treat it as a starting point to adapt, not as universal constants.
+   treat it as a starting point to adapt.
+
+   **Band 1 (tip-tilt) is different.** It uses a two-pole/two-zero IIR
+   filter, not a plain integrator: the same design used for the ANDES
+   tip-tilt channel to reject the ELT M2 wind-shake (up to ~10 :math:`\mu`\ m
+   RMS); see Agapito et al., "MORFEO control strategy", *J. Astron.
+   Telesc. Instrum. Syst.* 12(3), 039001 (2026), Appendix A, for the
+   derivation of these coefficients. This tutorial's atmosphere is a
+   single turbulence layer with no injected wind-shake, so a plain
+   integrator on tip-tilt would perform just as well here; the filter is
+   kept to mirror the real ANDES architecture, useful if you later add
+   M1/M2 dynamics of your own.
 
    The ``in_ost`` input on ``control`` closes a second loop: it lets the
    Soft-Limiter leak correction feed back directly into the accumulated
@@ -315,15 +320,15 @@ the two Part 2 :class:`Recmat` objects:
       outputs: ['out_layer']
 
 ``recmat_list_object`` must list the MMSE reconstructor first and the
-interaction matrix second -- :class:`SoftLimiter` uses the first to
-project the current command onto a petal-piston estimate, and the second
-to project the resulting leak correction back into mode space. On every
-step it computes ``est = recmat @ in_comm``, ``delta = intmat @ (gain *
+interaction matrix second: :class:`SoftLimiter` uses the first to project
+the current command onto a petal-piston estimate, and the second to
+project the resulting leak correction back into mode space. On every step
+it computes ``est = recmat @ in_comm``, ``delta = intmat @ (gain *
 est)``, and outputs ``out_comm = in_comm - delta`` (what reaches the DM)
 together with ``out_ost = delta`` (fed back into ``control`` above).
-Setting ``gain: 0.0`` disables the leak entirely without changing
-anything else in the loop -- this is exactly how the Classical comparison
-run in Step 5 is built.
+Setting ``gain: 0.0`` disables the leak entirely without changing anything
+else in the loop, which is how the Classical comparison run in Step 5 is
+built.
 
 **Ground-truth petal diagnostic.** Independent of anything the loop
 itself estimates, and using the differential 5-petal inverse built in
@@ -343,8 +348,8 @@ This reads the true residual electric field directly, not the noisy,
 delayed estimate the loop itself produces, and is what the analysis in
 Step 6 below is computed from. Using anything other than the corrected,
 piston-differential inverse here would silently reintroduce the bug
-documented in the warning in Part 1 -- worth keeping in mind if you build
-a similar diagnostic for a different configuration.
+documented in the warning in Part 1, so keep that in mind if you build a
+similar diagnostic for a different configuration.
 
 **PSF and telemetry.** A :class:`PSF` object provides the Strehl ratio at
 2200 nm, and :class:`DataStore` saves the two time series needed for the
@@ -391,9 +396,8 @@ each:
     python -m specula.scripts.specula_main params_closed_loop.yml override_classical.yml --target <gpu_idx>
     python -m specula.scripts.specula_main params_closed_loop.yml override_softlimiter.yml --target <gpu_idx>
 
-Everything else -- atmosphere seed, WFS noise, control gains -- is
-identical between the two runs; the leak gain is the only thing that
-changes.
+Everything else (atmosphere seed, WFS noise, control gains) is identical
+between the two runs; the leak gain is the only thing that changes.
 
 Step 6: Reading the result
 ------------------------------
@@ -457,26 +461,22 @@ Running this on the two telemetry sets from Step 5
      - roughly double the Classical mean, and much steadier
    * - Strehl ratio, worst moments
      - repeatedly collapses to near zero
-     - never collapses -- stays well clear of zero throughout
+     - never collapses, stays well clear of zero throughout
 
 The pattern is the qualitative one the paper describes: Classical spends
 much of the run at higher fringe orders and pays for it with an unstable,
 frequently-collapsing Strehl ratio, while the Soft-Limiter leak keeps the
 ambiguity confined to a smaller range and the image quality both higher
 and far steadier. Treat the specific numbers above as what the generic
-pupil, seed and seeing used in this tutorial produce -- they are not meant
-to reproduce the ANDES-specific figures in the paper itself, which used
-the real, as-designed pupil and DM; see the paper for those.
+pupil, seed and seeing used here produce, not as a reproduction of the
+ANDES-specific figures in the paper (real, as-designed pupil and DM).
 
-Two configuration details matter more than they might look at first
-glance if you are adapting this to your own case: the spider width chosen
-in Part 1 (thin spiders understate how strongly petal jumps couple into
-the WFS signal, making Classical look better than it should) and the
-per-mode-group temporal filter of Step 4 (a flat gain never converges
-cleanly at this scale, which would make *both* runs look equally bad and
-hide the comparison entirely). Getting the qualitative result above
-depends on both being reasonably realistic, not just on the Soft-Limiter
-itself being correctly wired in.
+Two configuration choices matter more than they might look if adapting
+this to your own case: the spider width from Part 1 (thin spiders
+understate how strongly petal jumps couple into the WFS signal, making
+Classical look better than it should), and the per-mode-group temporal
+filter of Step 4 (a flat gain never converges cleanly at this scale,
+making *both* runs look equally bad).
 
 Summary
 ----------
@@ -499,5 +499,5 @@ Starting from the products of Part 1 and Part 2, this tutorial:
 This completes the three-part series: an ELT-class segmented pupil and
 modal basis built from scratch, an MMSE petal reconstructor built and
 validated on top of it, and a full closed-loop demonstration of the effect
-of the Soft-Limiter -- all without depending on any project-specific
+of the Soft-Limiter, all without depending on any project-specific
 calibration archive.

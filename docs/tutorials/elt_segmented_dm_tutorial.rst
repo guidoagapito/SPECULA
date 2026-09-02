@@ -30,57 +30,59 @@ generated here.
 * Basic understanding of adaptive optics concepts (influence functions,
   modal bases, wavefront sensing)
 * Python familiarity
-* Time and a real machine -- see the warning immediately below before you
-  start
+* Time and a real machine (see the warning below before you start)
 
 .. warning::
 
    **This is not a quick tutorial to run.** "ELT-class" means a large
-   pupil and thousands of actuators, and generating that is genuinely
-   expensive -- there is no small/fast version of this that still means
-   anything (see the note on modal bandwidth in
-   :ref:`elt_petal_mmse_reconstructor_tutorial` for why a shrunk-down
-   version actively misleads rather than simplifies). On a single CPU
-   core, for the configuration this tutorial uses (400x400 pixels,
-   90-actuator grid, 4000 modes), expect the whole pipeline to take on the
-   order of **an hour**, with :func:`compute_zonal_ifunc` (Step 3)
-   responsible for most of it: it evaluates a thin-plate spline for every
-   actuator over every pupil pixel, and both counts are large at this
-   scale. This is almost certainly why real ELT-class projects treat this
-   as a pre-computed calibration product rather than something regenerated
-   on demand. Run it as a background job, and save the result (as this
-   tutorial does) so you only pay this cost once.
+   pupil and thousands of actuators, and there is no small/fast version of
+   this that still means anything (see the note on modal bandwidth in
+   :ref:`elt_petal_mmse_reconstructor_tutorial`). On a single CPU core,
+   for the configuration used here (400x400 pixels, 90-actuator grid, 4000
+   modes), expect the whole pipeline to take on the order of **an hour**,
+   with :func:`compute_zonal_ifunc` (Step 3) responsible for most of it.
+   Run it as a background job, and save the result (as done here) so you
+   only pay this cost once.
 
-   If you have a GPU available, passing a GPU index to ``specula.init()``
-   (instead of ``-1``) and letting ``specula.xp`` select ``cupy`` cuts
-   this down substantially -- every function used in this tutorial accepts
-   an ``xp`` module. The exact speedup depends on your hardware, so treat
-   "an hour" above as the pessimistic, CPU-only baseline.
+   A GPU index passed to ``specula.init()`` (instead of ``-1``) cuts this
+   down substantially. Every function here accepts an ``xp`` module, so
+   treat "an hour" as the pessimistic, CPU-only baseline.
 
-   If you just want to confirm the code below runs correctly on your
-   machine before committing to this, see
-   :ref:`elt_dm_smoke_test` -- a deliberately tiny, explicitly
+   To just confirm the code runs on your machine before committing to the
+   full run, see :ref:`elt_dm_smoke_test`, a deliberately tiny,
    non-representative configuration for that purpose only.
 
 Everything used here (pupil mask, influence functions, modal basis) is
-generated in Python from public, generic parameters -- nothing is loaded
+generated in Python from public, generic parameters; nothing is loaded
 from an external, project-specific calibration archive.
 
 Why not just use an existing pupil?
 ------------------------------------
 
-This is a simplified case: generic influence-function generators stand in
-for the true, as-designed M1 segment layout and M4 influence functions a
-real ELT-class project (e.g. ANDES) would ship. If you have the real pupil
-and DM influence functions for your own project, adapting this script to
-use them instead is straightforward.
+If you already have the real, as-designed ELT pupil and M4 influence
+functions for your project, **skip this tutorial**. Everything generated
+here is only a didactic stand-in for those two products, and Parts 2-3
+just need *a* pupil mask, petal influence functions, a DM
+influence-function set and a modal basis, however you obtained them.
+Point Parts 2-3 at your own products (saved under matching
+:class:`CalibManager` tags) and carry on from there.
 
-.. note::
+If you don't have them yet, the generic generators used here are a
+reasonable stand-in, with three known limits. None of them matter for the
+petal-piston control problem this series addresses, but they do mean this
+pupil/DM should not be mistaken for the real thing:
 
-   "Segmented" here means six large **petal** sectors, one per independent
-   support structure -- not the individual hexagonal M1 segments and their
-   gaps, which are irrelevant to the petal-piston control problem this
-   tutorial addresses.
+* "Segmented" here means six large **petal** sectors, one per independent
+  support structure. The mask does not reproduce the individual hexagonal
+  M1 segments and their gaps within each petal: irrelevant to
+  petal-piston control, but visibly different from the real pupil.
+* The spider width (see the Design choices table below) matches the real
+  ELT spider thickness *on average*, but is uniform across all six arms
+  here; on the real telescope at least one arm is thicker than the others.
+* The generated M4-like influence functions sit on a plain circular
+  actuator grid with edge slaving. The real M4 geometry instead repeats
+  per petal, with dedicated rows of actuators running along each petal
+  boundary, a layout this tutorial does not impose.
 
 Design choices
 ---------------
@@ -109,7 +111,7 @@ Design choices
      - matches the real ELT spider thickness at this sampling, see note below
    * - Actuator-to-actuator coupling
      - none (``do_mech_coupling=False``)
-     - see note below -- M4 is not a stacked-actuator DM
+     - see note below: M4 is not a stacked-actuator DM
    * - Edge actuator handling
      - linear (piston+tip+tilt) slaving
      - smoother edge extrapolation than plain weighted-average slaving
@@ -119,27 +121,24 @@ Design choices
 
 .. note::
 
-   **Why no mechanical coupling.** The ``do_mech_coupling`` option in
-   :func:`compute_zonal_ifunc` models the nearest/next-nearest-neighbor
-   print-through typical of a stacked-piezo DM. An ELT-class M4-type mirror
-   has internal metrology that actively imposes the commanded displacement
-   on each actuator, eliminating that coupling, so we leave
-   ``do_mech_coupling=False`` here.
+   **Why no mechanical coupling.** ``do_mech_coupling`` models the
+   nearest/next-nearest-neighbor print-through of a stacked-piezo DM. An
+   M4-type mirror has internal metrology that actively imposes the
+   commanded displacement on each actuator, eliminating that coupling.
 
 .. note::
 
-   **Why a 3-pixel spider.** The real ELT primary is split by spiders
-   roughly 310 mm thick. At the sampling used here (39 m across 400
-   pixels, i.e. ~0.0975 m/pixel), that is close to 3 pixels, so
-   ``spider_width=3`` is what a like-for-like ELT model calls for.
+   **Why a 3-pixel spider.** The real ELT spiders are roughly 310 mm
+   thick; at this sampling (39 m / 400 px ≈ 0.0975 m/pixel) that is close
+   to 3 pixels. This is a uniform average, though; see the caveats above
+   for how the real spider differs.
 
 .. note::
 
-   **Why exactly 4000 modes.** No fixed rule sets this number -- you can
-   use anywhere up to the full count of generated modes. 4000 is simply
-   the choice made here (and in the companion
-   :ref:`segmented_pupil_soft_limiter_tutorial`); change
-   ``n_modes_to_use`` freely if you are adapting this to a different case.
+   **Why 4000 modes.** No fixed rule sets this number: use anywhere up to
+   the full generated count. 4000 is just the choice made here and in
+   :ref:`segmented_pupil_soft_limiter_tutorial`; change ``n_modes_to_use``
+   freely for a different case.
 
 Step 1: A shared pupil mask
 -----------------------------
@@ -151,9 +150,9 @@ its own mask independently, even a tiny difference in how each one
 rasterizes the aperture edge would leave the petal influence functions and
 the DM (zonal/KL) influence functions defined over subtly different pixel
 sets. Any later step that mixes information from both bases (e.g. a
-petal-to-mode reconstruction matrix) would then silently be misaligned --
-a very difficult bug to track down after the fact, because every individual
-piece still looks reasonable in isolation.
+petal-to-mode reconstruction matrix) would then silently be misaligned.
+That kind of bug is very difficult to track down after the fact, because
+every individual piece still looks reasonable in isolation.
 
 We get the shared mask directly from :func:`compute_petal_ifunc`, since
 that call also gives us the petal influence functions we need:
@@ -205,18 +204,18 @@ that call also gives us the petal influence functions we need:
     plt.colorbar(label='mask value')
     plt.show()
 
-This step is essentially free (well under a second). With a 28% central
-obstruction, expect somewhat more than two thirds of the 400x400 grid to
-come out as valid pixels.
+This step takes well under a second. With a 28% central obstruction,
+expect somewhat more than two thirds of the 400x400 grid to come out as
+valid pixels.
 
 ``pupil_mask`` is the array we will now pass, unchanged, to every other step.
 
 Step 2: Saving the Pupilstop
 -------------------------------
 
-Before moving on, save the pupil as a :class:`Pupilstop` object -- this is
-the object a SPECULA simulation YAML file actually references (via
-``pupilstop_object``) to define the telescope aperture.
+Before moving on, save the pupil as a :class:`Pupilstop` object: this is
+what a SPECULA simulation YAML file references (via ``pupilstop_object``)
+to define the telescope aperture.
 
 .. code-block:: python
 
@@ -236,10 +235,9 @@ the object a SPECULA simulation YAML file actually references (via
     print(f'Saved: {petal_ifunc_filename}')
 
 Using :class:`CalibManager` (rather than hand-built paths) means these
-products can be referenced later purely by tag, exactly the way a
-simulation YAML file resolves ``ifunc_object`` or ``pupilstop_object`` tags
-under a shared ``root_dir`` -- see :ref:`calibration_manager` if this is new
-to you.
+products can be referenced later purely by tag, the same way a simulation
+YAML file resolves ``ifunc_object`` or ``pupilstop_object`` tags under a
+shared ``root_dir``; see :ref:`calibration_manager` if this is new to you.
 
 A differential petal inverse, for ground-truth diagnostics
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -248,7 +246,7 @@ A closed-loop simulation typically wants a ground-truth readout of the
 current petal-piston state directly from the electric field (e.g. via
 :class:`ModalAnalysis`), independent of the MMSE reconstructor built in
 :ref:`elt_petal_mmse_reconstructor_tutorial`. That needs an inverse of the
-petal basis -- and it is easy to get wrong in a way that still looks
+petal basis, and it's easy to get wrong in a way that still looks
 plausible at first glance:
 
 .. code-block:: python
@@ -262,37 +260,25 @@ plausible at first glance:
 
 .. warning::
 
-   **The obvious-looking alternative is wrong.** It is tempting to invert
-   all *6* raw petal rows at once and keep only the first 5 columns of the
-   result (e.g. via the ``nmodes=5`` parameter of :class:`ModalAnalysis`,
-   which just slices columns). That gives, for each petal, the *absolute* mean phase over its
-   own pixels -- not the *differential* piston relative to petal 6 -- so
-   it tracks any true global piston in the wavefront almost one-for-one
-   (measured: an injected 2000 nm global offset leaked out at slope 0.99,
-   with a resulting RMS error of ~2000 nm on an 800 nm-scale signal). It
-   looks fine in isolation because a global piston is usually small or
-   absent in a synthetic test -- it only shows up once a real closed loop
-   with genuine low-order residual is running.
-
-   Dropping the sixth row *before* inverting, as done above, is not just a
-   truncation of the same computation: the default ``remove_piston=True``
-   of :func:`IFunc.inverse` centers each of the 5 remaining rows (subtracting
-   its own mean), which makes each of them exactly orthogonal to the
-   uniform/global-piston pattern -- a standard regression identity
-   (centering the regressors makes the fitted coefficients invariant to a
-   constant offset in the response). Verified numerically: with the fix,
-   the same 2000 nm injected global offset leaks out at slope ~0.01 (i.e.
-   essentially not at all), with sub-nanometer RMS error on the same
-   800 nm-scale signal.
+   **The obvious-looking alternative is wrong.** Inverting all *6* raw
+   petal rows at once and keeping only the first 5 columns (e.g. via
+   ``nmodes=5`` in :class:`ModalAnalysis`) gives each petal's *absolute*
+   mean phase, not its *differential* piston relative to petal 6, so it
+   tracks any true global piston almost one-for-one (measured: a 2000 nm
+   global offset leaked out at slope 0.99). Dropping the sixth row
+   *before* inverting, as done above, avoids this: the default
+   ``remove_piston=True`` of :func:`IFunc.inverse` centers each of the 5
+   remaining rows, making them orthogonal to the global-piston pattern
+   (the same 2000 nm offset then leaks out at slope ~0.01).
 
 Step 3: Zonal DM influence functions, on the *same* mask
 ------------------------------------------------------------
 
-Now we generate the deformable-mirror influence functions -- a much larger
+Now we generate the deformable-mirror influence functions: a much larger
 set, one per actuator, used as the basis for the KL modal decomposition in
 Step 4. Note that ``mask=pupil_mask`` reuses the exact array from Step 1,
 rather than letting :func:`compute_zonal_ifunc` build its own. **This is
-the expensive step -- see the warning at the top of this page.**
+the expensive step; see the warning at the top of this page.**
 
 .. code-block:: python
 
@@ -310,17 +296,15 @@ the expensive step -- see the warning at the top of this page.**
           f'(after slaving) x {zonal_ifunc.shape[1]} pixels')
 
 We leave mechanical coupling disabled (see the design-choices note above)
-and enable ``do_slaving`` with ``linear_slaving=True``: rather than simply
-averaging neighboring master actuators, each weakly-coupled edge actuator
-is extrapolated from a local piston+tip+tilt plane fit to nearby masters --
-a smoother, more physically reasonable edge behavior than a flat weighted
-average. The explicit ``assert`` is not decorative: it is exactly the
-check that would have caught the shared-mask problem described above, had
-one crept in.
+and enable ``do_slaving`` with ``linear_slaving=True``: each weakly-coupled
+edge actuator is extrapolated from a local piston+tip+tilt plane fit to
+nearby masters, rather than a flat weighted average. The explicit
+``assert`` is the check that would catch the shared-mask problem described
+above, had one crept in.
 
 This is the slow step (most of the "about an hour" from the warning at the
 top). With ``n_act=90``, expect several thousand valid actuators after
-slaving -- a small fraction of them slaved at the edge, the rest masters.
+slaving, a small fraction of them slaved at the edge and the rest masters.
 
 Step 4: A KL modal basis, generating more modes than we need
 ------------------------------------------------------------------
@@ -345,11 +329,11 @@ capture:
 prioritizes; they are independent of whatever atmosphere you eventually
 simulate in closed loop.
 
-This is comparatively cheap next to Step 3 -- a few minutes rather than
-most of an hour -- and produces one mode fewer than the actuator count
-(the global piston is not a controllable DM mode).
+This is comparatively cheap next to Step 3 (a few minutes rather than most
+of an hour) and produces one mode fewer than the actuator count (the
+global piston is not a controllable DM mode).
 
-You can use anywhere up to the full count of generated modes -- keep as
+You can use anywhere up to the full count of generated modes, keeping as
 many as you need without re-running Step 3:
 
 .. code-block:: python
@@ -394,20 +378,18 @@ Saving the modal basis
     ifunc_inv_obj.save(ifunc_inv_filename, overwrite=True)
     print(f'Saved: {ifunc_inv_filename}')
 
-This last step -- a pseudo-inverse of a (4000 modes, many pixels) matrix --
+This last step, a pseudo-inverse of a (4000 modes, many pixels) matrix,
 adds a further few minutes. ``IFunc.inverse()`` computes it via the smaller
 of the two Gram matrices (:func:`specula.lib.fast_pinv.fast_pinv`) rather
 than an SVD of the full rectangular matrix, which is what makes this
-tractable at all at this scale; a direct ``xp.linalg.pinv`` on the full
-matrix would take substantially longer.
+tractable at this scale.
 
 Sanity checks and visualization
 ----------------------------------
 
-A couple of cheap checks are worth running every time you regenerate a
-basis, since a silent mistake here (e.g. the shared-mask issue discussed
-above) would otherwise only surface much later, in a confusing way, deep
-inside a closed-loop simulation:
+Worth running every time you regenerate a basis, since a silent mistake
+here (e.g. the shared-mask issue above) would otherwise only surface much
+later, deep inside a closed-loop simulation:
 
 .. code-block:: python
 
@@ -447,9 +429,9 @@ inside a closed-loop simulation:
 Smoke-testing the pipeline before committing to the full run
 ------------------------------------------------------------------
 
-If you only want to check that the code above runs on your machine --
-no typos, no missing dependencies, no shape mismatches -- before spending
-close to an hour on it, shrink the two size parameters drastically:
+If you only want to check that the code above runs on your machine (no
+typos, no missing dependencies, no shape mismatches) before spending close
+to an hour on it, shrink the two size parameters drastically:
 
 .. code-block:: python
 
@@ -457,7 +439,7 @@ close to an hour on it, shrink the two size parameters drastically:
     n_act = 9
 
 This finishes in a few seconds. **Do not draw any conclusion from the
-numbers it produces** -- valid-pixel counts, actuator counts, mode counts,
+numbers it produces.** Valid-pixel counts, actuator counts, mode counts,
 and (if you carry it into :ref:`elt_petal_mmse_reconstructor_tutorial`)
 any reconstruction accuracy are all specific to this toy size and do not
 scale down meaningfully from the full configuration. Its only job is to
@@ -479,10 +461,10 @@ saved through the :class:`CalibManager`:
   actuators) on the *same* mask
 * a 4000-mode KL modal basis, saved both as an :class:`M2C` and directly as
   an :class:`IFunc` (the forward basis), plus the corresponding
-  :class:`IFuncInv` (its pseudo-inverse) -- all on the same shared mask
+  :class:`IFuncInv` (its pseudo-inverse), all on the same shared mask
 
 These products are the starting point for
 :ref:`elt_petal_mmse_reconstructor_tutorial`, which uses the shared mask to
 build a self-consistent reconstructor from KL-mode commands to petal-piston
-estimates -- and, further down the line, for the closed-loop simulation in
+estimates, and, further down the line, for the closed-loop simulation in
 :ref:`segmented_pupil_soft_limiter_tutorial`.

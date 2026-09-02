@@ -6,7 +6,7 @@ Building an MMSE Petal Reconstructor from a KL Modal Basis
 This is Part 2 of the segmented-pupil tutorial series. It uses the pupil
 mask, petal influence functions, and KL modal basis built in
 :ref:`elt_segmented_dm_tutorial` (Part 1) to build a **reconstructor from
-KL-mode commands to petal-piston estimates** -- the piece a closed-loop
+KL-mode commands to petal-piston estimates**: the piece a closed-loop
 simulation needs to know the current petal state without depending on any
 project-specific calibration file.
 
@@ -18,7 +18,7 @@ project-specific calibration file.
 * Building a petals-to-modes interaction matrix from two influence-function
   sets that live on the same pixel grid
 * Why a plain geometric projection is not enough, and what the *M* in MMSE
-  actually buys you
+  buys you
 * Computing a turbulence covariance matrix in modal space with
   :func:`compute_ifs_covmat`, and a reconstructor with
   :func:`compute_mmse_reconstructor`
@@ -28,8 +28,8 @@ project-specific calibration file.
 
 **Prerequisites:**
 
-* :ref:`elt_segmented_dm_tutorial` completed -- the full run, not a
-  shrunk-down version; this tutorial restores its products by tag and does
+* :ref:`elt_segmented_dm_tutorial` completed: the full run, not a
+  shrunk-down version. This tutorial restores its products by tag and does
   not regenerate them, and (see the note in Step 2) a modal basis with too
   little spatial bandwidth cannot represent the petal signal it needs to
   reconstruct, regardless of how correct the reconstructor code is
@@ -40,7 +40,7 @@ The problem
 --------------
 
 In closed loop, a pyramid WFS gives you a residual expressed in whatever
-modal basis the loop controls -- here, KL-mode coefficients. But the
+modal basis the loop controls (here, KL-mode coefficients). But the
 Soft-Limiter needs to know something the WFS does not report directly: the
 current *petal-piston* state, i.e. how the six independent primary-mirror
 support structures are offset from each other. That state is buried inside
@@ -64,16 +64,15 @@ turns a petal offset into the KL-mode vector it would produce:
 Why a plain projection is not enough
 -----------------------------------------
 
-The geometrically obvious way to get :math:`A` is a projection: express
-the piston pattern of each petal in the KL basis. And the geometrically obvious
-way to get :math:`W` is to invert :math:`A`. That works in the noise-free
-case, but a real KL-mode vector is never *just* the petal signal -- it is
-the petal signal plus whatever atmospheric turbulence happens to be present
-that frame, and the two are not separable mode-by-mode. A plain
-pseudo-inverse of :math:`A` would treat every KL mode as equally
-informative about the petal state, when in reality the high-order modes
-carry little turbulent power and are mostly noise for this particular
-estimation problem.
+The geometrically obvious way to get :math:`A` is to project the piston
+pattern of each petal onto the KL basis, and to get :math:`W` by inverting
+:math:`A`. That works in the noise-free case, but a real KL-mode vector is
+never *just* the petal signal: it is the petal signal plus whatever
+atmospheric turbulence happens to be present that frame, and the two are
+not separable mode-by-mode. A plain pseudo-inverse of :math:`A` would treat
+every KL mode as equally informative about the petal state, when in
+reality the high-order modes carry little turbulent power and are mostly
+noise for this estimation problem.
 
 The **MMSE** (Minimum Mean Square Error) reconstructor instead down-weights
 each mode according to how much genuine turbulence power it is expected to
@@ -86,20 +85,19 @@ carry, using the actual mode covariance as a statistical prior. Concretely:
 where :math:`C_p` is the prior covariance of the petal state we are trying
 to estimate, and :math:`C_m` is the covariance of the KL-mode turbulence
 that competes with the petal signal. SPECULA implements this directly as
-:func:`compute_mmse_reconstructor` -- the work in this tutorial is building
+:func:`compute_mmse_reconstructor`; the work in this tutorial is building
 :math:`A`, :math:`C_p`, and :math:`C_m` correctly, not the estimator
 formula itself.
 
 .. note::
 
    **A cautionary tale.** Building :math:`A` and :math:`W` from two
-   *independently generated* petal/modal bases -- rather than from a single
-   shared pupil mask, as Part 1 deliberately sets up -- is a real trap: even
-   a subtly different pixel rasterization between the two bases leaves them
-   not quite consistent inverses of each other, and the resulting cross-talk
-   is very difficult to diagnose after the fact (everything still looks
-   reasonable in isolation; it only shows up as a puzzling bias deep inside
-   a closed-loop run). This tutorial avoids that entirely by building both
+   *independently generated* petal/modal bases, rather than from the single
+   shared pupil mask Part 1 sets up, is a real trap: a subtly different
+   pixel rasterization between the two bases leaves them not quite
+   consistent inverses of each other, and the resulting cross-talk is hard
+   to diagnose after the fact. It only shows up as a puzzling bias deep
+   inside a closed-loop run. This tutorial avoids that by building both
    :math:`A` and :math:`W` from the petal and KL bases generated together
    in Part 1, on the same shared mask.
 
@@ -136,26 +134,26 @@ Step 1: Restore the products of Part 1
     print(f'petal_ifunc {petal_ifunc.shape}, kl_basis {kl_basis.shape}, '
           f'influence_function_inv {influence_function_inv.shape}')
 
-``petal_ifunc`` and ``kl_basis`` should agree on the second dimension --
-the number of valid pixels in the shared mask from Part 1 -- with the
-first dimension of ``kl_basis`` at 4000 (the modes kept) and
+``petal_ifunc`` and ``kl_basis`` should agree on the second dimension, the
+number of valid pixels in the shared mask from Part 1, with the first
+dimension of ``kl_basis`` at 4000 (the modes kept) and
 ``influence_function_inv`` simply that shape transposed.
 
-The ``assert`` is the same shared-mask safety check from Part 1 -- restoring
+The ``assert`` is the same shared-mask safety check from Part 1. Restoring
 by tag does not remove the risk of a mismatch, it just moves it later in
-time, so it is worth checking again here.
+time, so it pays to check again here.
 
 Step 2: The petals-to-modes interaction matrix
 ----------------------------------------------------
 
-The six raw petal influence functions from Part 1 (piston = 1 inside a
-petal, 0 elsewhere) are what we use directly -- there was no need to build
-a separate "relative petal" basis. The pyramid cannot see an absolute
-piston offset applied identically to all six petals, so that global mode is
-invisible to any reconstructor built this way; the standard fix is to treat
-one petal as a reference and describe the other five *relative to it*. We
-do that here simply by dropping the row for the last petal before
-projecting, which is enough (and is checked explicitly below):
+We use the six raw petal influence functions from Part 1 directly (piston
+= 1 inside a petal, 0 elsewhere); no separate "relative petal" basis is
+needed. The pyramid cannot see an absolute piston offset applied
+identically to all six petals, so that global mode is invisible to any
+reconstructor built this way; the standard fix is to treat one petal as a
+reference and describe the other five *relative to it*, which we do simply
+by dropping the last petal's row before projecting (checked explicitly
+below):
 
 .. code-block:: python
 
@@ -173,11 +171,11 @@ projecting, which is enough (and is checked explicitly below):
 .. note::
 
    **Is dropping one petal equivalent to a proper differential basis?**
-   Yes, exactly, not an approximation: the six raw petal masks sum, pixel
-   for pixel, to the uniform (global piston) pattern, which projects to
+   Yes, not just approximately: the six raw petal masks sum, pixel for
+   pixel, to the uniform (global piston) pattern, which projects to
    KL-mode RMS ~3e-17 (machine-precision zero, since the KL basis carries
    no piston). The six raw influence functions are therefore rank-5, not
-   rank-6, and dropping petal 6 discards exactly that redundant,
+   rank-6, so dropping petal 6 discards precisely that redundant,
    unobservable direction and nothing else.
 
 Step 3: Turbulence covariance in KL-mode space
@@ -185,9 +183,9 @@ Step 3: Turbulence covariance in KL-mode space
 
 This is :math:`C_m`: how much power ordinary atmospheric turbulence puts
 into each KL mode (and how the modes correlate), independent of any petal
-signal. :func:`compute_ifs_covmat` -- the same routine Part 1 uses
-internally to rank the KL basis -- gives us this directly from the forward
-KL basis and an ``r0``/``L0`` pair:
+signal. :func:`compute_ifs_covmat`, the same routine Part 1 uses internally
+to rank the KL basis, gives us this directly from the forward KL basis and
+an ``r0``/``L0`` pair:
 
 .. code-block:: python
 
@@ -230,8 +228,8 @@ isotropic, deliberately *uninformative* prior, :math:`C_p = \sigma_p^2 I`:
    invariant to :math:`\sigma_p` across more than six orders of magnitude (8 nm to
    8e6 nm): for any sufficiently uninformative prior, the estimator
    converges to the Gauss-Markov (minimum-variance-unbiased) limit, so
-   ``petal_sigma_nm`` is not really a tunable parameter of the method --
-   any plausible order of magnitude works.
+   ``petal_sigma_nm`` is not really a tunable parameter of the method; any
+   plausible order of magnitude works.
 
 Step 5: Computing and checking the reconstructor
 ------------------------------------------------------
@@ -246,11 +244,11 @@ Step 5: Computing and checking the reconstructor
     print('mmse_recmat:', mmse_recmat.shape)
 
     # Sanity check: applied to the noise-free interaction matrix, the
-    # reconstructor should recover a (5, 5) identity -- this is exactly the
-    # check that would catch a shared-mask mismatch of the kind described
-    # above, and it also confirms that dropping the sixth (reference)
-    # petal, rather than building a separate 5-mode "relative petal" basis,
-    # was a safe simplification: there is no leftover cross-talk.
+    # reconstructor should recover a (5, 5) identity. This is the check
+    # that would catch a shared-mask mismatch of the kind described above,
+    # and it also confirms that dropping the sixth (reference) petal,
+    # rather than building a separate 5-mode "relative petal" basis, was a
+    # safe simplification: there is no leftover cross-talk.
     print(np.round(cpuArray(mmse_recmat @ intmat), 3))
 
 ::
@@ -263,7 +261,7 @@ Step 5: Computing and checking the reconstructor
      [-0. -0. -0. -0.  1.]]
 
 (Computing ``c_modes`` and ``mmse_recmat`` at this scale takes a few
-minutes -- comparatively cheap next to Part 1.)
+minutes, comparatively cheap next to Part 1.)
 
 Saving the reconstructor
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -286,12 +284,9 @@ Step 6: Statistical validation with atmosphere-like commands
 The identity check above only proves the reconstructor is self-consistent
 in the noise-free case. What matters in practice is how well it recovers a
 *known* petal offset once realistic atmospheric turbulence is mixed in --
-exactly the static estimation test described in the paper, Sect. 4.3
-(Fig. 4 and Fig. 5): known petal offsets and turbulence are injected
-together, and the error of the estimator is compared against the injected
-truth. Rather than re-deriving expected numbers here, run it yourself
-against the real ELT-class basis from Part 1 and compare against those
-figures.
+the static estimation test described in the paper, Sect. 4.3 (Fig. 4 and
+Fig. 5): known petal offsets and turbulence are injected together, and the
+estimator error is compared against the injected truth.
 
 Code, using :class:`AtmoRandomPhase`-generated turbulence plus injected,
 known-truth random petal offsets:
@@ -350,9 +345,8 @@ known-truth random petal offsets:
     print(f'RMSE = {rmse:.2f} nm, bias = {bias:.2f} nm')
 
 Compare the resulting bias and RMS error against Fig. 4 and Sect. 4.3 of
-the paper -- the same test, the same kind of input mixture (turbulence
-plus injected petal offsets), evaluated on the real ELT-class basis rather
-than a stand-in.
+the paper, evaluated there on the real ELT-class basis rather than a
+stand-in.
 
 Summary and what's next
 ---------------------------
@@ -370,7 +364,7 @@ Starting from the products of Part 1, this tutorial built:
   petal offsets, confirming the reconstructor is unbiased before it is ever
   used in closed loop
 
-What remains for a full closed-loop demonstration -- calibrating the
+What remains for a full closed-loop demonstration, calibrating the
 pyramid WFS itself (pupil geometry, interaction matrix, reconstruction
-matrix) and running the loop with and without the Soft-Limiter -- is
+matrix) and running the loop with and without the Soft-Limiter, is
 covered in :ref:`segmented_pupil_soft_limiter_tutorial` (Part 3).
