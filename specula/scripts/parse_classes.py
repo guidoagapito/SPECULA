@@ -19,14 +19,20 @@ exposed_classes = [ 'Source', 'Pupilstop',
                     'ModulatedPyramid', 'CCD', 'Slopec', 'PyrSlopec', 'Modalrec', 'Integrator', 'IirFilter', 'DM', 'PSF', 'DataStore'                
                   ]
 
-class InitMethodVisitor(ast.NodeVisitor):
-    """AST Visitor to extract parameters, inputs, and outputs from an __init__ method."""
-    
-    def __init__(self):
+class ClassData:
+    def __init__(self, class_name: str):
+        self.class_name: str = class_name
         self.init_params = {}
+        self.param_type = {}
         self.param_comments = {}
+        self.param_required = {}
         self.inputs = {}
         self.outputs = []
+
+class InitMethodVisitor(ast.NodeVisitor):
+    """AST Visitor to extract parameters, inputs, and outputs from an __init__ method."""
+    def __init__(self, class_name: str):
+        self.data = ClassData(class_name=class_name)
     
     def visit_FunctionDef(self, node):
         """Visit the __init__ method and extract parameters, inputs, and outputs."""
@@ -60,8 +66,10 @@ class InitMethodVisitor(ast.NodeVisitor):
                 if param_type:
                     comment += f", type: {param_type}"
 
-                self.init_params[param_name] = default_value
-                self.param_comments[param_name] = comment
+                self.data.init_params[param_name] = default_value
+                self.data.param_comments[param_name] = comment
+                self.data.param_type[param_name] = param_type
+                self.data.param_required[param_name] = not is_optional
 
             # Visit the body of __init__ to extract inputs and outputs
             for statement in node.body:
@@ -79,14 +87,17 @@ class InitMethodVisitor(ast.NodeVisitor):
                     for keyword in node.value.keywords:
                         if keyword.arg == "type":
                             input_type = ast.unparse(keyword.value)
-                            self.inputs[key] = input_type
+                            self.data.inputs[key] = input_type
                 
                 elif target.value.attr == "outputs":
                     # Extract output from: self.outputs['out_value'] = self.out_value
-                    self.outputs.append(key)
+                    self.data.outputs.append(key)
 
-def extract_class_info(file_path):
+def extract_class_info(file_path, allowed=None):
     """Extracts class name, __init__ method parameters, default values, and types from a Python file."""
+    if allowed is None:
+        allowed = lambda _c: _c in exposed_classes
+
     with open(file_path, "r", encoding="utf-8") as file:
         tree = ast.parse(file.read(), filename=file_path)
     
@@ -95,37 +106,38 @@ def extract_class_info(file_path):
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             class_name = node.name
-            if not class_name in exposed_classes:
+            if not allowed(class_name):
                 continue
-            visitor = InitMethodVisitor()
+            visitor = InitMethodVisitor(class_name=class_name)
             visitor.visit(node)
             
-            class_data.append((class_name, visitor.init_params, visitor.param_comments, visitor.inputs, visitor.outputs))
+            class_data.append(visitor.data)
 
     return class_data
 
-def generate_yaml(class_name, params, comments, inputs, outputs, output_folder):
+def generate_yaml(data: ClassData, output_folder):
     """Generates a YAML file with class information, inputs, and outputs."""
-    yaml_path = os.path.join(output_folder, f"{class_name}.yml")
+    yaml_path = os.path.join(output_folder, f"{data.class_name}.yml")
     
     with open(yaml_path, "w", encoding="utf-8") as yaml_file:
-        yaml_file.write(f"{class_name}:\n")
+        yaml_file.write(f"{data.class_name}:\n")
         
         # Write constructor parameters
-        for param, value in params.items():
+        for param, value in data.init_params.items():
             # yaml_file.write(f"  {param}: {value}  # {comments[param]}\n")
             yaml_file.write(f"  {param}: {value}\n")
 
         # Write inputs
-        if inputs:
+        if data.inputs:
             yaml_file.write("  inputs:\n")
-            for input_name, input_type in inputs.items():
+            for input_name, input_type in data.inputs.items():
                 # yaml_file.write(f"    {input_name}: {input_type}  # InputType\n")
                 yaml_file.write(f"    {input_name}: {input_type}\n")
 
         # Write outputs as a YAML list
-        if outputs:
-            yaml_file.write(f"  outputs: {outputs}\n")
+        if data.outputs:
+            yaml_file.write(f"  outputs: {data.outputs}\n")
+
     
     print(f"Generated YAML: {yaml_path}")
 
@@ -139,8 +151,8 @@ def process_python_files(input_folder, output_folder):
             file_path = os.path.join(input_folder, file_name)
             classes = extract_class_info(file_path)
             
-            for class_name, params, comments, inputs, outputs in classes:
-                generate_yaml(class_name, params, comments, inputs, outputs, output_folder)
+            for classdata in classes:
+                generate_yaml(classdata, output_folder)
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
