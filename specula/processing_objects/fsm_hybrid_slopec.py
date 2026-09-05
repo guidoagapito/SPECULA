@@ -60,11 +60,47 @@ class FsmHybridSlopec(Slopec):
         consecutive centroid estimates during acquisition, or between the sniper 
         and radar peaks, to declare spatial consistency. Default is 4.0.
     ema_alpha : float [1], optional
-        The smoothing factor of the Exponential Moving Average filter. Determines 
-        the temporal weight of the current frame relative to history for the 
+        The smoothing factor of the Exponential Moving Average filter. Determines
+        the temporal weight of the current frame relative to history for the
         background "Radar" image accumulation. Default is 0.3.
+    vel_ema_alpha : float [1], optional
+        Smoothing factor for the global kinematic velocity estimate (see
+        "KINEMATIC PREDICTION" below): `v_smoothed = vel_ema_alpha * v_raw
+        + (1 - vel_ema_alpha) * v_smoothed_prev`. The raw estimate is a
+        one-frame finite difference of the locked centroid position,
+        which for a single sub-aperture (no cross-subaperture median to
+        average over, as in the MORFEO LO NGS case) amplifies centroid
+        noise directly into a "velocity" used for the spatial search
+        prior. Default is 1.0 (no smoothing -- the raw one-frame estimate
+        is used directly, matching the class's original behaviour). Lower
+        values smooth more aggressively; this was explored as a candidate
+        fix for closed-loop divergence at low flux (2026-09) but, combined
+        with `hold_during_fading`/`hold_during_flicker` below, made things
+        markedly *worse* in practice (see README.md) -- kept available for
+        further experimentation, not because it is currently recommended.
+    hold_during_fading : bool, optional
+        When `True`, a subaperture in total signal loss (Track 3, "Fading")
+        while still tracking HOLDS its last known-good position instead of
+        extrapolating with the kinematic velocity prediction. Default is
+        `False` (original behaviour: extrapolate). Explored as a candidate
+        fix (avoids feeding a fabricated, velocity-extrapolated position to
+        the DM during real dropouts) but empirically made closed-loop
+        divergence markedly worse at low flux, apparently because it can
+        leave the loop with no correction at all for extended fading
+        stretches rather than a laggy-but-moving one -- see README.md.
+        Kept available for further experimentation, default is the
+        original, empirically-better behaviour.
+    hold_during_flicker : bool, optional
+        When `True`, a subaperture relying on the EMA "Radar" fallback
+        (Track 2, "Flicker") while tracking HOLDS its last known-good
+        position instead of re-centroiding on the temporally-smoothed
+        pixel buffer (`ema_pixels`). Default is `False` (original
+        behaviour: update with the EMA-based estimate). Same caveat as
+        `hold_during_fading` above -- explored as a fix for an
+        un-tuned phase-lag source, made things worse in practice, kept
+        available but not currently recommended. See README.md.
     **kwargs : dict
-        Additional keyword arguments passed to the base `Slopec` constructor 
+        Additional keyword arguments passed to the base `Slopec` constructor
         (e.g., `target_device_idx`, `dtype`).
     """
 
@@ -81,6 +117,9 @@ class FsmHybridSlopec(Slopec):
                  leash_alpha: float = 0.5,
                  acq_radius_sq: float = 4.0,
                  ema_alpha: float = 0.3,
+                 vel_ema_alpha: float = 1.0,
+                 hold_during_fading: bool = False,
+                 hold_during_flicker: bool = False,
                  **kwargs):
 
         self.subapdata = subapdata
@@ -100,6 +139,9 @@ class FsmHybridSlopec(Slopec):
         self.leash_alpha = leash_alpha
         self.acq_radius_sq = acq_radius_sq
         self.ema_alpha = ema_alpha
+        self.vel_ema_alpha = vel_ema_alpha
+        self.hold_during_fading = hold_during_fading
+        self.hold_during_flicker = hold_during_flicker
 
         # Output declarations
         self.outputs['out_subapdata'] = self.subapdata
@@ -125,6 +167,12 @@ class FsmHybridSlopec(Slopec):
         # Exponential Moving Average buffers (The "Radar")
         self.ema_pixels = self.xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
         self.ema_corr = self.xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
+
+        # Smoothed global kinematic velocity (see vel_ema_alpha docstring).
+        # Plain Python floats, matching the unlocked-case default of the
+        # raw estimate this smooths (0.0, see calc_slopes_nofor()).
+        self.vx_smooth = 0.0
+        self.vy_smooth = 0.0
 
         # --- Grids Generation ---
         self.x_grid = self.xp.arange(np_sub, dtype=self.dtype)
@@ -231,10 +279,22 @@ class FsmHybridSlopec(Slopec):
         if self.xp.any(self.is_locked):
             vx_valid = self.state_x1[self.is_locked] - self.state_x2[self.is_locked]
             vy_valid = self.state_y1[self.is_locked] - self.state_y2[self.is_locked]
-            v_global_x = self.xp.clip(self.xp.median(vx_valid), -self.max_v, self.max_v)
-            v_global_y = self.xp.clip(self.xp.median(vy_valid), -self.max_v, self.max_v)
+            v_raw_x = self.xp.clip(self.xp.median(vx_valid), -self.max_v, self.max_v)
+            v_raw_y = self.xp.clip(self.xp.median(vy_valid), -self.max_v, self.max_v)
         else:
-            v_global_x, v_global_y = 0.0, 0.0
+            v_raw_x, v_raw_y = 0.0, 0.0
+
+        # Smooth the raw one-frame finite-difference velocity before using
+        # it anywhere below: undamped, it directly amplifies centroid noise
+        # into the spatial search prior (and, for a single sub-aperture --
+        # the MORFEO LO NGS case -- there is no cross-subaperture median to
+        # average over, so vx_valid/vy_valid above degenerate to that one
+        # noisy value). This is a genuine smoothing of the estimate itself,
+        # not just a decay of its later contribution (that's what
+        # velocity_damping, below, already does).
+        self.vx_smooth = self.vel_ema_alpha * v_raw_x + (1.0 - self.vel_ema_alpha) * self.vx_smooth
+        self.vy_smooth = self.vel_ema_alpha * v_raw_y + (1.0 - self.vel_ema_alpha) * self.vy_smooth
+        v_global_x, v_global_y = self.vx_smooth, self.vy_smooth
 
         # EXPONENTIAL SUPPRESSION (Leaky Integrator)
         # Decays the velocity vector exponentially for subapertures in Hold/Flicker mode
@@ -384,6 +444,8 @@ class FsmHybridSlopec(Slopec):
         # We consider a tracking frame fully nominal ONLY if the instantaneous Sniper sees it.
         # If we are relying on Track 2 (EMA fallback), we still update the state with x_est
         # (which comes from EMA pixels) to keep the loop moving, but we let the miss_counter rise!
+        # (Optionally, hold instead -- see hold_during_flicker/hold_during_fading docstrings;
+        # empirically WORSE by default at low flux, see README.md, hence off by default.)
         nominal_trk = trk_mask & use_track1
         flicker_trk = trk_mask & use_track2
         fading_trk  = trk_mask & use_track3
@@ -396,13 +458,19 @@ class FsmHybridSlopec(Slopec):
         # Flicker Tracking (EMA Fallback): Increment miss, but STILL update state with EMA WCoG!
         # This keeps the slopes fluid and active, preventing DM steps while accounting for the miss.
         new_miss_counter[flicker_trk] += 1
-        new_state_x1[flicker_trk] = x_est[flicker_trk]
-        new_state_y1[flicker_trk] = y_est[flicker_trk]
+        if self.hold_during_flicker:
+            pass  # new_state_x1/y1 already default to self.state_x1/y1.copy() -- hold.
+        else:
+            new_state_x1[flicker_trk] = x_est[flicker_trk]
+            new_state_y1[flicker_trk] = y_est[flicker_trk]
 
         # Total Fading (Track 3): Increment miss, blind cinematic prediction update
         new_miss_counter[fading_trk] += 1
-        new_state_x1[fading_trk] = x_pred[fading_trk]
-        new_state_y1[fading_trk] = y_pred[fading_trk]
+        if self.hold_during_fading:
+            pass  # new_state_x1/y1 already default to self.state_x1/y1.copy() -- hold.
+        else:
+            new_state_x1[fading_trk] = x_pred[fading_trk]
+            new_state_y1[fading_trk] = y_pred[fading_trk]
 
         # --- C. DROP LOGIC & EMA FLUSH ---
         invalid_trk = trk_mask & ~use_track1

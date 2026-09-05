@@ -292,3 +292,170 @@ class TestFsmHybridSlopec(unittest.TestCase):
         # Cross-compare magnitudes
         np.testing.assert_allclose(slopes_fsm_x, slopes_sh_x, rtol=1e-2, atol=1e-3,
                 err_msg="Normalization mismatch between FSM and standard ShSlopec under tracking state!")
+
+    @cpu_and_gpu
+    def test_fsm_hold_during_fading_opt_in(self, target_device_idx, xp):
+        """`hold_during_fading=True` (opt-in, off by default -- see
+        docstring): total signal loss (Track 3) should HOLD the last
+        known position instead of extrapolating with the kinematic
+        velocity estimate, when explicitly enabled. Explored 2026-09 as a
+        candidate fix for closed-loop divergence at low flux; empirically
+        made things *worse* in practice (see README.md), so left off by
+        default -- this test only verifies the opt-in behaves as
+        documented, it is not a recommendation to enable it."""
+        subap_npx, t = 32, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        # max_v raised so the established velocity below isn't clipped away.
+        slopec = FsmHybridSlopec(subapdata, hold_during_fading=True, max_v=5.0,
+                                 target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        # Inject: already locked, well clear of max_missed_frames, with an
+        # established velocity of +1.0 px/frame (state_x1 - state_x2) and
+        # no accumulated Radar confidence (fresh ema_corr).
+        slopec.is_locked[:] = True
+        slopec.lock_counter[:] = 10
+        slopec.miss_counter[:] = 0
+        locked_x = cntrd + 3.0
+        slopec.state_x1[:] = locked_x
+        slopec.state_x2[:] = locked_x - 1.0
+        slopec.state_y1[:] = cntrd
+        slopec.state_y2[:] = cntrd
+
+        # Plain background frame: no signal anywhere, so both the
+        # instantaneous Sniper and the (freshly-zeroed) Radar report
+        # SNR ~= 0 -- a clean Track 3 (total fading) hit.
+        bg_frame = xp.full(ccd_shape, 1.0, dtype=xp.float32)
+        pixels.pixels = bg_frame
+        pixels.generation_time = t
+        slopec.check_ready(t)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        self.assertTrue(np.all(cpuArray(slopec.is_locked)),
+                        "Should still be locked after a single missed frame")
+
+        new_x = cpuArray(slopec.state_x1)
+        np.testing.assert_allclose(new_x, locked_x, atol=1e-6,
+            err_msg="Fading (Track 3) extrapolated position instead of holding")
+
+    @cpu_and_gpu
+    def test_fsm_hold_during_flicker_opt_in(self, target_device_idx, xp):
+        """`hold_during_flicker=True` (opt-in, off by default -- see
+        docstring): the EMA ("Radar") fallback track, while tracking,
+        should HOLD the last known position rather than re-centroid on
+        the temporally-smoothed pixel buffer, when explicitly enabled.
+        Explored 2026-09 as a candidate fix for an un-tuned phase-lag
+        source; empirically made closed-loop divergence *worse* in
+        practice (see README.md), so left off by default -- this test
+        only verifies the opt-in behaves as documented, it is not a
+        recommendation to enable it."""
+        subap_npx, t = 32, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+        n_subaps = subapdata.n_subaps
+
+        slopec = FsmHybridSlopec(subapdata, hold_during_flicker=True,
+                                 target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        # Inject: already locked and stationary (zero velocity, isolating
+        # this test from fix #1), no missed frames yet.
+        slopec.is_locked[:] = True
+        slopec.lock_counter[:] = 10
+        slopec.miss_counter[:] = 0
+        slopec.state_x1[:] = cntrd
+        slopec.state_x2[:] = cntrd
+        slopec.state_y1[:] = cntrd
+        slopec.state_y2[:] = cntrd
+
+        # Manually craft a strong, unambiguous Radar (ema_corr) peak far
+        # from the locked position, standing in for several frames' worth
+        # of accumulated EMA confidence -- guarantees radar_yes=True this
+        # frame regardless of the instantaneous frame's own content.
+        far_x = cntrd + 5.0
+        ema_peak = slopec._generate_gaussian(
+            xp.full(n_subaps, far_x, dtype=slopec.dtype),
+            xp.full(n_subaps, cntrd, dtype=slopec.dtype),
+            slopec.fwhm_pix) * 100.0
+        slopec.ema_corr = ema_peak
+        # ema_pixels stays at its zero-init default -- what the old code
+        # would have centroided on for the state update this fix removes.
+
+        # Plain background frame: the instantaneous Sniper sees nothing
+        # (SNR ~= 0), so only the Radar (Track 2 / flicker) can fire.
+        bg_frame = xp.full(ccd_shape, 1.0, dtype=xp.float32)
+        pixels.pixels = bg_frame
+        pixels.generation_time = t
+        slopec.check_ready(t)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        self.assertTrue(np.all(cpuArray(slopec.is_locked)),
+                        "Should still be locked after a single flicker frame")
+
+        new_x = cpuArray(slopec.state_x1)
+        np.testing.assert_allclose(new_x, cntrd, atol=1e-6,
+            err_msg="Flicker (Track 2) re-centroided on EMA pixels instead of holding")
+
+    @cpu_and_gpu
+    def test_fsm_velocity_estimate_smoothing_opt_in(self, target_device_idx, xp):
+        """`vel_ema_alpha<1.0` (opt-in, default is 1.0 = no smoothing --
+        see docstring): the kinematic velocity estimate becomes a
+        smoothed (EMA) quantity instead of the raw one-frame finite
+        difference of the locked position, when explicitly enabled.
+        Explored 2026-09 as a candidate fix (the raw estimate amplifies
+        centroid noise directly for a single sub-aperture, as in the
+        MORFEO LO NGS case, with no cross-subaperture median to fall back
+        on) but, combined with the hold_during_* options, made closed-loop
+        divergence *worse* in practice (see README.md) -- this test only
+        verifies the opt-in behaves as documented, it is not a
+        recommendation to enable it."""
+        subap_npx, t = 32, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        vel_ema_alpha = 0.25
+        slopec = FsmHybridSlopec(subapdata, vel_ema_alpha=vel_ema_alpha, max_v=5.0,
+                                 target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        # Inject an established raw one-frame velocity of +2.0 px/frame,
+        # starting from a fresh (zero) smoothed-velocity state.
+        slopec.is_locked[:] = True
+        slopec.lock_counter[:] = 10
+        slopec.miss_counter[:] = 0
+        slopec.state_x1[:] = cntrd + 2.0
+        slopec.state_x2[:] = cntrd
+        slopec.state_y1[:] = cntrd
+        slopec.state_y2[:] = cntrd
+        self.assertEqual(slopec.vx_smooth, 0.0)
+
+        good_frame = self.generate_spots(ccd_shape, subapdata, xp, shift_dx=0.0)
+        pixels.pixels = good_frame
+        pixels.generation_time = t
+        slopec.check_ready(t)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        expected = vel_ema_alpha * 2.0
+        np.testing.assert_allclose(cpuArray(slopec.vx_smooth), expected, atol=1e-6,
+            err_msg="Velocity estimate jumped to the raw value instead of being smoothed")
+
+    @cpu_and_gpu
+    def test_fsm_defaults_match_original_behaviour(self, target_device_idx, xp):
+        """Guards the 2026-09 restoration: with no options passed,
+        `hold_during_fading`/`hold_during_flicker` default to `False` and
+        `vel_ema_alpha` defaults to 1.0 (no smoothing) -- i.e. the class's
+        original, empirically-better behaviour (see README.md), with the
+        three candidate fixes available strictly opt-in."""
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, 32)
+        slopec = FsmHybridSlopec(subapdata, target_device_idx=target_device_idx)
+        self.assertFalse(slopec.hold_during_fading)
+        self.assertFalse(slopec.hold_during_flicker)
+        self.assertEqual(slopec.vel_ema_alpha, 1.0)
