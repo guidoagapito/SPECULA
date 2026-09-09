@@ -99,6 +99,23 @@ class AdaptiveShrinkageSlopec(Slopec):
     bg_inner_radius : float [pixels] or None
         Radius beyond which pixels are used for the per-frame background
         estimate. Defaults to 0.35 * np_sub.
+    gain_correction_enable : bool [1]
+        When True (default), Step 3's analytical grid-bias correction is
+        applied (x_est = xc + gamma*mx, gamma->1/g_eff at high SNR). When
+        False, gamma is forced to 1.0, i.e. the RAW, uncorrected WCoG
+        estimate (x1 from Step 2) is emitted directly -- the geometric
+        WCoG attenuation (g_wcog) is left uncompensated. Exists to
+        quantify Step 3's own cost/benefit in isolation (2026-09-09).
+        WARNING: disabling this changes the loop's effective open-loop
+        gain (the average slope-per-unit-displacement drops by roughly
+        g_eff, e.g. ~0.5-0.8 for the window sizes tested so far) --a
+        closed-loop comparison with this False is only meaningful if the
+        temporal_filter gain is adjusted to compensate, otherwise you are
+        conflating "no correction" with "lower loop gain". Not something
+        to sweep broadly: g_eff is known analytically for a given
+        wcog_fwhm_pix/fwhm_pix pair, so only a couple of temporal_filter
+        gains around the predicted 1/g_eff compensation are needed, not a
+        blind search.
     stream_enable : bool [1]
         Capture calc_slopes_nofor() into a CUDA graph on GPU (see setup(),
         which calls BaseProcessingObj.build_stream()). All persistent state
@@ -131,6 +148,7 @@ class AdaptiveShrinkageSlopec(Slopec):
                  max_missed_frames: int = 10,
                  acq_radius_sq: float = 4.0,
                  bg_inner_radius: float = None,
+                 gain_correction_enable: bool = True,
                  stream_enable: bool = True,
                  **kwargs):
 
@@ -160,6 +178,7 @@ class AdaptiveShrinkageSlopec(Slopec):
 
         self.prior_sigma = prior_sigma
         self.prior_floor = prior_floor
+        self.gain_correction_enable = gain_correction_enable
         self.w_ema_alpha = w_ema_alpha
         self.radar_alpha = radar_alpha
         self.snr_thr = snr_thr
@@ -397,6 +416,18 @@ class AdaptiveShrinkageSlopec(Slopec):
         sigma_pos_sq = self.sigma_psf_sq / (rho_sq + eps)
         gamma = (g_eff * self.sigma_d_sq
                  / (g_eff * g_eff * self.sigma_d_sq + sigma_pos_sq + eps))
+
+        # gain_correction_enable is a fixed constructor-time flag (never
+        # changes frame to frame), not a per-subaperture data-dependent
+        # condition -- a plain Python branch is correct here, same
+        # reasoning as AdaptiveWindowShSlopec's gain_comp_enable (see its
+        # own comment: xp.where on a bare Python bool crashes on GPU).
+        # gamma=1.0 emits x1/y1 (the raw, uncorrected Step-2 WCoG estimate)
+        # directly -- see the gain_correction_enable docstring for why a
+        # closed-loop comparison with this False needs the temporal_filter
+        # gain adjusted to compensate, not a same-gain A/B.
+        if not self.gain_correction_enable:
+            gamma = 1.0
 
         x_est = x_c + gamma * mx
         y_est = y_c + gamma * my

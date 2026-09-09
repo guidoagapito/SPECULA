@@ -299,6 +299,54 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                         "Larger injected shift did not yield a larger emitted slope")
 
     @cpu_and_gpu
+    def test_gain_correction_enable_toggle(self, target_device_idx, xp):
+        """
+        `gain_correction_enable` (2026-09-09, added to quantify Step 3's
+        cost/benefit in isolation): default True must reproduce the
+        existing corrected behaviour exactly (gamma computed as before);
+        False must emit the raw, uncorrected Step-2 WCoG estimate
+        (gamma=1), which at high SNR under-corrects the window's own
+        geometric attenuation (g_wcog<1) and so is smaller in magnitude
+        than the corrected slope for the same injected shift.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        shift_x = 0.3
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                    shift_dx=shift_x, shift_dy=0.0)
+
+        common = dict(fwhm_pix=1.5, k_wiener=1e-8, b_reg=0.0, ron_e=0.0,
+                     w_ema_alpha=1.0, target_device_idx=target_device_idx)
+
+        slopec_on = AdaptiveShrinkageSlopec(subapdata, gain_correction_enable=True, **common)
+        slopec_on.inputs['in_pixels'].set(pixels)
+        self._run_frame(slopec_on, pixels, frame, t)
+        slope_on = float(cpuArray(slopec_on.outputs['out_slopes'].xslopes)[0])
+
+        slopec_off = AdaptiveShrinkageSlopec(subapdata, gain_correction_enable=False, **common)
+        slopec_off.inputs['in_pixels'].set(pixels)
+        self._run_frame(slopec_off, pixels, frame, t)
+        slope_off = float(cpuArray(slopec_off.outputs['out_slopes'].xslopes)[0])
+
+        self.assertGreater(slope_on, 0.0, "Sanity: corrected slope should be positive")
+        self.assertGreater(slope_off, 0.0, "Sanity: uncorrected slope should be positive")
+        self.assertLess(slope_off, slope_on,
+                        "Disabling gain correction should under-correct (smaller "
+                        "magnitude slope), not match or exceed the corrected one")
+
+        # Default (unspecified) must match gain_correction_enable=True exactly.
+        slopec_default = AdaptiveShrinkageSlopec(subapdata, **common)
+        slopec_default.inputs['in_pixels'].set(pixels)
+        self.assertTrue(slopec_default.gain_correction_enable,
+                        "Default must be True (preserve original behaviour)")
+        self._run_frame(slopec_default, pixels, frame, t)
+        slope_default = float(cpuArray(slopec_default.outputs['out_slopes'].xslopes)[0])
+        np.testing.assert_allclose(slope_default, slope_on, atol=1e-9,
+                                   err_msg="Default behaviour must match gain_correction_enable=True")
+
+    @cpu_and_gpu
     def test_cuda_graph_capture_tracks_new_frames_written_in_place(self, target_device_idx, xp):
         """
         With stream_enable=True (the default), setup() must capture
