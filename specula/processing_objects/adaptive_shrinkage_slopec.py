@@ -1,4 +1,5 @@
 from specula.base_processing_obj import OutputDesc
+from specula.base_value import BaseValue
 from specula.data_objects.subap_data import SubapData
 from specula.lib.utils import unravel_index_2d
 from specula.processing_objects.slopec import Slopec
@@ -116,6 +117,65 @@ class AdaptiveShrinkageSlopec(Slopec):
         wcog_fwhm_pix/fwhm_pix pair, so only a couple of temporal_filter
         gains around the predicted 1/g_eff compensation are needed, not a
         blind search.
+    stuck_rho_sq_thresh : float [1]
+        Threshold below which a frame's rho_sq counts toward a "stuck"
+        (sustained low-confidence) run (2026-09-10). Default 0.0 never
+        triggers (rho_sq >= 0 always) -- both fixes below are opt-in and
+        fully inert at this default, preserving prior behaviour exactly.
+        Added after finding that ASHR's Design Principle 3 ("w_t -> 0
+        holds the DM command, a pure loop-gain reduction, safe against a
+        dropout") is NOT safe against a sustained, deterministic
+        disturbance: holding the command while the true spot keeps
+        moving under an ongoing tone is a runaway driven by *confidence
+        collapse feeding a stuck integrator*, not a gain spike (verified
+        directly via out_w_smooth/out_gamma/out_rho_sq telemetry, which
+        showed effective gain drop, not rise, at a divergence onset).
+        Set to a positive value (below the class's typical/nominal
+        rho_sq at the operating point of interest, e.g. from
+        out_rho_sq telemetry in normal operation) to arm both fixes.
+    max_hold_frames : int [frames]
+        Ramp length for Fix A (gain fallback, GRADUAL as of 2026-09-10):
+        the emitted weight blends linearly from w_smooth toward
+        fallback_w as stuck_counter goes from 0 to max_hold_frames, then
+        holds at fallback_w for any longer stuck run -- not an
+        all-or-nothing switch (an earlier step version was found to be
+        actively harmful: a sudden full-trust jump onto a still-uncertain
+        x_c made the divergence ~3x worse than doing nothing). Default
+        effectively disables it (a very large ramp length, so the blend
+        fraction stays ~0 for any realistic stuck run). Only meaningful
+        when stuck_rho_sq_thresh > 0.
+    fallback_w : float [1]
+        Asymptotic weight Fix A blends toward as the stuck run lengthens,
+        in place of w_smooth -- 1.0 (default) fully trusts the raw
+        bias-corrected estimate at the end of the ramp (bypasses the
+        shrinkage entirely) instead of continuing to emit a near-zero,
+        frozen-command slope. w_smooth's own EMA state is unaffected
+        (telemetry still reports the true, collapsed value); only what
+        is emitted this frame is blended.
+    prior_widen_factor : float [1]
+        Multiplier applied to prior_sigma for a second, wider spatial
+        prior that Fix B (GRADUAL as of 2026-09-10) blends toward as
+        stuck_counter ramps up -- 1.0 (default) makes the wide prior
+        identical to the normal one, so Fix B is a no-op regardless of
+        stuck state. >1 gives the coarse-peak matched-filter search
+        progressively more room to find a spot that has moved further
+        from the loop reference than the normal prior tolerates well, at
+        the cost of the same window-size trade-offs (g_wcog vs
+        ron_var_eff, capture bistability) already documented for
+        window-based methods elsewhere in this investigation -- exists
+        to test whether that trade is worth it here, not assumed. An
+        earlier all-or-nothing step version made the coarse peak more
+        erratic the instant it switched (freer to jump to any bright
+        correlation feature, not necessarily the true spot); the ramp is
+        meant to let the search widen only as fast as warranted.
+    prior_widen_after_frames : int [frames]
+        Ramp length for Fix B: the prior used for the coarse-peak search
+        blends linearly from spatial_prior toward spatial_prior_wide as
+        the PREVIOUS frame's stuck_counter (this frame's own rho_sq isn't
+        known until after the coarse-peak search that consumes the
+        prior) goes from 0 to prior_widen_after_frames, then holds at
+        spatial_prior_wide for any longer stuck run. Default effectively
+        disables it. Only meaningful when stuck_rho_sq_thresh > 0.
     stream_enable : bool [1]
         Capture calc_slopes_nofor() into a CUDA graph on GPU (see setup(),
         which calls BaseProcessingObj.build_stream()). All persistent state
@@ -149,6 +209,11 @@ class AdaptiveShrinkageSlopec(Slopec):
                  acq_radius_sq: float = 4.0,
                  bg_inner_radius: float = None,
                  gain_correction_enable: bool = True,
+                 stuck_rho_sq_thresh: float = 0.0,
+                 max_hold_frames: int = 1_000_000,
+                 fallback_w: float = 1.0,
+                 prior_widen_factor: float = 1.0,
+                 prior_widen_after_frames: int = 1_000_000,
                  stream_enable: bool = True,
                  **kwargs):
 
@@ -179,6 +244,10 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.prior_sigma = prior_sigma
         self.prior_floor = prior_floor
         self.gain_correction_enable = gain_correction_enable
+        self.stuck_rho_sq_thresh = stuck_rho_sq_thresh
+        self.max_hold_frames = max_hold_frames
+        self.fallback_w = fallback_w
+        self.prior_widen_after_frames = prior_widen_after_frames
         self.w_ema_alpha = w_ema_alpha
         self.radar_alpha = radar_alpha
         self.snr_thr = snr_thr
@@ -220,6 +289,15 @@ class AdaptiveShrinkageSlopec(Slopec):
         prior = xp.exp(-(rx ** 2 + ry ** 2) / (2.0 * prior_sigma ** 2))
         self.spatial_prior = ((1.0 - prior_floor) * prior + prior_floor)[None, :, :].astype(self.dtype)
 
+        # Second, wider prior for Fix B (2026-09-10, see prior_widen_factor
+        # docstring) -- precomputed once here, like spatial_prior itself,
+        # and selected between per-frame with xp.where (branch-free, CUDA
+        # graph safe) rather than recomputed on the fly. Identical to
+        # spatial_prior at the default prior_widen_factor=1.0.
+        wide_sigma = prior_sigma * prior_widen_factor
+        prior_wide = xp.exp(-(rx ** 2 + ry ** 2) / (2.0 * wide_sigma ** 2))
+        self.spatial_prior_wide = ((1.0 - prior_floor) * prior_wide + prior_floor)[None, :, :].astype(self.dtype)
+
         # --- Effective read-noise variance for the WCoG-windowed flux --------
         # sum(window^2) is evaluated once on a window centred on the array
         # centre: the window support (a few sig_w) is negligible compared to
@@ -244,6 +322,11 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.last_x = xp.full(n_subaps, cntrd, dtype=self.dtype)
         self.last_y = xp.full(n_subaps, cntrd, dtype=self.dtype)
 
+        # Consecutive-stuck-frame counter for Fix A/B (2026-09-10, see
+        # stuck_rho_sq_thresh docstring). Starts at 0, so both fixes are
+        # inert at init even before the first rho_sq is available.
+        self.stuck_counter = xp.zeros(n_subaps, dtype=xp.int32)
+
         # Telemetry-only radar
         self.ema_corr = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
         self.lock_counter = xp.zeros(n_subaps, dtype=xp.int32)
@@ -256,6 +339,32 @@ class AdaptiveShrinkageSlopec(Slopec):
         # free with no extra write and no CUDA-graph-unsafe re-aliasing.
         self.w_out = self.w_smooth
 
+        # --- Effective-gain telemetry (2026-09-10) ----------------------------
+        # w_smooth (the shrinkage weight) and gamma (the analytic bias
+        # correction, Step 3) multiply directly into the emitted slope's
+        # effective gain -- exposed here, not because the output-facing
+        # estimator changes, to directly observe the "does effective gain
+        # spike during a large-error transient?" question empirically
+        # (added to investigate a suspected positive-feedback instability:
+        # rho_sq scales with displacement^2, so a larger tracking error is
+        # treated as more trustworthy, which could self-reinforce). rho_sq
+        # itself is exposed too since it is rho_sq, not w_smooth or gamma
+        # directly, that is quadratic in displacement. TELEMETRY ONLY: none
+        # of these three feed back into the emitted slopes -- they are
+        # written in place (CUDA-graph safe, same pattern as w_smooth/
+        # ema_corr above) purely for diagnostic data_store capture.
+        self.gamma_out = xp.zeros(n_subaps, dtype=self.dtype)
+        self.rho_sq_out = xp.zeros(n_subaps, dtype=self.dtype)
+        self.w_smooth_value = BaseValue(value=xp.copy(self.w_smooth),
+                                         target_device_idx=self.target_device_idx)
+        self.gamma_value = BaseValue(value=xp.copy(self.gamma_out),
+                                      target_device_idx=self.target_device_idx)
+        self.rho_sq_value = BaseValue(value=xp.copy(self.rho_sq_out),
+                                       target_device_idx=self.target_device_idx)
+        self.outputs['out_w_smooth'] = self.w_smooth_value
+        self.outputs['out_gamma'] = self.gamma_value
+        self.outputs['out_rho_sq'] = self.rho_sq_value
+
         # --- Pre-allocated working buffers (no allocation inside trigger) ----
         self._pix = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
         self._corr = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
@@ -267,7 +376,10 @@ class AdaptiveShrinkageSlopec(Slopec):
     def output_names(cls):
         result = super().output_names()
         result.update({
-            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information')
+            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information'),
+            'out_w_smooth': OutputDesc(BaseValue, 'EMA-smoothed Wiener shrinkage weight w_t per subaperture (telemetry only, does not feed back into the emitted slope)'),
+            'out_gamma': OutputDesc(BaseValue, 'Analytic grid-bias correction factor gamma per subaperture (telemetry only)'),
+            'out_rho_sq': OutputDesc(BaseValue, 'Detector-model correlation SNR^2 (rho^2) per subaperture (telemetry only)'),
         })
         return result
 
@@ -337,7 +449,21 @@ class AdaptiveShrinkageSlopec(Slopec):
                   xp.fft.ifft2(fft_pix * self.fft_template_conj, axes=(1, 2)).real)
         corr = self._corr
 
-        xp.multiply(corr, self.spatial_prior, out=self._tmp)
+        # Fix B, gradual version (2026-09-10 -- replaces the original hard
+        # step after the step version was found to make x_c MORE erratic
+        # the instant it switched, compounding badly when combined with
+        # Fix A's own hard switch): blend continuously from spatial_prior
+        # toward spatial_prior_wide as stuck_counter ramps from 0 to
+        # prior_widen_after_frames, instead of an all-or-nothing swap --
+        # in keeping with the rest of this class's continuous-shrinkage
+        # design, not a hard gate. Uses last frame's stuck_counter (this
+        # frame's own rho_sq isn't known until after this search).
+        # Identical to self.spatial_prior whenever prior_widen_factor=1.0
+        # (the default) or stuck_counter is 0, regardless of tuning.
+        blend_b = xp.clip(self.stuck_counter.astype(self.dtype)
+                           / max(float(self.prior_widen_after_frames), 1.0), 0.0, 1.0)
+        prior_now = self.spatial_prior + blend_b[:, None, None] * (self.spatial_prior_wide - self.spatial_prior)
+        xp.multiply(corr, prior_now, out=self._tmp)
         flat_idx = xp.argmax(self._tmp.reshape(n, -1), axis=1)
 
         y_idx = flat_idx // np_sub
@@ -399,6 +525,16 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.w_smooth += self.w_ema_alpha * w_raw
         w = self.w_smooth
 
+        # Stuck-frame counter for Fix A/B (2026-09-10, see
+        # stuck_rho_sq_thresh docstring): counts consecutive frames with
+        # rho_sq below threshold, resetting on any frame above it. In
+        # place (CUDA-graph safe). At the default threshold (0.0) this is
+        # always False (rho_sq >= 0), so stuck_counter stays permanently
+        # 0 and neither fix below can ever trigger.
+        is_stuck_now = rho_sq < self.stuck_rho_sq_thresh
+        xp.copyto(self.stuck_counter,
+                  xp.where(is_stuck_now, self.stuck_counter + 1, xp.int32(0)))
+
         # =================================================================
         # 4. Analytic single-pass grid-bias correction (replaces the iterative
         #    second WCoG pass, which amplified noise at low flux):
@@ -433,18 +569,47 @@ class AdaptiveShrinkageSlopec(Slopec):
         y_est = y_c + gamma * my
 
         # =================================================================
-        # 5. Output: purely w_t * slope. No lock gating, no hold, no clamp.
+        # 5. Output: purely w_t * slope, blended toward Fix A's fallback
+        #    (2026-09-10, gradual version -- see max_hold_frames docstring)
+        #    as the stuck run lengthens, instead of an all-or-nothing
+        #    switch (found to be actively harmful in its step form: a
+        #    sudden full-trust jump onto a still-uncertain x_c). At the
+        #    default max_hold_frames (effectively infinite) or
+        #    stuck_counter == 0, w_emit == w == w_smooth always, i.e.
+        #    exactly the original "no lock gating, no hold, no clamp"
+        #    behaviour.
         # -----------------------------------------------------------------
         # w -> 0 feeds zero error to the downstream integrator, which holds the
-        # DM command. Any hard gate here would reintroduce exactly the step
-        # discontinuity this architecture exists to remove.
+        # DM command -- safe against a random dropout, NOT safe against a
+        # sustained deterministic disturbance that keeps moving the true
+        # spot while frozen (see the class-level note this fix responds
+        # to). Fix A bounds how long that freeze is tolerated before
+        # blending toward fallback_w (default 1.0: trust the raw,
+        # bias-corrected estimate fully) instead of continuing to hold.
+        # w_smooth's own EMA state (and its telemetry) is untouched --
+        # only what is emitted this frame changes.
         # =================================================================
+        blend_a = xp.clip(self.stuck_counter.astype(self.dtype)
+                           / max(float(self.max_hold_frames), 1.0), 0.0, 1.0)
+        w_emit = w + blend_a * (self.fallback_w - w)
+
         slope_x = (x_est - cntrd) / self.norm_factor
         slope_y = (y_est - cntrd) / self.norm_factor
 
-        self.slopes.xslopes = w * slope_x
-        self.slopes.yslopes = w * slope_y
+        self.slopes.xslopes = w_emit * slope_x
+        self.slopes.yslopes = w_emit * slope_y
         self.slopes.generation_time = self.current_time
+
+        # Effective-gain telemetry (see __init__ comment) -- in place, does
+        # not affect the slopes emitted above. gamma broadcasts fine even
+        # when gain_correction_enable=False forced it to the Python float
+        # 1.0 above (same broadcast-assignment pattern as AWSH's
+        # radius_value.value[:] = ...).
+        self.gamma_out[:] = gamma
+        self.rho_sq_out[:] = rho_sq
+        self.w_smooth_value.value[:] = self.w_smooth
+        self.gamma_value.value[:] = self.gamma_out
+        self.rho_sq_value.value[:] = self.rho_sq_out
 
         # =================================================================
         # 6. TELEMETRY ONLY: radar EMA, lock FSM. Branch-free.
@@ -502,3 +667,6 @@ class AdaptiveShrinkageSlopec(Slopec):
     def post_trigger(self):
         super().post_trigger()
         self.outputs['out_subapdata'].generation_time = self.current_time
+        self.outputs['out_w_smooth'].generation_time = self.current_time
+        self.outputs['out_gamma'].generation_time = self.current_time
+        self.outputs['out_rho_sq'].generation_time = self.current_time
