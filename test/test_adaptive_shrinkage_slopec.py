@@ -1490,11 +1490,25 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         test_subpixel_accuracy_when_shrinkage_neutralized: true position
         offset from centre == out_x_c - cntrd (== shift_dx by
         generate_spots()'s own convention).
+
+        Confidence gate (2026-09-14, see class docstring's subpixel_peak_refine
+        entry): the correction is scaled by w_smooth AS IT STANDS AT THE
+        START OF THE FRAME, which is exactly 0 for a freshly-constructed
+        instance -- a single frame would therefore see essentially zero
+        correction regardless of the true offset. Each scenario below warms
+        up on the SAME frame repeated (a genuinely tracked, stable target,
+        not a contrived state) so w_smooth's own EMA ramps to a realistic
+        high-confidence value (verified directly, not assumed) before the
+        frame that is actually checked -- this keeps the original
+        correctness property (refined estimate closer to truth than raw)
+        meaningful once confidence is actually high, rather than trivially
+        satisfied by the gate suppressing everything to ~0.
         """
         subap_npx, t = 16, int(1e9)
         subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
         cntrd = (subap_npx - 1) / 2.0
         offsets = [-0.3, -0.15, 0.0, 0.15, 0.3]
+        n_warmup = 40
 
         def raw_and_refined_offset(shift_dx, shift_dy, axis):
             pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
@@ -1508,8 +1522,16 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             slopec_ref.inputs['in_pixels'].set(pixels)
             frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
                                         shift_dx=shift_dx, shift_dy=shift_dy)
-            self._run_frame(slopec_raw, pixels, frame, t)
-            self._run_frame(slopec_ref, pixels, frame, t)
+            for i in range(1, n_warmup + 1):
+                self._run_frame(slopec_raw, pixels, frame, t * i)
+                self._run_frame(slopec_ref, pixels, frame, t * i)
+
+            w_smooth_ref = float(cpuArray(slopec_ref.w_smooth)[0])
+            self.assertGreater(w_smooth_ref, 0.999,
+                f"axis={axis}, true_offset={shift_dx or shift_dy}: test setup "
+                f"assumption violated -- expected w_smooth to have warmed up "
+                f"close to 1 after {n_warmup} identical high-SNR frames")
+
             out_name = 'out_x_c' if axis == 'x' else 'out_y_c'
             raw_val = float(cpuArray(slopec_raw.outputs[out_name].value)[0]) - cntrd
             ref_val = float(cpuArray(slopec_ref.outputs[out_name].value)[0]) - cntrd
@@ -1545,6 +1567,13 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         negligible) correction from refinement: the 3-point parabolic fit is
         symmetric about its own centre sample, so f(-1) == f(+1) exactly in
         the noiseless case and dx/dy must be exactly 0.
+
+        Confidence gate (2026-09-14): at w_smooth=0 (fresh instance / frame
+        1) ANY dx the parabolic fit produced would be suppressed to 0 by the
+        gate itself, which would make this check pass for the wrong reason
+        (masking the fit's own symmetry, not exercising it). Warms up on the
+        same dead-centre frame first so w_smooth is genuinely high
+        (confirmed directly) before the assertion frame.
         """
         subap_npx, t = 16, int(1e9)
         subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -1557,7 +1586,13 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         slopec.inputs['in_pixels'].set(pixels)
 
         frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0)
-        self._run_frame(slopec, pixels, frame, t)
+        for i in range(1, 41):
+            self._run_frame(slopec, pixels, frame, t * i)
+
+        w_smooth = float(cpuArray(slopec.w_smooth)[0])
+        self.assertGreater(w_smooth, 0.999,
+            "Test setup assumption violated: expected w_smooth to have "
+            "warmed up close to 1 after 40 identical high-SNR frames")
 
         x_c = float(cpuArray(slopec.outputs['out_x_c'].value)[0])
         y_c = float(cpuArray(slopec.outputs['out_y_c'].value)[0])
@@ -1580,6 +1615,12 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         the correction falling back to exactly 0, out_x_c/out_y_c must be
         numerically identical between the two, not merely "some finite
         number".
+
+        Confidence gate (2026-09-14): both instances are first warmed up on
+        a bright, well-tracked spot so w_smooth is genuinely high going into
+        the all-zero assertion frame -- at w_smooth=0 (fresh instance /
+        frame 1) the flatness fallback would be trivially masked by the
+        gate itself rather than actually exercised.
         """
         subap_npx, t = 16, int(1e9)
         subapdata_off, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -1596,9 +1637,19 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         slopec_off.inputs['in_pixels'].set(pixels_off)
         slopec_on.inputs['in_pixels'].set(pixels_on)
 
+        bright_frame = self.generate_spots(ccd_shape, subapdata_on, xp, flux=1e6, bg=0.0)
+        for i in range(1, 41):
+            self._run_frame(slopec_off, pixels_off, bright_frame, t * i)
+            self._run_frame(slopec_on, pixels_on, bright_frame, t * i)
+
+        w_smooth_on = float(cpuArray(slopec_on.w_smooth)[0])
+        self.assertGreater(w_smooth_on, 0.999,
+            "Test setup assumption violated: expected w_smooth to have "
+            "warmed up close to 1 before the all-zero assertion frame")
+
         zero_frame = xp.zeros(ccd_shape, dtype=xp.float32)
-        self._run_frame(slopec_off, pixels_off, zero_frame, t)
-        self._run_frame(slopec_on, pixels_on, zero_frame, t)
+        self._run_frame(slopec_off, pixels_off, zero_frame, t * 41)
+        self._run_frame(slopec_on, pixels_on, zero_frame, t * 41)
 
         x_c_off = cpuArray(slopec_off.outputs['out_x_c'].value)
         y_c_off = cpuArray(slopec_off.outputs['out_y_c'].value)
@@ -1629,6 +1680,14 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         the raw integer peak) result -- not a specific numeric value, since
         the true spot centre lies right at (or past) the sampled edge,
         outside a 3-point fit's normal validity range.
+
+        Confidence gate (2026-09-14): both instances are warmed up on the
+        same edge-placed frame before the assertion so w_smooth is
+        genuinely high -- otherwise (fresh instance / frame 1, w_smooth=0)
+        the bound check below would be trivially satisfied by the gate
+        suppressing the correction to ~0, not by the wraparound logic
+        actually being exercised. A minimum-magnitude check confirms the
+        correction is meaningfully non-zero once confidence is high.
         """
         subap_npx, t = 16, int(1e9)
         subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -1647,11 +1706,18 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
                                         shift_dx=shift_dx, shift_dy=0.0)
             try:
-                self._run_frame(slopec_raw, pixels, frame, t)
-                self._run_frame(slopec_ref, pixels, frame, t)
+                for i in range(1, 41):
+                    self._run_frame(slopec_raw, pixels, frame, t * i)
+                    self._run_frame(slopec_ref, pixels, frame, t * i)
             except Exception as e:  # pragma: no cover - failure path
                 self.fail(f"{label} edge: refinement raised at the sub-aperture "
                           f"boundary (wraparound bug?): {e!r}")
+
+            w_smooth_ref = float(cpuArray(slopec_ref.w_smooth)[0])
+            self.assertGreater(w_smooth_ref, 0.999,
+                f"{label} edge: test setup assumption violated -- expected "
+                f"w_smooth to have warmed up close to 1 after 40 identical "
+                f"high-SNR frames")
 
             x_c_raw = float(cpuArray(slopec_raw.outputs['out_x_c'].value)[0])
             x_c_ref = float(cpuArray(slopec_ref.outputs['out_x_c'].value)[0])
@@ -1662,6 +1728,10 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             self.assertLessEqual(abs(x_c_ref - x_c_raw), 0.5 + 1e-9,
                 f"{label} edge: refined x_c ({x_c_ref}) strayed more than the "
                 f"clip(-0.5, 0.5) safety bound from the raw integer peak ({x_c_raw})")
+            self.assertGreater(abs(x_c_ref - x_c_raw), 0.05,
+                f"{label} edge: refined x_c ({x_c_ref}) barely differs from "
+                f"the raw peak ({x_c_raw}) even at high confidence -- the "
+                f"wraparound-based correction does not appear to be exercised")
 
     @cpu_and_gpu
     def test_subpixel_peak_refine_matches_downstream_gain_correction_toggle_pattern(self, target_device_idx, xp):
@@ -1674,6 +1744,15 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         true shift in sign and rough magnitude when refinement is enabled,
         i.e. enabling Step 1 refinement does not break Step 2/3's own
         correction chain.
+
+        Confidence gate (2026-09-14): the gate reads w_smooth as it stood
+        BEFORE this frame's own EMA update, which is exactly 0 for a fresh
+        instance's very first frame -- without a warm-up, refinement would
+        contribute nothing here regardless of whether it is enabled, making
+        this test indistinguishable from subpixel_peak_refine=False. With
+        w_ema_alpha=1.0 (no EMA lag) a single warm-up frame on this same
+        high-SNR spot is enough to bring w_smooth to ~1 (confirmed directly)
+        by the time the assertion frame runs.
         """
         subap_npx, t = 16, int(1e9)
         subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -1689,6 +1768,11 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
                                     shift_dx=shift_x, shift_dy=shift_y)
         self._run_frame(slopec, pixels, frame, t)
+        w_smooth_before_assertion = float(cpuArray(slopec.w_smooth)[0])
+        self.assertGreater(w_smooth_before_assertion, 0.999,
+            "Test setup assumption violated: expected w_smooth to reach ~1 "
+            "after a single high-SNR warm-up frame at w_ema_alpha=1.0")
+        self._run_frame(slopec, pixels, frame, t * 2)
 
         slopes_x = cpuArray(slopec.outputs['out_slopes'].xslopes)
         slopes_y = cpuArray(slopec.outputs['out_slopes'].yslopes)
@@ -1699,6 +1783,214 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                                    err_msg="X sub-pixel accuracy/sign failed with refinement enabled")
         np.testing.assert_allclose(slopes_y, expected_slope_y, atol=0.05,
                                    err_msg="Y sub-pixel accuracy/sign failed with refinement enabled")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_suppressed_at_zero_initial_confidence(self, target_device_idx, xp):
+        """
+        Confidence gate (2026-09-14, see class docstring's subpixel_peak_refine
+        entry): the sub-pixel correction is scaled by self.w_smooth AS IT
+        STANDS AT THE START OF THE FRAME. A freshly constructed instance has
+        w_smooth = 0 exactly (see __init__), and the gate reads that value
+        BEFORE this frame's own EMA update -- so on frame 1, regardless of
+        w_ema_alpha, the correction must be suppressed to exactly zero even
+        for a spot placed at a large, clearly-offset sub-pixel position that
+        would otherwise (see
+        test_subpixel_peak_refine_correction_scales_linearly_with_w_smooth)
+        produce a large correction. Checked against a
+        subpixel_peak_refine=False reference on the same frame: with the
+        gate at exactly 0, the two must be bit-for-bit identical.
+
+        A second scenario checks the OTHER route to near-zero confidence
+        named in the docstring: w_ema_alpha set very small, run over several
+        frames of the same bright spot so w_smooth barely moves off 0 even
+        though it is no longer literally the frame-1 value.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        shift_x, shift_y = 0.3, -0.35
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                    shift_dx=shift_x, shift_dy=shift_y)
+
+        # --- Scenario 1: literal frame 1, default w_ema_alpha ---
+        pixels_raw = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_ref = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_raw = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             subpixel_peak_refine=False,
+                                             target_device_idx=target_device_idx)
+        slopec_ref = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             subpixel_peak_refine=True,
+                                             target_device_idx=target_device_idx)
+        slopec_raw.inputs['in_pixels'].set(pixels_raw)
+        slopec_ref.inputs['in_pixels'].set(pixels_ref)
+
+        self._run_frame(slopec_raw, pixels_raw, frame, t)
+        self._run_frame(slopec_ref, pixels_ref, frame, t)
+
+        x_c_raw = cpuArray(slopec_raw.outputs['out_x_c'].value)
+        y_c_raw = cpuArray(slopec_raw.outputs['out_y_c'].value)
+        x_c_ref = cpuArray(slopec_ref.outputs['out_x_c'].value)
+        y_c_ref = cpuArray(slopec_ref.outputs['out_y_c'].value)
+
+        np.testing.assert_array_equal(x_c_ref, x_c_raw,
+            err_msg="Frame-1 correction was not exactly suppressed: out_x_c "
+                    "differs from the unrefined value despite w_smooth "
+                    "starting at 0")
+        np.testing.assert_array_equal(y_c_ref, y_c_raw,
+            err_msg="Frame-1 correction was not exactly suppressed: out_y_c "
+                    "differs from the unrefined value despite w_smooth "
+                    "starting at 0")
+
+        # --- Scenario 2: tiny w_ema_alpha, several frames, w_smooth stays ~0 ---
+        pixels_tiny = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_tiny = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                              w_ema_alpha=1e-6, subpixel_peak_refine=True,
+                                              target_device_idx=target_device_idx)
+        slopec_tiny.inputs['in_pixels'].set(pixels_tiny)
+        for i in range(1, 6):
+            self._run_frame(slopec_tiny, pixels_tiny, frame, t * i)
+        w_smooth_tiny = float(cpuArray(slopec_tiny.w_smooth)[0])
+        self.assertLess(w_smooth_tiny, 1e-4,
+            "Test setup assumption violated: w_ema_alpha=1e-6 should keep "
+            "w_smooth extremely close to its zero initial value after only "
+            "a few frames")
+
+        x_c_tiny = float(cpuArray(slopec_tiny.outputs['out_x_c'].value)[0])
+        y_c_tiny = float(cpuArray(slopec_tiny.outputs['out_y_c'].value)[0])
+        self.assertAlmostEqual(x_c_tiny, float(x_c_raw[0]), places=3,
+            msg="Correction was not suppressed with a near-zero w_smooth "
+                "(tiny w_ema_alpha scenario)")
+        self.assertAlmostEqual(y_c_tiny, float(y_c_raw[0]), places=3,
+            msg="Correction was not suppressed with a near-zero w_smooth "
+                "(tiny w_ema_alpha scenario)")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_correction_near_full_magnitude_when_warmed_up(self, target_device_idx, xp):
+        """
+        Complements the zero-confidence suppression check above: after a
+        warm-up sequence that drives w_smooth (inspected directly, not
+        assumed) close to 1, the applied correction (out_x_c/out_y_c minus
+        the raw integer-pixel position) must be close to the FULL, un-gated
+        magnitude -- i.e. what a directly-computed parabolic interpolation
+        on the same correlation data would give, unscaled.
+
+        The un-gated reference is obtained by forcing self.w_smooth to
+        exactly 1.0 on a fresh instance right before a single frame: the
+        gate reads w_smooth as it stands at the START of the frame (before
+        that frame's own EMA update), so this yields exactly the
+        full-strength correction with no need to re-derive the parabolic
+        formula independently in the test.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        shift_x, shift_y = 0.3, -0.35
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                    shift_dx=shift_x, shift_dy=shift_y)
+
+        # Raw (unrefined) reference position.
+        pixels_raw = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_raw = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             subpixel_peak_refine=False,
+                                             target_device_idx=target_device_idx)
+        slopec_raw.inputs['in_pixels'].set(pixels_raw)
+        self._run_frame(slopec_raw, pixels_raw, frame, t)
+        x_c_raw = float(cpuArray(slopec_raw.outputs['out_x_c'].value)[0])
+        y_c_raw = float(cpuArray(slopec_raw.outputs['out_y_c'].value)[0])
+
+        # Un-gated reference: force w_smooth to exactly 1.0 before a single frame.
+        pixels_full = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_full = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                              subpixel_peak_refine=True,
+                                              target_device_idx=target_device_idx)
+        slopec_full.inputs['in_pixels'].set(pixels_full)
+        slopec_full.w_smooth[:] = 1.0
+        self._run_frame(slopec_full, pixels_full, frame, t)
+        correction_full_x = float(cpuArray(slopec_full.outputs['out_x_c'].value)[0]) - x_c_raw
+        correction_full_y = float(cpuArray(slopec_full.outputs['out_y_c'].value)[0]) - y_c_raw
+        self.assertGreater(abs(correction_full_x), 0.1,
+            "Test setup assumption violated: expected a large un-gated x correction")
+
+        # Warmed-up instance: default w_ema_alpha, many identical bright/shifted
+        # frames so w_smooth ramps toward 1 via its own EMA (not forced).
+        pixels_warm = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_warm = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                              subpixel_peak_refine=True,
+                                              target_device_idx=target_device_idx)
+        slopec_warm.inputs['in_pixels'].set(pixels_warm)
+        for i in range(1, 41):
+            self._run_frame(slopec_warm, pixels_warm, frame, t * i)
+        w_smooth_warm = float(cpuArray(slopec_warm.w_smooth)[0])
+        self.assertGreater(w_smooth_warm, 0.999,
+            "Test setup assumption violated: expected w_smooth to have "
+            "ramped close to 1 after 40 identical high-SNR frames")
+
+        correction_warm_x = float(cpuArray(slopec_warm.outputs['out_x_c'].value)[0]) - x_c_raw
+        correction_warm_y = float(cpuArray(slopec_warm.outputs['out_y_c'].value)[0]) - y_c_raw
+
+        self.assertAlmostEqual(correction_warm_x, correction_full_x, delta=0.005,
+            msg="Warmed-up correction did not approach the full, un-gated magnitude (x)")
+        self.assertAlmostEqual(correction_warm_y, correction_full_y, delta=0.005,
+            msg="Warmed-up correction did not approach the full, un-gated magnitude (y)")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_correction_scales_linearly_with_w_smooth(self, target_device_idx, xp):
+        """
+        The actual new behaviour worth locking in: for a FIXED true
+        sub-pixel offset, the magnitude of the correction actually applied
+        must scale with whatever w_smooth value is in effect at that frame.
+        self.w_smooth is forced directly to a range of levels on otherwise
+        identical fresh instances/frames (the gate reads it before this
+        frame's own EMA update, so forcing it beforehand deterministically
+        sets the gate for that frame) -- since the underlying dx/dy from
+        the 3-point parabolic fit is computed purely from the correlation
+        map and does not itself depend on w_smooth, the applied correction
+        must be EXACTLY proportional to the forced w_smooth level, not just
+        "smaller when w_smooth is smaller".
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        shift_x, shift_y = 0.3, -0.35
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                    shift_dx=shift_x, shift_dy=shift_y)
+
+        pixels_raw = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_raw = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             subpixel_peak_refine=False,
+                                             target_device_idx=target_device_idx)
+        slopec_raw.inputs['in_pixels'].set(pixels_raw)
+        self._run_frame(slopec_raw, pixels_raw, frame, t)
+        x_c_raw = float(cpuArray(slopec_raw.outputs['out_x_c'].value)[0])
+
+        forced_levels = [0.0, 0.2, 0.5, 0.8, 1.0]
+        corrections_x = []
+        for w_level in forced_levels:
+            pixels_f = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+            slopec_f = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                               subpixel_peak_refine=True,
+                                               target_device_idx=target_device_idx)
+            slopec_f.inputs['in_pixels'].set(pixels_f)
+            slopec_f.w_smooth[:] = w_level
+            self._run_frame(slopec_f, pixels_f, frame, t)
+            x_c_f = float(cpuArray(slopec_f.outputs['out_x_c'].value)[0])
+            corrections_x.append(x_c_f - x_c_raw)
+
+        # Exactly zero at w_smooth=0.
+        self.assertAlmostEqual(corrections_x[0], 0.0, places=9,
+            msg=f"Correction was not exactly 0 at w_smooth=0: {corrections_x[0]}")
+
+        # Strictly increasing magnitude as the forced w_smooth level increases
+        # (same sign throughout, since dx itself does not depend on w_smooth).
+        for a, b in zip(corrections_x, corrections_x[1:]):
+            self.assertLess(abs(a), abs(b),
+                f"Correction magnitude did not increase monotonically with "
+                f"w_smooth: {corrections_x} at levels {forced_levels}")
+
+        # Exact linear proportionality: correction / w_smooth must be the
+        # SAME constant at every nonzero level tested.
+        ratios = [c / w for c, w in zip(corrections_x[1:], forced_levels[1:])]
+        for r in ratios[1:]:
+            self.assertAlmostEqual(r, ratios[0], places=6,
+                msg=f"Correction did not scale exactly linearly with the "
+                    f"forced w_smooth level: ratios={ratios}")
 
 
 if __name__ == '__main__':
