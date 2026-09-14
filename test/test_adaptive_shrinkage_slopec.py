@@ -1,10 +1,12 @@
 import specula
 specula.init(0)  # Default target device
 
+import inspect
 import unittest
 
 from specula import np
 from specula import cpuArray
+from specula.base_value import BaseValue
 
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.subap_data import SubapData
@@ -997,6 +999,706 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         self.assertEqual(id(slopec.spatial_prior_wide), id_prior_wide_before,
                          "spatial_prior_wide buffer was reassigned (it is a "
                          "precomputed constant and must never change identity)")
+
+    @cpu_and_gpu
+    def test_halo_fraction_zero_matches_single_gaussian_template_exactly(self, target_device_idx, xp):
+        """
+        Backward compatibility for the 2026-09-13 core+halo matched-filter
+        template (see halo_fwhm_pix/halo_fraction docstrings): the default
+        halo_fraction=0.0 must leave fft_template_conj BIT-IDENTICAL to the
+        old single-Gaussian template, both when halo_fwhm_pix/halo_fraction
+        are simply not passed and when halo_fwhm_pix is explicitly set to
+        some value but halo_fraction is left at 0.0 (halo_fraction, not
+        halo_fwhm_pix alone, must gate whether the halo contributes at all).
+        """
+        subap_npx = 16
+        subapdata, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        s_no_halo_kwargs = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5,
+                                                   target_device_idx=target_device_idx)
+        s_explicit_zero_fraction = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5,
+                                                            halo_fwhm_pix=6.0, halo_fraction=0.0,
+                                                            target_device_idx=target_device_idx)
+
+        np.testing.assert_array_equal(cpuArray(s_explicit_zero_fraction.fft_template_conj),
+            cpuArray(s_no_halo_kwargs.fft_template_conj),
+            err_msg="halo_fraction=0.0 with halo_fwhm_pix set must reproduce the "
+                    "single-Gaussian template bit-for-bit")
+
+    @cpu_and_gpu
+    def test_halo_component_adds_measurable_far_wing_flux(self, target_device_idx, xp):
+        """
+        With halo_fwhm_pix set and halo_fraction > 0, the real-space template
+        (recovered from fft_template_conj) must carry measurably more flux
+        far from its centre than the pure-core (halo_fraction=0) template at
+        the same fwhm_pix -- confirms the halo Gaussian genuinely contributes
+        mass to the matched filter, not just a no-op rescaling of the core.
+        """
+        subap_npx = 16
+        subapdata, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        np_sub = subapdata.np_sub
+
+        slopec_core = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, halo_fwhm_pix=6.0,
+                                              halo_fraction=0.0, target_device_idx=target_device_idx)
+        slopec_mix = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, halo_fwhm_pix=6.0,
+                                             halo_fraction=0.3, target_device_idx=target_device_idx)
+
+        def real_space_template(slopec):
+            # fft_template_conj = conj(FFT(template)) -> template = IFFT(conj(fft_template_conj)).
+            conj_fft = xp.conj(slopec.fft_template_conj)
+            return xp.fft.ifft2(conj_fft, axes=(1, 2)).real[0]
+
+        t_core = cpuArray(real_space_template(slopec_core))
+        t_mix = cpuArray(real_space_template(slopec_mix))
+
+        # Centre the FFT-origin templates so a simple Euclidean radius from
+        # the array centre is meaningful (matches the class's own
+        # FFT-origin convention, just re-centred for measurement here).
+        t_core_centred = np.fft.fftshift(t_core)
+        t_mix_centred = np.fft.fftshift(t_mix)
+
+        cy = cx = np_sub // 2
+        yy, xx = np.mgrid[0:np_sub, 0:np_sub]
+        r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        far_wing = r > 4.0
+
+        wing_flux_core = float(np.sum(t_core_centred[far_wing]))
+        wing_flux_mix = float(np.sum(t_mix_centred[far_wing]))
+
+        self.assertGreater(wing_flux_mix, 10.0 * wing_flux_core,
+            f"Two-component template did not show measurably more far-wing "
+            f"flux than the pure-core template (core={wing_flux_core}, "
+            f"mix={wing_flux_mix})")
+
+    @cpu_and_gpu
+    def test_two_component_template_stays_normalized(self, target_device_idx, xp):
+        """
+        Both core and halo are individually normalized to sum 1 before being
+        mixed with weights (1 - halo_fraction) and halo_fraction (which
+        themselves sum to 1), so the resulting real-space template must still
+        integrate to ~1, exactly like the original single-Gaussian template.
+        """
+        subap_npx = 16
+        subapdata, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, halo_fwhm_pix=6.0,
+                                         halo_fraction=0.3, target_device_idx=target_device_idx)
+
+        conj_fft = xp.conj(slopec.fft_template_conj)
+        template = cpuArray(xp.fft.ifft2(conj_fft, axes=(1, 2)).real[0])
+
+        self.assertAlmostEqual(float(np.sum(template)), 1.0, places=5,
+            msg="Two-component matched-filter template does not integrate to 1")
+
+    @cpu_and_gpu
+    def test_halo_fraction_one_reduces_to_pure_halo_gaussian(self, target_device_idx, xp):
+        """
+        Boundary case: halo_fraction=1.0 must give the core component zero
+        weight, so fft_template_conj should be bit-identical to the template
+        of an instance built with fwhm_pix set directly to halo_fwhm_pix's
+        value (no halo at all) -- i.e. a pure single Gaussian at the halo's
+        width, with no residual core contribution.
+        """
+        subap_npx = 16
+        subapdata, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        slopec_frac_one = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, halo_fwhm_pix=6.0,
+                                                  halo_fraction=1.0, target_device_idx=target_device_idx)
+        slopec_pure_halo_width = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=6.0,
+                                                          target_device_idx=target_device_idx)
+
+        np.testing.assert_array_equal(cpuArray(slopec_frac_one.fft_template_conj),
+            cpuArray(slopec_pure_halo_width.fft_template_conj),
+            err_msg="halo_fraction=1.0 did not reduce cleanly to a pure Gaussian "
+                    "at halo_fwhm_pix's width (core contribution not fully zeroed)")
+
+    @cpu_and_gpu
+    def test_two_component_template_localizes_core_halo_spot(self, target_device_idx, xp):
+        """
+        Sanity check that coarse-peak localization still works with a
+        two-component template on a synthetic spot that itself has a
+        core+halo structure (built by summing two calls to the existing
+        generate_spots() helper at the core and halo FWHMs and a shared
+        sub-pixel shift, rather than reinventing spot generation). With
+        shrinkage neutralized (as in
+        test_subpixel_accuracy_when_shrinkage_neutralized), the emitted
+        slope -- read via calc_slopes_nofor()'s own output, not a raw
+        argmax -- must track the injected shift in sign and rough magnitude.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        core_fwhm, halo_fwhm = 1.5, 6.0
+        shift_x, shift_y = 0.3, -0.2
+        core = self.generate_spots(ccd_shape, subapdata, xp, fwhm=core_fwhm, flux=700.0,
+                                   shift_dx=shift_x, shift_dy=shift_y)
+        halo = self.generate_spots(ccd_shape, subapdata, xp, fwhm=halo_fwhm, flux=300.0,
+                                   shift_dx=shift_x, shift_dy=shift_y)
+        frame = core + halo
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=core_fwhm, halo_fwhm_pix=halo_fwhm,
+                                         halo_fraction=0.3, k_wiener=1e-8, b_reg=0.0, ron_e=0.0,
+                                         w_ema_alpha=1.0, target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+        self._run_frame(slopec, pixels, frame, t)
+
+        w_out = float(cpuArray(slopec.w_out)[0])
+        self.assertGreater(w_out, 0.99,
+                           "w_out did not approach 1 with shrinkage neutralized")
+
+        slopes_x = cpuArray(slopec.outputs['out_slopes'].xslopes)
+        slopes_y = cpuArray(slopec.outputs['out_slopes'].yslopes)
+        expected_slope_x = shift_x / (subap_npx / 2.0)
+        expected_slope_y = shift_y / (subap_npx / 2.0)
+
+        np.testing.assert_allclose(slopes_x, expected_slope_x, atol=0.05,
+                                   err_msg="X localization on a core+halo spot failed with "
+                                           "a two-component template")
+        np.testing.assert_allclose(slopes_y, expected_slope_y, atol=0.05,
+                                   err_msg="Y localization on a core+halo spot failed with "
+                                           "a two-component template")
+
+    @cpu_and_gpu
+    def test_x_c_y_c_outputs_exist_with_correct_type_and_shape(self, target_device_idx, xp):
+        """
+        out_x_c/out_y_c (2026-09-14, see the class __init__ comment on
+        Step-1 coarse-peak telemetry) must be registered in self.outputs as
+        BaseValue instances, each holding one value per sub-aperture -- same
+        registration pattern as out_w_smooth/out_gamma/out_rho_sq. Uses a
+        2x2 sub-aperture grid (n_subaps=4), not the usual single-subap
+        default, so the shape check is not trivially satisfied by n_subaps
+        happening to be 1.
+        """
+        subap_npx = 8
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx, n_sub_side=2)
+        n_subaps = subapdata.n_subaps
+        self.assertEqual(n_subaps, 4)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         target_device_idx=target_device_idx)
+
+        for name in ('out_x_c', 'out_y_c'):
+            self.assertIn(name, slopec.outputs, f"{name} missing from self.outputs")
+            self.assertIsInstance(slopec.outputs[name], BaseValue,
+                                  f"{name} is not a BaseValue instance")
+            self.assertEqual(slopec.outputs[name].value.shape, (n_subaps,),
+                             f"{name} does not have one value per sub-aperture")
+
+    @cpu_and_gpu
+    def test_x_c_y_c_populated_by_trigger_code(self, target_device_idx, xp):
+        """
+        out_x_c/out_y_c must be written by trigger_code(), not left at their
+        zero-initialized __init__ default. A centred, high-flux spot on a
+        16x16 (even-sized, offset=0.5) sub-aperture has its coarse peak
+        exactly at the array centre pixel, i.e. x_c == y_c == cntrd == 7.5
+        -- a specific, predictable value, not just "non-zero" (which would
+        also pass by accident if the buffer were left uninitialized garbage
+        near zero for the wrong reason).
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        # Before any frame: still at the __init__ zero default.
+        x_c_before = cpuArray(slopec.outputs['out_x_c'].value)
+        y_c_before = cpuArray(slopec.outputs['out_y_c'].value)
+        np.testing.assert_array_equal(x_c_before, np.zeros_like(x_c_before))
+        np.testing.assert_array_equal(y_c_before, np.zeros_like(y_c_before))
+
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e5, bg=0.0)
+        self._run_frame(slopec, pixels, frame, t)
+
+        x_c_after = cpuArray(slopec.outputs['out_x_c'].value)
+        y_c_after = cpuArray(slopec.outputs['out_y_c'].value)
+        np.testing.assert_allclose(x_c_after, cntrd, atol=1e-9,
+            err_msg="out_x_c was not updated to the expected centred coarse peak")
+        np.testing.assert_allclose(y_c_after, cntrd, atol=1e-9,
+            err_msg="out_y_c was not updated to the expected centred coarse peak")
+
+        # Also mirrored on the internal generation_time, like the other
+        # Effective-gain telemetry outputs (see post_trigger()).
+        self.assertEqual(slopec.outputs['out_x_c'].generation_time, t)
+        self.assertEqual(slopec.outputs['out_y_c'].generation_time, t)
+
+    @cpu_and_gpu
+    def test_x_c_y_c_are_always_integer_plus_offset(self, target_device_idx, xp):
+        """
+        x_c/y_c are computed as `x_idx.astype(dtype) + self.offset` straight
+        from an `xp.argmax` over the correlation map (Step 1) -- they must
+        therefore always land at an integer-plus-offset grid position,
+        NEVER a genuinely fractional/interpolated value (sub-pixel
+        refinement only happens in Step 2/3, downstream of x_c/y_c). Checked
+        over a range of injected sub-pixel shifts and BOTH sub-aperture
+        parities, since `offset` itself depends on `np_sub % 2`
+        (0.5 for even, 0.0 for odd).
+        """
+        t = int(1e9)
+        for subap_npx in (15, 16):  # odd (offset=0.0) and even (offset=0.5)
+            subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+            pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+            expected_offset = 0.5 if subap_npx % 2 == 0 else 0.0
+
+            slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             target_device_idx=target_device_idx)
+            slopec.inputs['in_pixels'].set(pixels)
+            self.assertEqual(slopec.offset, expected_offset)
+
+            for i, (shift_dx, shift_dy) in enumerate(
+                    [(0.0, 0.0), (0.3, -0.2), (-0.45, 0.45), (0.49, -0.49)], start=1):
+                frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e4, bg=0.0,
+                                            shift_dx=shift_dx, shift_dy=shift_dy)
+                self._run_frame(slopec, pixels, frame, t * i)
+
+                x_c = cpuArray(slopec.outputs['out_x_c'].value)
+                y_c = cpuArray(slopec.outputs['out_y_c'].value)
+
+                x_frac = x_c - expected_offset
+                y_frac = y_c - expected_offset
+                np.testing.assert_allclose(x_frac, np.round(x_frac), atol=1e-6,
+                    err_msg=f"np_sub={subap_npx}, shift=({shift_dx},{shift_dy}): "
+                            f"x_c - offset is not integer-valued: {x_frac}")
+                np.testing.assert_allclose(y_frac, np.round(y_frac), atol=1e-6,
+                    err_msg=f"np_sub={subap_npx}, shift=({shift_dx},{shift_dy}): "
+                            f"y_c - offset is not integer-valued: {y_frac}")
+
+    @cpu_and_gpu
+    def test_x_c_y_c_telemetry_has_no_effect_on_emitted_slopes(self, target_device_idx, xp):
+        """
+        out_x_c/out_y_c are documented as TELEMETRY ONLY (see the __init__
+        comment introducing them). This is checked two ways rather than
+        assumed:
+
+        1. Source-order inspection: self.x_c_out/self.y_c_out/x_c_value/
+           y_c_value are only ever written (`self.x_c_out[:] = x_c`, etc.),
+           and that write happens AFTER `self.slopes.xslopes`/`yslopes` are
+           already assigned from x_est/y_est/w_emit -- i.e. textually,
+           inside calc_slopes_nofor(), none of these four names appear
+           before the slopes are set, so they cannot feed back into the
+           slopes computation even in principle (this would catch a future
+           refactor that accidentally started reading them back in).
+        2. Behavioural: two fresh, identically-configured instances run the
+           exact same varying (flux/shift/noise) frame sequence; one never
+           has its out_x_c/out_y_c outputs read at all during the run, the
+           other has them read after every single frame. Reading (or not
+           reading) a telemetry-only output must not change out_slopes --
+           the two instances' emitted slopes must match bit-for-bit.
+        """
+        source = inspect.getsource(AdaptiveShrinkageSlopec.calc_slopes_nofor)
+        marker = "self.slopes.xslopes = w_emit * slope_x"
+        self.assertIn(marker, source, "calc_slopes_nofor() source changed shape; "
+                                      "update this test's marker line")
+        before_slopes, _, after_slopes = source.partition(marker)
+        for name in ('x_c_out', 'y_c_out', 'x_c_value', 'y_c_value'):
+            self.assertNotIn(name, before_slopes,
+                f"'{name}' is referenced before out_slopes is assigned in "
+                f"calc_slopes_nofor() -- it may no longer be telemetry-only")
+            self.assertIn(name, after_slopes,
+                f"'{name}' is never written after out_slopes is assigned -- "
+                f"expected the Step-1 coarse-peak telemetry write here")
+
+        subap_npx, t = 16, int(1e9)
+        subapdata_a, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_a = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_b = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        kwargs = dict(fwhm_pix=1.5, k_wiener=10.0, b_reg=0.5, ron_e=1.0,
+                     w_ema_alpha=0.2, target_device_idx=target_device_idx)
+        slopec_unread = AdaptiveShrinkageSlopec(subapdata_a, **kwargs)
+        slopec_read = AdaptiveShrinkageSlopec(subapdata_b, **kwargs)
+        slopec_unread.inputs['in_pixels'].set(pixels_a)
+        slopec_read.inputs['in_pixels'].set(pixels_b)
+
+        rng = np.random.RandomState(99)
+        for i in range(1, 31):
+            flux = float(rng.choice([0.0, 1.0, 10.0, 1e3, 1e5]))
+            shift_dx = float(rng.uniform(-0.4, 0.4))
+            shift_dy = float(rng.uniform(-0.4, 0.4))
+            noise_std = float(rng.uniform(0.0, 1.5))
+            frame = self.generate_spots(ccd_shape, subapdata_a, xp, flux=flux, bg=0.5,
+                                        shift_dx=shift_dx, shift_dy=shift_dy,
+                                        noise_std=noise_std)
+            self._run_frame(slopec_unread, pixels_a, frame, t * i)
+            self._run_frame(slopec_read, pixels_b, frame, t * i)
+
+            # Only slopec_read's telemetry is ever touched mid-run.
+            _ = cpuArray(slopec_read.outputs['out_x_c'].value)
+            _ = cpuArray(slopec_read.outputs['out_y_c'].value)
+
+            xu = cpuArray(slopec_unread.outputs['out_slopes'].xslopes)
+            xr = cpuArray(slopec_read.outputs['out_slopes'].xslopes)
+            yu = cpuArray(slopec_unread.outputs['out_slopes'].yslopes)
+            yr = cpuArray(slopec_read.outputs['out_slopes'].yslopes)
+
+            np.testing.assert_array_equal(xr, xu,
+                err_msg=f"frame {i}: xslopes differ depending on whether "
+                        f"out_x_c/out_y_c telemetry was read -- not telemetry-only")
+            np.testing.assert_array_equal(yr, yu,
+                err_msg=f"frame {i}: yslopes differ depending on whether "
+                        f"out_x_c/out_y_c telemetry was read -- not telemetry-only")
+
+    @cpu_and_gpu
+    def test_x_c_jitters_across_a_pixel_boundary_but_not_within_a_pixel(self, target_device_idx, xp):
+        """
+        Investigates whether Step 1's un-refined integer-pixel argmax
+        causes real frame-to-frame quantization jitter (a candidate
+        contributor to ASHR's known window-size sensitivity): a true spot
+        sitting near the boundary between two pixels (shift_dx close to
+        0.5, i.e. equidistant from the pixel at x_c=7.5 and the one at
+        x_c=8.5 on this 16px, offset=0.5 grid) should have its coarse peak
+        argmax flip between the two neighbouring pixels from one noisy
+        frame to the next, driven by nothing but the noise realization --
+        whereas a spot placed solidly within one pixel (shift_dx=0.0, at
+        the pixel centre) should keep the SAME coarse peak across the same
+        noise realizations. Demonstrating the flip near the boundary (not
+        just "the plumbing works") is the actual diagnostic value here.
+
+        Low flux + moderate read noise is used deliberately so the two
+        candidate peaks are close enough in matched-filter response for
+        noise to plausibly decide between them; this is not tuned to
+        reproduce any specific real closed-loop SNR, only to exhibit the
+        phenomenon.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        n_trials = 40
+
+        def sample_x_c(shift_dx, seed_offset):
+            values = []
+            for k in range(n_trials):
+                np.random.seed(seed_offset + k)
+                frame = self.generate_spots(ccd_shape, subapdata, xp, flux=30.0, bg=1.0,
+                                            shift_dx=shift_dx, shift_dy=0.0,
+                                            noise_std=1.5)
+                self._run_frame(slopec, pixels, frame, t * (seed_offset + k + 1))
+                values.append(float(cpuArray(slopec.outputs['out_x_c'].value)[0]))
+            return values
+
+        # Several similar-but-slightly-different placements straddling the
+        # boundary between the pixel at cntrd (7.5) and its neighbour
+        # (8.5): each must show BOTH values across repeated noisy frames.
+        for shift_dx in (0.45, 0.5, 0.55):
+            values = sample_x_c(shift_dx, seed_offset=int(shift_dx * 1000))
+            distinct = set(values)
+            self.assertEqual(distinct, {cntrd, cntrd + 1.0},
+                f"shift_dx={shift_dx}: expected the coarse peak to jitter "
+                f"between {cntrd} and {cntrd + 1.0} across noise "
+                f"realizations at a pixel boundary, got {sorted(distinct)}")
+
+        # Control: a spot solidly within one pixel (no shift, dead centre)
+        # must NOT jitter under the exact same noise realizations/flux.
+        values_centred = sample_x_c(0.0, seed_offset=99000)
+        self.assertEqual(set(values_centred), {cntrd},
+            f"shift_dx=0.0 (pixel centre, well away from any boundary) "
+            f"unexpectedly jittered: {sorted(set(values_centred))} -- "
+            f"the control case for the boundary-jitter demonstration failed")
+
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_default_false_is_pure_no_op(self, target_device_idx, xp):
+        """
+        subpixel_peak_refine (2026-09-14, see class docstring) defaults to
+        False and must then be bit-for-bit identical to a reference instance
+        built WITHOUT the parameter at all -- both in the emitted out_slopes
+        and in the out_x_c/out_y_c telemetry the feature is designed to
+        change when enabled. Also checks subpixel_peak_refine=False passed
+        explicitly, not just the unspecified default, against the same
+        reference. Uses the same randomized varying-frame-sequence pattern
+        as the other "new knob is inert" regression tests in this file
+        (e.g. test_stuck_detector_and_both_fixes_default_inert).
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_ref, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_false, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_ref = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_false = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        common = dict(fwhm_pix=1.5, k_wiener=10.0, b_reg=0.5, ron_e=1.0,
+                     w_ema_alpha=0.2, target_device_idx=target_device_idx)
+        slopec_reference = AdaptiveShrinkageSlopec(subapdata_ref, **common)
+        slopec_explicit_false = AdaptiveShrinkageSlopec(subapdata_false,
+                                                        subpixel_peak_refine=False, **common)
+        slopec_reference.inputs['in_pixels'].set(pixels_ref)
+        slopec_explicit_false.inputs['in_pixels'].set(pixels_false)
+
+        self.assertFalse(slopec_reference.subpixel_peak_refine,
+                         "Default must be False (preserve original behaviour)")
+
+        rng = np.random.RandomState(2026)
+        for i in range(1, 41):
+            flux = float(rng.choice([0.0, 1.0, 10.0, 1e3, 1e5]))
+            shift_dx = float(rng.uniform(-0.4, 0.4))
+            shift_dy = float(rng.uniform(-0.4, 0.4))
+            noise_std = float(rng.uniform(0.0, 1.5))
+            frame = self.generate_spots(ccd_shape, subapdata_ref, xp, flux=flux, bg=0.5,
+                                        shift_dx=shift_dx, shift_dy=shift_dy,
+                                        noise_std=noise_std)
+            self._run_frame(slopec_reference, pixels_ref, frame, t * i)
+            self._run_frame(slopec_explicit_false, pixels_false, frame, t * i)
+
+            xr = cpuArray(slopec_reference.outputs['out_slopes'].xslopes)
+            xf = cpuArray(slopec_explicit_false.outputs['out_slopes'].xslopes)
+            yr = cpuArray(slopec_reference.outputs['out_slopes'].yslopes)
+            yf = cpuArray(slopec_explicit_false.outputs['out_slopes'].yslopes)
+            xcr = cpuArray(slopec_reference.outputs['out_x_c'].value)
+            xcf = cpuArray(slopec_explicit_false.outputs['out_x_c'].value)
+            ycr = cpuArray(slopec_reference.outputs['out_y_c'].value)
+            ycf = cpuArray(slopec_explicit_false.outputs['out_y_c'].value)
+
+            np.testing.assert_array_equal(xf, xr,
+                err_msg=f"frame {i}: xslopes differ with subpixel_peak_refine=False "
+                        f"vs the no-parameter reference -- not a true no-op")
+            np.testing.assert_array_equal(yf, yr,
+                err_msg=f"frame {i}: yslopes differ with subpixel_peak_refine=False "
+                        f"vs the no-parameter reference -- not a true no-op")
+            np.testing.assert_array_equal(xcf, xcr,
+                err_msg=f"frame {i}: out_x_c differs with subpixel_peak_refine=False "
+                        f"vs the no-parameter reference -- not a true no-op")
+            np.testing.assert_array_equal(ycf, ycr,
+                err_msg=f"frame {i}: out_y_c differs with subpixel_peak_refine=False "
+                        f"vs the no-parameter reference -- not a true no-op")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_improves_small_offset_accuracy(self, target_device_idx, xp):
+        """
+        Correctness property (not just "outputs exist"): for small, known
+        sub-pixel true offsets -- well within a 3-point parabolic fit's
+        validity range -- subpixel_peak_refine=True must move out_x_c/
+        out_y_c strictly closer to the TRUE injected offset than the raw
+        integer-pixel argmax, independently in x and y. High flux, no
+        noise, ron_e=0 isolates Step 1's coarse-peak search itself: x_c/y_c
+        do not depend on k_wiener/w_ema_alpha/b_reg at all (those only
+        affect Step 2/3 and the shrinkage gain further downstream), so no
+        shrinkage-neutralizing kwargs are needed here.
+
+        Shifts are applied one axis at a time (the other held at 0) so a
+        sign/axis bug in only one of x or y cannot hide behind the other
+        axis being correct, mirroring the offset convention already used by
+        test_subpixel_accuracy_when_shrinkage_neutralized: true position
+        offset from centre == out_x_c - cntrd (== shift_dx by
+        generate_spots()'s own convention).
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        cntrd = (subap_npx - 1) / 2.0
+        offsets = [-0.3, -0.15, 0.0, 0.15, 0.3]
+
+        def raw_and_refined_offset(shift_dx, shift_dy, axis):
+            pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+            slopec_raw = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                                 target_device_idx=target_device_idx,
+                                                 subpixel_peak_refine=False)
+            slopec_ref = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                                 target_device_idx=target_device_idx,
+                                                 subpixel_peak_refine=True)
+            slopec_raw.inputs['in_pixels'].set(pixels)
+            slopec_ref.inputs['in_pixels'].set(pixels)
+            frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                        shift_dx=shift_dx, shift_dy=shift_dy)
+            self._run_frame(slopec_raw, pixels, frame, t)
+            self._run_frame(slopec_ref, pixels, frame, t)
+            out_name = 'out_x_c' if axis == 'x' else 'out_y_c'
+            raw_val = float(cpuArray(slopec_raw.outputs[out_name].value)[0]) - cntrd
+            ref_val = float(cpuArray(slopec_ref.outputs[out_name].value)[0]) - cntrd
+            return raw_val, ref_val
+
+        for axis, true_offset in [(a, o) for a in ('x', 'y') for o in offsets]:
+            shift_dx = true_offset if axis == 'x' else 0.0
+            shift_dy = true_offset if axis == 'y' else 0.0
+            raw_val, ref_val = raw_and_refined_offset(shift_dx, shift_dy, axis)
+
+            if true_offset == 0.0:
+                self.assertAlmostEqual(ref_val, 0.0, places=9,
+                    msg=f"axis={axis}: refined offset should be exactly 0 for a "
+                        f"dead-centre spot, got {ref_val}")
+                continue
+
+            raw_err = abs(raw_val - true_offset)
+            ref_err = abs(ref_val - true_offset)
+            self.assertLess(ref_err, raw_err,
+                f"axis={axis}, true_offset={true_offset}: refined estimate "
+                f"({ref_val}) is not closer to the true offset than the raw "
+                f"integer-pixel one ({raw_val})")
+            self.assertLess(ref_err, 0.05,
+                f"axis={axis}, true_offset={true_offset}: refined estimate "
+                f"({ref_val}) is not within 0.05px of the true offset")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_no_correction_for_dead_centre_spot(self, target_device_idx, xp):
+        """
+        A spot placed dead-centre on a pixel (shift_dx=shift_dy=0, where the
+        raw integer argmax already lands exactly on the true centre, see
+        test_x_c_y_c_populated_by_trigger_code) must get zero (or numerically
+        negligible) correction from refinement: the 3-point parabolic fit is
+        symmetric about its own centre sample, so f(-1) == f(+1) exactly in
+        the noiseless case and dx/dy must be exactly 0.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                         subpixel_peak_refine=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0)
+        self._run_frame(slopec, pixels, frame, t)
+
+        x_c = float(cpuArray(slopec.outputs['out_x_c'].value)[0])
+        y_c = float(cpuArray(slopec.outputs['out_y_c'].value)[0])
+        self.assertAlmostEqual(x_c, cntrd, places=9,
+            msg="Refinement injected a spurious x correction for a dead-centre spot")
+        self.assertAlmostEqual(y_c, cntrd, places=9,
+            msg="Refinement injected a spurious y correction for a dead-centre spot")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_flatness_fallback_on_zero_flux(self, target_device_idx, xp):
+        """
+        Degenerate-curvature fallback: on a literal all-zero (no spot, no
+        background) frame the prior-weighted correlation map self._tmp is
+        identically zero everywhere, so the peak, both its neighbours and
+        the curvature (den_x/den_y) are all exactly 0 -- the flatness guard
+        (|den| < min_curvature) must trigger and fall back to dx=dy=0,
+        rather than the 0/0 curvature ratio producing NaN/Inf or a wild
+        clipped +-0.5 value. Checked by comparing directly against a
+        subpixel_peak_refine=False instance fed the exact same frame: with
+        the correction falling back to exactly 0, out_x_c/out_y_c must be
+        numerically identical between the two, not merely "some finite
+        number".
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_off, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_on, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_off = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_on = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec_off = AdaptiveShrinkageSlopec(subapdata_off, fwhm_pix=1.5, ron_e=0.0,
+                                             subpixel_peak_refine=False,
+                                             target_device_idx=target_device_idx)
+        slopec_on = AdaptiveShrinkageSlopec(subapdata_on, fwhm_pix=1.5, ron_e=0.0,
+                                            subpixel_peak_refine=True,
+                                            target_device_idx=target_device_idx)
+        slopec_off.inputs['in_pixels'].set(pixels_off)
+        slopec_on.inputs['in_pixels'].set(pixels_on)
+
+        zero_frame = xp.zeros(ccd_shape, dtype=xp.float32)
+        self._run_frame(slopec_off, pixels_off, zero_frame, t)
+        self._run_frame(slopec_on, pixels_on, zero_frame, t)
+
+        x_c_off = cpuArray(slopec_off.outputs['out_x_c'].value)
+        y_c_off = cpuArray(slopec_off.outputs['out_y_c'].value)
+        x_c_on = cpuArray(slopec_on.outputs['out_x_c'].value)
+        y_c_on = cpuArray(slopec_on.outputs['out_y_c'].value)
+
+        self.assertTrue(np.all(np.isfinite(x_c_on)), "out_x_c is not finite on an all-zero frame")
+        self.assertTrue(np.all(np.isfinite(y_c_on)), "out_y_c is not finite on an all-zero frame")
+        np.testing.assert_array_equal(x_c_on, x_c_off,
+            err_msg="Flatness fallback did not produce dx=0: out_x_c differs from "
+                    "the unrefined value on a perfectly flat (all-zero) correlation map")
+        np.testing.assert_array_equal(y_c_on, y_c_off,
+            err_msg="Flatness fallback did not produce dy=0: out_y_c differs from "
+                    "the unrefined value on a perfectly flat (all-zero) correlation map")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_wraps_periodically_at_subaperture_edge(self, target_device_idx, xp):
+        """
+        Neighbour lookup wraps periodically (`% np_sub`), matching the
+        correlation's own FFT-circular topology (see class docstring) --
+        checked at BOTH ends of the sub-aperture, where the coarse peak's
+        integer argmax sits at index 0 (neighbour -1 must wrap to
+        np_sub - 1) or at index np_sub - 1 (neighbour +1 must wrap to 0).
+        A widened, near-flat spatial prior (large prior_sigma, prior_floor
+        near 1) lets a spot placed near the array edge still win the
+        coarse-peak search, instead of the default prior suppressing it.
+        Only requires no crash and a finite, bounded (within +-0.5 px of
+        the raw integer peak) result -- not a specific numeric value, since
+        the true spot centre lies right at (or past) the sampled edge,
+        outside a 3-point fit's normal validity range.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        cntrd = (subap_npx - 1) / 2.0
+
+        wide_prior_kwargs = dict(fwhm_pix=1.5, ron_e=0.0, prior_sigma=1000.0, prior_floor=1.0,
+                                 target_device_idx=target_device_idx)
+
+        for shift_dx, edge_idx, label in [(-cntrd, 0, "left"), (cntrd, subap_npx - 1, "right")]:
+            slopec_raw = AdaptiveShrinkageSlopec(subapdata, subpixel_peak_refine=False, **wide_prior_kwargs)
+            slopec_ref = AdaptiveShrinkageSlopec(subapdata, subpixel_peak_refine=True, **wide_prior_kwargs)
+            slopec_raw.inputs['in_pixels'].set(pixels)
+            slopec_ref.inputs['in_pixels'].set(pixels)
+
+            frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                        shift_dx=shift_dx, shift_dy=0.0)
+            try:
+                self._run_frame(slopec_raw, pixels, frame, t)
+                self._run_frame(slopec_ref, pixels, frame, t)
+            except Exception as e:  # pragma: no cover - failure path
+                self.fail(f"{label} edge: refinement raised at the sub-aperture "
+                          f"boundary (wraparound bug?): {e!r}")
+
+            x_c_raw = float(cpuArray(slopec_raw.outputs['out_x_c'].value)[0])
+            x_c_ref = float(cpuArray(slopec_ref.outputs['out_x_c'].value)[0])
+            y_c_ref = float(cpuArray(slopec_ref.outputs['out_y_c'].value)[0])
+
+            self.assertTrue(np.isfinite(x_c_ref), f"{label} edge: out_x_c is not finite")
+            self.assertTrue(np.isfinite(y_c_ref), f"{label} edge: out_y_c is not finite")
+            self.assertLessEqual(abs(x_c_ref - x_c_raw), 0.5 + 1e-9,
+                f"{label} edge: refined x_c ({x_c_ref}) strayed more than the "
+                f"clip(-0.5, 0.5) safety bound from the raw integer peak ({x_c_raw})")
+
+    @cpu_and_gpu
+    def test_subpixel_peak_refine_matches_downstream_gain_correction_toggle_pattern(self, target_device_idx, xp):
+        """
+        Sanity check that subpixel_peak_refine composes correctly with the
+        rest of the pipeline (not just x_c/y_c in isolation): with
+        shrinkage neutralized (same recipe as
+        test_subpixel_accuracy_when_shrinkage_neutralized), the emitted
+        slope for a small injected sub-pixel shift must still track the
+        true shift in sign and rough magnitude when refinement is enabled,
+        i.e. enabling Step 1 refinement does not break Step 2/3's own
+        correction chain.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5,
+                                         k_wiener=1e-8, b_reg=0.0, ron_e=0.0,
+                                         w_ema_alpha=1.0, subpixel_peak_refine=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        shift_x, shift_y = 0.3, -0.2
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e6, bg=0.0,
+                                    shift_dx=shift_x, shift_dy=shift_y)
+        self._run_frame(slopec, pixels, frame, t)
+
+        slopes_x = cpuArray(slopec.outputs['out_slopes'].xslopes)
+        slopes_y = cpuArray(slopec.outputs['out_slopes'].yslopes)
+        expected_slope_x = shift_x / (subap_npx / 2.0)
+        expected_slope_y = shift_y / (subap_npx / 2.0)
+
+        np.testing.assert_allclose(slopes_x, expected_slope_x, atol=0.05,
+                                   err_msg="X sub-pixel accuracy/sign failed with refinement enabled")
+        np.testing.assert_allclose(slopes_y, expected_slope_y, atol=0.05,
+                                   err_msg="Y sub-pixel accuracy/sign failed with refinement enabled")
 
 
 if __name__ == '__main__':

@@ -62,6 +62,31 @@ class AdaptiveShrinkageSlopec(Slopec):
         FWHM of the WCoG weighting window. Defaults to fwhm_pix. Widening it
         raises g (less contraction) at the cost of admitting more noise, and
         also widens the effective footprint used for the SNR estimate below.
+    halo_fwhm_pix : float [pixels] or None
+        FWHM of a second, broader Gaussian added to the Step-1 matched-filter
+        template alongside the fwhm_pix "core" component (2026-09-13). None
+        (default) leaves the template a single Gaussian, exactly as before --
+        fully backward compatible. Added after finding that under degraded
+        HO correction the true instantaneous spot is not a single Gaussian
+        of any width: measured core+halo PSFs had only 1-25% of total flux
+        within a few core pixels, the rest in a halo decaying far slower
+        than any Gaussian fit to the core alone (see the 2026-09-13 HO-
+        distance investigation). Widening fwhm_pix alone to compensate
+        (the earlier, purely empirical fix) conflates the Step-1 template
+        with the Step-2 WCoG window (wcog_fwhm_pix) and has no principled
+        basis once the target is no longer Gaussian at any width -- this
+        parameter lets Step-1 match the halo explicitly while fwhm_pix
+        keeps describing the core (still used for sigma_psf_sq, g_wcog,
+        etc.), instead of overloading fwhm_pix as a fitted compromise.
+    halo_fraction : float [1]
+        Fraction of the (unit-sum) matched-filter template's mass assigned
+        to the halo component; the remaining (1 - halo_fraction) goes to
+        the fwhm_pix core. Default 0.0: the halo contributes nothing even
+        if halo_fwhm_pix is set, so the template stays a pure single
+        Gaussian (both must be set to enable the two-component template).
+        Only affects Step 1 (coarse peak-finding via FFT correlation) --
+        Step 2's WCoG weighting (wcog_fwhm_pix) is unaffected, so the two
+        can still be tuned independently as before.
     k_wiener : float [1]
         sigma_PSF^2 / sigma_s^2, where sigma_s is the closed-loop residual jitter
         RMS in pixels. w = rho^2 / (rho^2 + k_wiener). Calibrate from the error
@@ -187,12 +212,52 @@ class AdaptiveShrinkageSlopec(Slopec):
         step through calc_slopes_nofor() eagerly every frame) or on CPU,
         where it is a no-op regardless (BaseProcessingObj.build_stream() only
         acts when target_device_idx >= 0).
+    subpixel_peak_refine : bool [1]
+        Refine Step 1's coarse peak (x_c/y_c) with a 3-point parabolic
+        sub-pixel interpolation on the prior-weighted correlation map,
+        instead of leaving it at the raw integer-pixel argmax. Default
+        False (bit-for-bit identical to pre-2026-09-14 behaviour).
+        Motivation: telemetry (out_x_c/out_y_c) showed the raw integer
+        peak genuinely flickers between neighbouring pixels frame-to-
+        frame even in a stable, well-tracked run (12.9% of frames at
+        H=17, 59.4% at H=19.5; 69-86% of those flips reverse within 3
+        frames -- noise-driven, not real target motion), since Step 2's
+        WCoG window is re-centred on whichever integer pixel Step 1's
+        un-refined argmax happens to land on. Parabolic interpolation
+        (not log/Gaussian) is used for numerical robustness: the
+        prior-weighted correlation can be near zero or (rarely, from
+        noise) slightly negative, which a log-domain fit cannot handle.
+        Neighbour lookup wraps periodically (`% np_sub`), matching the
+        correlation's own FFT-circular topology -- not an approximation
+        at the sub-aperture edge, but the mathematically consistent
+        neighbour there. Falls back to zero correction (no offset) when
+        the local curvature is too flat to trust relative to the peak
+        value (see calc_slopes_nofor()), the same "insufficient information, don't
+        guess" philosophy used elsewhere in this class (gamma -> 0 at
+        low SNR). Additionally scaled by `self.w_smooth` as it stands at
+        the START of the frame (last frame's EMA-smoothed Wiener weight):
+        local curvature alone is not a reliable trust signal -- an
+        atomic, per-seed check (2026-09-14, 4 known-catastrophic
+        seeds across two triggers, old noise model, unrefined vs.
+        always-on refinement) found the always-on version fixes half
+        the cases (e.g. 51353nm -> 527nm) and makes the other half
+        markedly worse (e.g. 42380nm -> 58211nm), a seed-dependent, not
+        trigger-dependent, split -- consistent with a spurious/noise-
+        driven local curvature being trusted exactly when overall
+        tracking confidence is already low. Gating by w_smooth degrades
+        gracefully to the un-refined integer peak whenever confidence is
+        already low, using no new state or independent confidence
+        signal. Only refines x_c/y_c itself -- everything downstream
+        (Step 2's WCoG, Step 3's gamma correction) is unchanged code,
+        just now operating on a continuous rather than integer centre.
     """
 
     def __init__(self,
                  subapdata: SubapData,
                  fwhm_pix: float = 1.5,
                  wcog_fwhm_pix: float = None,
+                 halo_fwhm_pix: float = None,
+                 halo_fraction: float = 0.0,
                  k_wiener: float = 10.0,
                  b_reg: float = 0.0,
                  sigma_d_sq: float = 1.0 / 12.0,
@@ -215,6 +280,7 @@ class AdaptiveShrinkageSlopec(Slopec):
                  prior_widen_factor: float = 1.0,
                  prior_widen_after_frames: int = 1_000_000,
                  stream_enable: bool = True,
+                 subpixel_peak_refine: bool = False,
                  **kwargs):
 
         self.subapdata = subapdata
@@ -227,6 +293,8 @@ class AdaptiveShrinkageSlopec(Slopec):
 
         self.fwhm_pix = fwhm_pix
         self.wcog_fwhm_pix = fwhm_pix if wcog_fwhm_pix is None else wcog_fwhm_pix
+        self.halo_fwhm_pix = halo_fwhm_pix
+        self.halo_fraction = halo_fraction
 
         # --- Pre-calibrated estimator constants -----------------------------
         self.k_wiener = k_wiener
@@ -259,6 +327,7 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.norm_factor = np_sub / 2.0
         self._eps = 1e-12
         self.stream_enable = stream_enable
+        self.subpixel_peak_refine = subpixel_peak_refine
 
         self.outputs['out_subapdata'] = self.subapdata
         self.slopes.single_mask = self.subapdata.single_mask()
@@ -273,12 +342,24 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.offset = 0.5 if np_sub % 2 == 0 else 0.0
 
         # --- Matched-filter template (FFT-origin centred) --------------------
+        # Two-component core+halo template (2026-09-13, see halo_fwhm_pix
+        # docstring): a single Gaussian is the wrong matched filter once the
+        # true spot has a non-Gaussian halo, at any fwhm_pix. Inert by
+        # default (halo_fraction=0.0 or halo_fwhm_pix=None both collapse
+        # this to exactly the old single-Gaussian template).
         half_np = np_sub // 2
         dx_wrap = xp.where(grid > half_np - 1, grid - np_sub, grid)
         xx_wrap, yy_wrap = xp.meshgrid(dx_wrap, dx_wrap)
-        template = xp.exp(-((xx_wrap - self.offset) ** 2 +
-                            (yy_wrap - self.offset) ** 2) / (2.0 * sig_s ** 2))
-        template /= xp.sum(template)
+        r_sq_wrap = (xx_wrap - self.offset) ** 2 + (yy_wrap - self.offset) ** 2
+        core = xp.exp(-r_sq_wrap / (2.0 * sig_s ** 2))
+        core /= xp.sum(core)
+        if halo_fwhm_pix is not None and halo_fraction > 0.0:
+            sig_h = halo_fwhm_pix / (2.0 * float(xp.sqrt(2.0 * xp.log(2.0))))
+            halo = xp.exp(-r_sq_wrap / (2.0 * sig_h ** 2))
+            halo /= xp.sum(halo)
+            template = (1.0 - halo_fraction) * core + halo_fraction * halo
+        else:
+            template = core
         self.fft_template_conj = xp.conj(xp.fft.fft2(template[None, :, :], axes=(1, 2)))
 
         # --- Static spatial prior, centred on the loop reference -------------
@@ -365,6 +446,23 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.outputs['out_gamma'] = self.gamma_value
         self.outputs['out_rho_sq'] = self.rho_sq_value
 
+        # Step-1 coarse-peak telemetry (2026-09-14): x_c/y_c are the raw
+        # integer-pixel argmax positions the Step-2 WCoG window gets
+        # centred on (see Step 1 comment below) -- exposed to check
+        # whether frame-to-frame flips between neighbouring pixels
+        # (a true spot straddling a pixel boundary can flip the argmax
+        # on noise alone) are a measurable contributor to the residual,
+        # independent of core+halo/chromatic/window-size effects.
+        # TELEMETRY ONLY: does not feed back into the emitted slopes.
+        self.x_c_out = xp.zeros(n_subaps, dtype=self.dtype)
+        self.y_c_out = xp.zeros(n_subaps, dtype=self.dtype)
+        self.x_c_value = BaseValue(value=xp.copy(self.x_c_out),
+                                    target_device_idx=self.target_device_idx)
+        self.y_c_value = BaseValue(value=xp.copy(self.y_c_out),
+                                    target_device_idx=self.target_device_idx)
+        self.outputs['out_x_c'] = self.x_c_value
+        self.outputs['out_y_c'] = self.y_c_value
+
         # --- Pre-allocated working buffers (no allocation inside trigger) ----
         self._pix = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
         self._corr = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
@@ -380,6 +478,8 @@ class AdaptiveShrinkageSlopec(Slopec):
             'out_w_smooth': OutputDesc(BaseValue, 'EMA-smoothed Wiener shrinkage weight w_t per subaperture (telemetry only, does not feed back into the emitted slope)'),
             'out_gamma': OutputDesc(BaseValue, 'Analytic grid-bias correction factor gamma per subaperture (telemetry only)'),
             'out_rho_sq': OutputDesc(BaseValue, 'Detector-model correlation SNR^2 (rho^2) per subaperture (telemetry only)'),
+            'out_x_c': OutputDesc(BaseValue, 'Step-1 coarse-peak x position, integer-pixel-quantized (telemetry only)'),
+            'out_y_c': OutputDesc(BaseValue, 'Step-1 coarse-peak y position, integer-pixel-quantized (telemetry only)'),
         })
         return result
 
@@ -470,6 +570,57 @@ class AdaptiveShrinkageSlopec(Slopec):
         x_idx = flat_idx - y_idx * np_sub
         x_c = x_idx.astype(self.dtype) + self.offset
         y_c = y_idx.astype(self.dtype) + self.offset
+
+        # subpixel_peak_refine is a fixed constructor-time flag (never
+        # mutated after __init__), so branching on it here is safe for
+        # CUDA graph capture -- same reasoning as gain_correction_enable
+        # above. 3-point parabolic sub-pixel correction on the same
+        # prior-weighted map argmax was taken from (self._tmp), applied
+        # independently in x and y. Neighbour lookup wraps periodically
+        # (`% np_sub`), consistent with the correlation's own FFT-circular
+        # topology. See the class docstring for why parabolic (not
+        # log/Gaussian) and the motivating out_x_c/out_y_c telemetry.
+        if self.subpixel_peak_refine:
+            xm1 = (x_idx - 1) % np_sub
+            xp1 = (x_idx + 1) % np_sub
+            ym1 = (y_idx - 1) % np_sub
+            yp1 = (y_idx + 1) % np_sub
+            f0 = self._tmp[self._arange_n, y_idx, x_idx]
+            f_xm1 = self._tmp[self._arange_n, y_idx, xm1]
+            f_xp1 = self._tmp[self._arange_n, y_idx, xp1]
+            f_ym1 = self._tmp[self._arange_n, ym1, x_idx]
+            f_yp1 = self._tmp[self._arange_n, yp1, x_idx]
+
+            # Curvature threshold is relative to the peak value itself
+            # (not a fixed absolute number), so it stays meaningful
+            # across very different flux/SNR levels rather than being
+            # calibrated for one particular magnitude.
+            min_curvature = 1e-6 * xp.abs(f0) + self._eps
+            den_x = f_xm1 - 2.0 * f0 + f_xp1
+            den_y = f_ym1 - 2.0 * f0 + f_yp1
+            flat_enough_x = xp.abs(den_x) < min_curvature
+            flat_enough_y = xp.abs(den_y) < min_curvature
+            safe_den_x = xp.where(flat_enough_x, 1.0, den_x)
+            safe_den_y = xp.where(flat_enough_y, 1.0, den_y)
+            dx = xp.where(flat_enough_x, 0.0, 0.5 * (f_xm1 - f_xp1) / safe_den_x)
+            dy = xp.where(flat_enough_y, 0.0, 0.5 * (f_ym1 - f_yp1) / safe_den_y)
+            # a 3-point parabolic fit is only meaningful within the span of
+            # its own 3 samples -- clip so a near-degenerate fit cannot
+            # extrapolate the centre past the adjacent pixel it came from.
+            # Confidence gate (2026-09-14): scale the correction by
+            # self.w_smooth AS IT STANDS AT THE START OF THIS FRAME (last
+            # frame's EMA-smoothed Wiener weight -- not yet overwritten by
+            # Step 4/5 below, same "read before this frame's own update"
+            # pattern already used for stuck_counter above). Local curvature
+            # alone is not a reliable trust signal at low SNR: the flatness
+            # guard above only catches a near-zero denominator, not a
+            # noise-driven peak whose curvature merely LOOKS usable. Reusing
+            # w_smooth needs no new state and degrades gracefully to the
+            # un-refined integer peak exactly when confidence is already low
+            # -- the same continuous-shrinkage philosophy as the rest of
+            # this class, not a second, independent confidence mechanism.
+            x_c = x_c + self.w_smooth * xp.clip(dx, -0.5, 0.5)
+            y_c = y_c + self.w_smooth * xp.clip(dy, -0.5, 0.5)
 
         # =================================================================
         # 2. Single-pass WCoG in coordinates RELATIVE to the window centre,
@@ -610,6 +761,10 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.w_smooth_value.value[:] = self.w_smooth
         self.gamma_value.value[:] = self.gamma_out
         self.rho_sq_value.value[:] = self.rho_sq_out
+        self.x_c_out[:] = x_c
+        self.y_c_out[:] = y_c
+        self.x_c_value.value[:] = self.x_c_out
+        self.y_c_value.value[:] = self.y_c_out
 
         # =================================================================
         # 6. TELEMETRY ONLY: radar EMA, lock FSM. Branch-free.
@@ -670,3 +825,5 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.outputs['out_w_smooth'].generation_time = self.current_time
         self.outputs['out_gamma'].generation_time = self.current_time
         self.outputs['out_rho_sq'].generation_time = self.current_time
+        self.outputs['out_x_c'].generation_time = self.current_time
+        self.outputs['out_y_c'].generation_time = self.current_time
