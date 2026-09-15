@@ -87,6 +87,39 @@ class AdaptiveShrinkageSlopec(Slopec):
         Only affects Step 1 (coarse peak-finding via FFT correlation) --
         Step 2's WCoG weighting (wcog_fwhm_pix) is unaffected, so the two
         can still be tuned independently as before.
+    step1_fwhm_pix : float [pixels] or None
+        Width of the Step-1 matched-filter template's core, decoupled from
+        fwhm_pix -- None (default) falls back to fwhm_pix, bit-for-bit
+        identical to before this parameter existed. Added (2026-09-15)
+        after finding that Step 1's coarse-peak argmax is only as noise-
+        robust as the *margin* between the winning grid hypothesis and its
+        runner-up, and that margin shrinks fast as the template widens
+        (noiseless margin at the loop reference: ~50% of peak height at
+        fwhm_pix=1.0, ~29% at 2.0, ~8% at 4.0) -- a template narrower than
+        the true PSF sharpens this margin and makes the discrete decision
+        more robust to noise, independent of where the true spot sits.
+        fwhm_pix itself is left untouched by this parameter and keeps
+        driving sigma_psf_sq/g_wcog (Step 4's position-uncertainty prior
+        and Step 2's WCoG gain) exactly as before: narrowing the Step-1
+        template alone, without this decoupling, would silently also
+        change those calibrated quantities and confound the margin effect
+        with a change to the shrinkage prior -- the same class of mistake
+        already made and corrected once for the fwhm_pix/wcog_fwhm_pix
+        pair, and for halo_fwhm_pix above. NOT a fix for the pixel-
+        quantization jitter documented under subpixel_peak_refine below --
+        that jitter is the direct, expected consequence of a finite (not
+        infinite) margin, and this parameter only widens the margin, it
+        does not eliminate the underlying discreteness. subpixel_peak_refine
+        was tried as a jitter fix and found unsafe (fixed 4 known-
+        catastrophic seeds but regressed all 6 previously-fine seeds
+        tested, 3 catastrophically) precisely because it estimates a
+        continuous correction whose *sign* was found unreliable frame-to-
+        frame; this parameter makes no such per-frame estimate, it only
+        changes a static, precomputed template shape, so it carries none
+        of that directional risk -- but its net effect on closed-loop
+        resTT (margin gain vs. matched-filter SNR loss from using a
+        template narrower than the true PSF) has not yet been measured
+        and is not assumed to be positive.
     k_wiener : float [1]
         sigma_PSF^2 / sigma_s^2, where sigma_s is the closed-loop residual jitter
         RMS in pixels. w = rho^2 / (rho^2 + k_wiener). Calibrate from the error
@@ -258,6 +291,7 @@ class AdaptiveShrinkageSlopec(Slopec):
                  wcog_fwhm_pix: float = None,
                  halo_fwhm_pix: float = None,
                  halo_fraction: float = 0.0,
+                 step1_fwhm_pix: float = None,
                  k_wiener: float = 10.0,
                  b_reg: float = 0.0,
                  sigma_d_sq: float = 1.0 / 12.0,
@@ -295,6 +329,7 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.wcog_fwhm_pix = fwhm_pix if wcog_fwhm_pix is None else wcog_fwhm_pix
         self.halo_fwhm_pix = halo_fwhm_pix
         self.halo_fraction = halo_fraction
+        self.step1_fwhm_pix = fwhm_pix if step1_fwhm_pix is None else step1_fwhm_pix
 
         # --- Pre-calibrated estimator constants -----------------------------
         self.k_wiener = k_wiener
@@ -303,7 +338,13 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.excess_sq = excess_sq
         self.ron_e = ron_e
 
+        # sig_s drives sigma_psf_sq/g_wcog below (the calibrated shrinkage
+        # prior and WCoG gain) and must stay tied to fwhm_pix alone; the
+        # Step-1 template's own core width uses the separate step1_sig,
+        # which equals sig_s unless step1_fwhm_pix overrides it -- see its
+        # docstring for why these must not be the same knob.
         sig_s = fwhm_pix / (2.0 * float(xp.sqrt(2.0 * xp.log(2.0))))
+        step1_sig = self.step1_fwhm_pix / (2.0 * float(xp.sqrt(2.0 * xp.log(2.0))))
         sig_w = self.wcog_fwhm_pix / (2.0 * float(xp.sqrt(2.0 * xp.log(2.0))))
         self.sigma_psf_sq = sig_s ** 2
         self.g_wcog = (sig_w ** 2 / (sig_s ** 2 + sig_w ** 2)) if g_wcog is None else g_wcog
@@ -347,11 +388,13 @@ class AdaptiveShrinkageSlopec(Slopec):
         # true spot has a non-Gaussian halo, at any fwhm_pix. Inert by
         # default (halo_fraction=0.0 or halo_fwhm_pix=None both collapse
         # this to exactly the old single-Gaussian template).
+        # Core width is step1_sig (see step1_fwhm_pix docstring), not sig_s
+        # directly -- identical to sig_s unless step1_fwhm_pix overrides it.
         half_np = np_sub // 2
         dx_wrap = xp.where(grid > half_np - 1, grid - np_sub, grid)
         xx_wrap, yy_wrap = xp.meshgrid(dx_wrap, dx_wrap)
         r_sq_wrap = (xx_wrap - self.offset) ** 2 + (yy_wrap - self.offset) ** 2
-        core = xp.exp(-r_sq_wrap / (2.0 * sig_s ** 2))
+        core = xp.exp(-r_sq_wrap / (2.0 * step1_sig ** 2))
         core /= xp.sum(core)
         if halo_fwhm_pix is not None and halo_fraction > 0.0:
             sig_h = halo_fwhm_pix / (2.0 * float(xp.sqrt(2.0 * xp.log(2.0))))

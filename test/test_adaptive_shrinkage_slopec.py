@@ -1992,6 +1992,218 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                 msg=f"Correction did not scale exactly linearly with the "
                     f"forced w_smooth level: ratios={ratios}")
 
+    @cpu_and_gpu
+    def test_step1_fwhm_pix_default_matches_pre_existing_behaviour_bit_for_bit(self, target_device_idx, xp):
+        """
+        step1_fwhm_pix (2026-09-15, see class docstring) defaults to None,
+        which falls back to fwhm_pix -- this must be bit-for-bit identical
+        both to an instance built the OLD way (the parameter not passed at
+        all, i.e. every pre-2026-09-15 call site) and to one where fwhm_pix
+        is passed again explicitly as step1_fwhm_pix. Checks the three
+        quantities the parameter can possibly influence (fft_template_conj,
+        sigma_psf_sq, g_wcog) plus an end-to-end run of calc_slopes_nofor()
+        on a varying synthetic frame sequence, not just constructor-time
+        state, using the same "new knob is inert" pattern as
+        test_subpixel_peak_refine_default_false_is_pure_no_op.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_old, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_explicit, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_old = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_explicit = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        common = dict(fwhm_pix=1.5, k_wiener=10.0, b_reg=0.5, ron_e=1.0,
+                     w_ema_alpha=0.2, target_device_idx=target_device_idx)
+        slopec_old = AdaptiveShrinkageSlopec(subapdata_old, **common)  # no step1_fwhm_pix at all
+        slopec_explicit = AdaptiveShrinkageSlopec(subapdata_explicit, step1_fwhm_pix=1.5, **common)
+        slopec_old.inputs['in_pixels'].set(pixels_old)
+        slopec_explicit.inputs['in_pixels'].set(pixels_explicit)
+
+        self.assertEqual(slopec_old.step1_fwhm_pix, 1.5,
+                         "step1_fwhm_pix did not fall back to fwhm_pix when left None")
+
+        np.testing.assert_array_equal(cpuArray(slopec_explicit.fft_template_conj),
+            cpuArray(slopec_old.fft_template_conj),
+            err_msg="step1_fwhm_pix=fwhm_pix must reproduce the default-None "
+                    "template bit-for-bit")
+        self.assertAlmostEqual(slopec_explicit.sigma_psf_sq, slopec_old.sigma_psf_sq, places=9)
+        self.assertAlmostEqual(slopec_explicit.g_wcog, slopec_old.g_wcog, places=9)
+
+        rng = np.random.RandomState(2026)
+        for i in range(1, 21):
+            flux = float(rng.choice([0.0, 1.0, 10.0, 1e3, 1e5]))
+            shift_dx = float(rng.uniform(-0.4, 0.4))
+            shift_dy = float(rng.uniform(-0.4, 0.4))
+            noise_std = float(rng.uniform(0.0, 1.5))
+            frame = self.generate_spots(ccd_shape, subapdata_old, xp, flux=flux, bg=0.5,
+                                        shift_dx=shift_dx, shift_dy=shift_dy,
+                                        noise_std=noise_std)
+            self._run_frame(slopec_old, pixels_old, frame, t * i)
+            self._run_frame(slopec_explicit, pixels_explicit, frame, t * i)
+
+            xo = cpuArray(slopec_old.outputs['out_slopes'].xslopes)
+            xe = cpuArray(slopec_explicit.outputs['out_slopes'].xslopes)
+            yo = cpuArray(slopec_old.outputs['out_slopes'].yslopes)
+            ye = cpuArray(slopec_explicit.outputs['out_slopes'].yslopes)
+
+            np.testing.assert_array_equal(xe, xo,
+                err_msg=f"frame {i}: xslopes diverged between default (None) and "
+                        f"explicit step1_fwhm_pix=fwhm_pix")
+            np.testing.assert_array_equal(ye, yo,
+                err_msg=f"frame {i}: yslopes diverged between default (None) and "
+                        f"explicit step1_fwhm_pix=fwhm_pix")
+
+    @cpu_and_gpu
+    def test_step1_fwhm_pix_isolates_template_width_from_sigma_and_gwcog(self, target_device_idx, xp):
+        """
+        Core isolation property step1_fwhm_pix exists for (2026-09-15, see
+        its docstring entry): overriding it to a value DIFFERENT from
+        fwhm_pix must change the Step-1 template (fft_template_conj) while
+        leaving sigma_psf_sq and g_wcog (with g_wcog=None) driven by
+        fwhm_pix alone, unchanged. Checked directly against a third instance
+        where fwhm_pix itself is set to step1_fwhm_pix's value: that
+        instance's sigma_psf_sq/g_wcog DO differ, confirming the isolation
+        is a genuine effect of this parameter, not something that would
+        have come out equal anyway. wcog_fwhm_pix is pinned to a fixed value
+        independent of fwhm_pix/step1_fwhm_pix: left at its own default
+        (None) it also tracks fwhm_pix, which would make g_wcog identically
+        0.5 regardless of fwhm_pix (sig_w == sig_s always) and mask the
+        very difference this test needs to see in slopec_c.
+        """
+        subap_npx = 16
+        subapdata_a, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_c, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        slopec_a = AdaptiveShrinkageSlopec(subapdata_a, fwhm_pix=1.5, wcog_fwhm_pix=2.0,
+                                           target_device_idx=target_device_idx)
+        slopec_b = AdaptiveShrinkageSlopec(subapdata_b, fwhm_pix=1.5, step1_fwhm_pix=3.0,
+                                           wcog_fwhm_pix=2.0, target_device_idx=target_device_idx)
+        slopec_c = AdaptiveShrinkageSlopec(subapdata_c, fwhm_pix=3.0, wcog_fwhm_pix=2.0,
+                                           target_device_idx=target_device_idx)
+
+        # Template: B (step1 override) must match C (fwhm_pix set directly to
+        # the same width) bit-for-bit -- both build the Step-1 core at width
+        # 3.0 -- and must differ from A (pure fwhm_pix=1.5, step1 falls back to it).
+        np.testing.assert_array_equal(cpuArray(slopec_b.fft_template_conj),
+            cpuArray(slopec_c.fft_template_conj),
+            err_msg="step1_fwhm_pix=3.0 did not build the same Step-1 template "
+                    "as an instance with fwhm_pix=3.0 directly")
+        self.assertFalse(np.array_equal(cpuArray(slopec_b.fft_template_conj),
+                                        cpuArray(slopec_a.fft_template_conj)),
+            "step1_fwhm_pix=3.0 did not change the Step-1 template relative "
+            "to fwhm_pix=1.5 alone")
+
+        # sigma_psf_sq/g_wcog: B must match A (both effectively fwhm_pix=1.5
+        # for this purpose), NOT C (which genuinely has fwhm_pix=3.0) -- the
+        # isolation property under test.
+        self.assertAlmostEqual(slopec_b.sigma_psf_sq, slopec_a.sigma_psf_sq, places=9,
+                               msg="sigma_psf_sq changed with step1_fwhm_pix -- it "
+                                   "must stay tied to fwhm_pix alone")
+        self.assertAlmostEqual(slopec_b.g_wcog, slopec_a.g_wcog, places=9,
+                               msg="g_wcog changed with step1_fwhm_pix -- it must "
+                                   "stay tied to fwhm_pix alone (when g_wcog=None)")
+        self.assertNotAlmostEqual(slopec_c.sigma_psf_sq, slopec_a.sigma_psf_sq, places=6,
+            msg="Test setup assumption violated: sigma_psf_sq should genuinely "
+                "differ when fwhm_pix itself changes")
+        self.assertNotAlmostEqual(slopec_c.g_wcog, slopec_a.g_wcog, places=6,
+            msg="Test setup assumption violated: g_wcog should genuinely "
+                "differ when fwhm_pix itself changes")
+
+    @cpu_and_gpu
+    def test_step1_fwhm_pix_narrower_template_sharpens_correlation_margin(self, target_device_idx, xp):
+        """
+        The physical property step1_fwhm_pix was added for (see its
+        docstring: "a template narrower than the true PSF sharpens the
+        margin" between the winning grid hypothesis and its runner-up): for
+        a fixed, noiseless synthetic spot, the noiseless Step-1 correlation
+        margin (argmax bin height minus the next-highest bin, as a fraction
+        of the peak) must strictly increase as step1_fwhm_pix narrows, all
+        else (fwhm_pix, the true spot) held fixed. Checked directly on the
+        raw FFT correlation (fft_pix * fft_template_conj), bypassing the
+        spatial-prior weighting Step 1 applies before its own argmax, since
+        the prior is identical across the step1_fwhm_pix values compared and
+        would only dilute the effect under test.
+        """
+        subap_npx = 16
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        def margin_for(step1_fwhm_pix):
+            slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5,
+                                             step1_fwhm_pix=step1_fwhm_pix,
+                                             target_device_idx=target_device_idx)
+            frame = self.generate_spots(ccd_shape, subapdata, xp, fwhm=1.5, flux=100.0,
+                                        shift_dx=0.0, shift_dy=0.0)
+            fft_pix = xp.fft.fft2(frame[None, :, :], axes=(1, 2))
+            corr = cpuArray(xp.fft.ifft2(fft_pix * slopec.fft_template_conj,
+                                         axes=(1, 2)).real[0])
+            flat = corr.reshape(-1)
+            order = np.argsort(flat)[::-1]
+            peak, runner_up = flat[order[0]], flat[order[1]]
+            return (peak - runner_up) / peak
+
+        step1_values = [4.0, 2.0, 1.0]  # widest -> narrowest
+        margins = [margin_for(v) for v in step1_values]
+
+        for wider_margin, narrower_margin in zip(margins[:-1], margins[1:]):
+            self.assertGreater(narrower_margin, wider_margin,
+                f"Correlation margin did not increase for a narrower "
+                f"step1_fwhm_pix: {list(zip(step1_values, margins))}")
+
+    @cpu_and_gpu
+    def test_step1_fwhm_pix_with_halo_only_widens_the_core_component(self, target_device_idx, xp):
+        """
+        Interaction with the 2026-09-13 two-component template (see
+        halo_fwhm_pix/halo_fraction docstrings): step1_fwhm_pix must apply
+        to the CORE component's width only, leaving the halo component at
+        its own independent halo_fwhm_pix. Checked the same way as
+        test_step1_fwhm_pix_isolates_template_width_from_sigma_and_gwcog --
+        an instance with step1_fwhm_pix=3.0 (core width) + halo_fwhm_pix=6.0
+        must produce a template bit-for-bit identical to one with
+        fwhm_pix=3.0 directly (same core width) + the same halo_fwhm_pix/
+        halo_fraction, while still keeping its OWN sigma_psf_sq/g_wcog tied
+        to its own (unrelated) fwhm_pix=1.5, not to step1_fwhm_pix or to the
+        halo width.
+        """
+        subap_npx = 16
+        subapdata_a, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_c, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        halo_kwargs = dict(halo_fwhm_pix=6.0, halo_fraction=0.3,
+                           target_device_idx=target_device_idx)
+        slopec_step1 = AdaptiveShrinkageSlopec(subapdata_a, fwhm_pix=1.5,
+                                               step1_fwhm_pix=3.0, **halo_kwargs)
+        slopec_core_direct = AdaptiveShrinkageSlopec(subapdata_b, fwhm_pix=3.0,
+                                                     **halo_kwargs)
+
+        np.testing.assert_array_equal(cpuArray(slopec_step1.fft_template_conj),
+            cpuArray(slopec_core_direct.fft_template_conj),
+            err_msg="step1_fwhm_pix did not apply to the core component's width "
+                    "alone: the two-component template differs from an instance "
+                    "with fwhm_pix set directly to the same core width")
+
+        # Sanity check that the two-component mix was not silently broken by
+        # the override: still integrates to 1, exactly like the plain
+        # halo_fwhm_pix/halo_fraction case (see
+        # test_two_component_template_stays_normalized).
+        conj_fft = xp.conj(slopec_step1.fft_template_conj)
+        template = cpuArray(xp.fft.ifft2(conj_fft, axes=(1, 2)).real[0])
+        self.assertAlmostEqual(float(np.sum(template)), 1.0, places=5,
+            msg="Two-component template with step1_fwhm_pix override does not "
+                "integrate to 1")
+
+        # sigma_psf_sq/g_wcog stay tied to this instance's OWN fwhm_pix=1.5,
+        # not to step1_fwhm_pix=3.0 or to halo_fwhm_pix=6.0.
+        slopec_reference = AdaptiveShrinkageSlopec(subapdata_c, fwhm_pix=1.5,
+                                                    **halo_kwargs)
+        self.assertAlmostEqual(slopec_step1.sigma_psf_sq, slopec_reference.sigma_psf_sq, places=9,
+            msg="sigma_psf_sq changed with step1_fwhm_pix under the "
+                "two-component template")
+        self.assertAlmostEqual(slopec_step1.g_wcog, slopec_reference.g_wcog, places=9,
+            msg="g_wcog changed with step1_fwhm_pix under the "
+                "two-component template")
+
 
 if __name__ == '__main__':
     unittest.main()
