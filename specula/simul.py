@@ -319,8 +319,9 @@ class Simul():
             if 'tag' in pars and build_this_object:
                 if 'target_device_idx' in pars:
                     del pars['target_device_idx']
-                if len(pars) > 2:
-                    raise ValueError('Extra parameters with "tag" are not allowed')
+                extra_pars = set(pars.keys()) - {'class', 'tag', 'gui_pos'}
+                if extra_pars:
+                    raise ValueError(f'Extra parameters with "tag" are not allowed: {sorted(extra_pars)}')
                 filename = cm.filename(classname, pars['tag'])
                 # tags are restored into each process (multiple copies), target_rank is not checked
                 self.logger.info(f'Restoring: {filename}')
@@ -528,6 +529,9 @@ class Simul():
             self.objs[dest_object].inputs[input_name].append(output.ref)
 
         if send:
+            if not isinstance(self.objs[output.obj_name], BaseProcessingObj):
+                raise ValueError(f'Object {output.obj_name} is not a processing object')
+
             self.objs[output.obj_name].addRemoteOutput(output.output_key, (self.remote_objs_ranks[dest_object], 
                                                                             tag,
                                                                             output.delay))
