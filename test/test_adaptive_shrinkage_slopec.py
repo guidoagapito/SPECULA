@@ -2204,6 +2204,699 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             msg="g_wcog changed with step1_fwhm_pix under the "
                 "two-component template")
 
+    # =====================================================================
+    # relative_gate_enable (2026-09-17): opt-in, default-False relative/
+    # self-normalising confidence gate. See the class docstring's
+    # relative_gate_enable entry for the full design rationale.
+    # =====================================================================
+
+    @cpu_and_gpu
+    def test_relative_gate_disabled_is_bit_for_bit_inert_and_matches_classic_formula(self, target_device_idx, xp):
+        """
+        relative_gate_enable=False (the default) must be exactly the
+        pre-2026-09-17 behaviour: margin_out stays identically 0 and
+        rho_sq_ceiling stays identically at its init value (k_wiener) across
+        several varying frames, REGARDLESS of how aggressively the other new
+        relative_gate_* knobs are set (same "new knob is inert" pattern as
+        test_stuck_detector_and_both_fixes_default_inert /
+        test_subpixel_peak_refine_default_false_is_pure_no_op) -- an
+        aggressive-but-disabled instance must emit bit-for-bit identical
+        slopes to the plain default instance.
+
+        Separately, with the EMA lag removed (w_ema_alpha=1.0, so
+        w_out == w_raw exactly after one frame), the emitted gain must equal
+        the classic absolute formula rho_sq / (rho_sq + k_wiener) computed
+        independently here from the class's own out_rho_sq telemetry --
+        pinning down that the disabled path truly depends only on k_wiener,
+        not on anything relative-gate-specific.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_default, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_aggressive, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_default = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_aggressive = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        common = dict(fwhm_pix=1.5, k_wiener=10.0, ron_e=1.0, w_ema_alpha=0.2,
+                     target_device_idx=target_device_idx)
+        slopec_default = AdaptiveShrinkageSlopec(subapdata_default, **common)
+        # Every relative_gate_* knob pushed to an aggressive, would-visibly-
+        # fire-if-live value, but the flag itself stays False.
+        slopec_aggressive = AdaptiveShrinkageSlopec(
+            subapdata_aggressive,
+            relative_gate_enable=False,
+            relative_gate_k_rel=100.0,
+            relative_gate_margin_thresh=-1.0,   # would arm the ceiling update on every frame if live
+            relative_gate_margin_exclude_radius_px=0.0,
+            relative_gate_ema_alpha=1.0,        # would replace the ceiling every frame if live
+            relative_gate_ceiling_init=999.0,   # would be blatantly visible on the emitted gain if live
+            **common)
+        slopec_default.inputs['in_pixels'].set(pixels_default)
+        slopec_aggressive.inputs['in_pixels'].set(pixels_aggressive)
+
+        rng = np.random.RandomState(2026_09_17)
+        for i in range(1, 11):
+            flux = float(rng.choice([0.0, 1.0, 10.0, 1e3, 1e5]))
+            shift_dx = float(rng.uniform(-0.4, 0.4))
+            shift_dy = float(rng.uniform(-0.4, 0.4))
+            noise_std = float(rng.uniform(0.0, 1.5))
+            frame = self.generate_spots(ccd_shape, subapdata_default, xp, flux=flux, bg=0.5,
+                                        shift_dx=shift_dx, shift_dy=shift_dy,
+                                        noise_std=noise_std)
+            self._run_frame(slopec_default, pixels_default, frame, t * i)
+            self._run_frame(slopec_aggressive, pixels_aggressive, frame, t * i)
+
+            # Each instance's own construction-time ceiling value: the
+            # default instance falls back to k_wiener (no
+            # relative_gate_ceiling_init passed), while the aggressive
+            # instance explicitly set relative_gate_ceiling_init=999.0 --
+            # that constructor-time init always applies regardless of
+            # relative_gate_enable, only its later MUTATION is gated. So
+            # the two instances are expected to sit at DIFFERENT constants,
+            # each unchanged from its own init value.
+            expected_ceiling = {id(slopec_default): 10.0, id(slopec_aggressive): 999.0}
+            for slopec, label in ((slopec_default, "default"), (slopec_aggressive, "aggressive-but-disabled")):
+                # out_margin (see __init__: self.margin_out is only ever
+                # written under "if self.relative_gate_enable") is left at
+                # its zero-initialized default and never touched while
+                # disabled -- checking it is identically 0 doubles as
+                # confirming that code path never runs.
+                margin = cpuArray(slopec.outputs['out_margin'].value)
+                np.testing.assert_array_equal(margin, np.zeros_like(margin),
+                    err_msg=f"frame {i} ({label}): margin_out is not identically 0 "
+                            f"with relative_gate_enable=False")
+                # The actual persistent state (self.rho_sq_ceiling) must stay
+                # at its own init value -- NOT the out_rho_sq_ceiling
+                # telemetry copy, which (like margin_out) is only ever
+                # synced from it under "if self.relative_gate_enable" and so
+                # stays at ITS OWN zero-initialized default while disabled
+                # (see the OutputDesc docstring: "unused unless
+                # relative_gate_enable=True").
+                ceiling = cpuArray(slopec.rho_sq_ceiling)
+                np.testing.assert_array_equal(ceiling, np.full_like(ceiling, expected_ceiling[id(slopec)]),
+                    err_msg=f"frame {i} ({label}): rho_sq_ceiling moved away from "
+                            f"its init value with relative_gate_enable=False")
+
+            xd = cpuArray(slopec_default.outputs['out_slopes'].xslopes)
+            xa = cpuArray(slopec_aggressive.outputs['out_slopes'].xslopes)
+            yd = cpuArray(slopec_default.outputs['out_slopes'].yslopes)
+            ya = cpuArray(slopec_aggressive.outputs['out_slopes'].yslopes)
+            np.testing.assert_allclose(xa, xd, atol=1e-9, rtol=0,
+                err_msg=f"frame {i}: xslopes diverged between default and "
+                        f"aggressive-but-disabled instances -- relative_gate_enable=False "
+                        f"is not fully inert")
+            np.testing.assert_allclose(ya, yd, atol=1e-9, rtol=0,
+                err_msg=f"frame {i}: yslopes diverged between default and "
+                        f"aggressive-but-disabled instances -- relative_gate_enable=False "
+                        f"is not fully inert")
+
+        # Classic absolute-formula check, EMA lag removed.
+        subapdata_formula, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_formula = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec_formula = AdaptiveShrinkageSlopec(subapdata_formula, fwhm_pix=1.5, k_wiener=10.0,
+                                                 ron_e=1.0, w_ema_alpha=1.0,
+                                                 target_device_idx=target_device_idx)
+        slopec_formula.inputs['in_pixels'].set(pixels_formula)
+        frame = self.generate_spots(ccd_shape, subapdata_formula, xp, flux=200.0, bg=0.5, noise_std=0.5)
+        self._run_frame(slopec_formula, pixels_formula, frame, t)
+
+        rho_sq = cpuArray(slopec_formula.outputs['out_rho_sq'].value)
+        expected_w = rho_sq / (rho_sq + 10.0)
+        actual_w = cpuArray(slopec_formula.w_out)
+        np.testing.assert_allclose(actual_w, expected_w, atol=1e-6,
+            err_msg="Disabled relative gate did not reproduce the classic "
+                    "absolute formula rho_sq / (rho_sq + k_wiener)")
+
+    @cpu_and_gpu
+    def test_relative_gate_ceiling_init_defaults_to_k_wiener_or_explicit_value(self, target_device_idx, xp):
+        """
+        rho_sq_ceiling (see relative_gate_ceiling_init docstring) must equal
+        k_wiener itself at construction when relative_gate_ceiling_init is
+        left at its default None, for any k_wiener value -- and must equal
+        the explicit value when one is passed, regardless of k_wiener.
+        Checked before any frame is run (construction-time state only).
+        """
+        subap_npx = 16
+        subapdata_a, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_c, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+
+        slopec_default_k10 = AdaptiveShrinkageSlopec(subapdata_a, relative_gate_enable=True,
+                                                     k_wiener=10.0, target_device_idx=target_device_idx)
+        slopec_default_k25 = AdaptiveShrinkageSlopec(subapdata_b, relative_gate_enable=True,
+                                                     k_wiener=25.0, target_device_idx=target_device_idx)
+        slopec_explicit = AdaptiveShrinkageSlopec(subapdata_c, relative_gate_enable=True,
+                                                  k_wiener=10.0, relative_gate_ceiling_init=7.5,
+                                                  target_device_idx=target_device_idx)
+
+        np.testing.assert_array_equal(cpuArray(slopec_default_k10.rho_sq_ceiling),
+            np.full(subapdata_a.n_subaps, 10.0),
+            err_msg="rho_sq_ceiling did not default-initialise to k_wiener=10.0")
+        np.testing.assert_array_equal(cpuArray(slopec_default_k25.rho_sq_ceiling),
+            np.full(subapdata_b.n_subaps, 25.0),
+            err_msg="rho_sq_ceiling did not default-initialise to k_wiener=25.0")
+        np.testing.assert_array_equal(cpuArray(slopec_explicit.rho_sq_ceiling),
+            np.full(subapdata_c.n_subaps, 7.5),
+            err_msg="rho_sq_ceiling did not honour an explicit "
+                    "relative_gate_ceiling_init, using k_wiener instead")
+
+    @cpu_and_gpu
+    def test_relative_gate_ceiling_updates_only_on_high_margin_frames(self, target_device_idx, xp):
+        """
+        rho_sq_ceiling must update by the documented EMA
+        ((1-alpha)*ceiling + alpha*rho_sq) exactly on a frame whose OWN
+        margin exceeds relative_gate_margin_thresh, using that SAME frame's
+        own rho_sq (Step 1's margin and Step 3's rho_sq/ceiling-update both
+        run on the same frame's pixel data -- there is no one-frame lag),
+        and must stay EXACTLY unchanged on a frame whose margin does not
+        clear the threshold. Checked algebraically frame-by-frame using the
+        class's own out_margin/out_rho_sq telemetry, not assumed.
+
+        A single bright, clean, centred spot gives a high margin (~0.9+,
+        matches the manual sanity check in the handoff); two equal-height,
+        well-separated Gaussian spots give a genuine tie (margin ~0) -- the
+        same construction as the dedicated tied-peak edge case below.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        np_sub = subapdata.np_sub
+
+        def two_spot_frame(spots):
+            """spots: list of (flux, shift_dx, shift_dy) summed into one
+            np_sub x np_sub frame (single sub-aperture covering the whole
+            array, as in the default get_test_setup())."""
+            cntrd = (np_sub - 1) / 2.0
+            xg = np.arange(np_sub) - cntrd
+            yg = np.arange(np_sub) - cntrd
+            xx0, yy0 = np.meshgrid(xg, yg)
+            sigma = 1.5 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            ccd = np.zeros((np_sub, np_sub), dtype=np.float32)
+            for flux, shift_dx, shift_dy in spots:
+                xx = xx0 - shift_dx
+                yy = yy0 - shift_dy
+                gaussian = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+                gaussian = (gaussian / np.sum(gaussian)) * flux
+                ccd += gaussian
+            return xp.asarray(ccd)
+
+        bright_frame = two_spot_frame([(1e4, 0.0, 0.0)])
+        tie_frame = two_spot_frame([(500.0, -4.0, 0.0), (500.0, 4.0, 0.0)])
+
+        margin_thresh = 0.5
+        ema_alpha = 0.05
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, k_wiener=10.0, ron_e=1.0,
+                                         relative_gate_enable=True,
+                                         relative_gate_margin_thresh=margin_thresh,
+                                         relative_gate_ema_alpha=ema_alpha,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        ceiling_before = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        self.assertAlmostEqual(ceiling_before, 10.0, places=9)
+
+        # Frame 1: bright, clean, high-margin.
+        self._run_frame(slopec, pixels, bright_frame, t * 1)
+        margin1 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
+        rho_sq1 = float(cpuArray(slopec.outputs['out_rho_sq'].value)[0])
+        ceiling1 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        self.assertGreater(margin1, margin_thresh,
+                           "Test setup assumption violated: expected a high-margin frame")
+        expected_ceiling1 = (1.0 - ema_alpha) * ceiling_before + ema_alpha * rho_sq1
+        self.assertAlmostEqual(ceiling1, expected_ceiling1, places=5,
+            msg="rho_sq_ceiling did not update by the documented EMA on a "
+                "high-margin frame")
+        self.assertNotAlmostEqual(ceiling1, ceiling_before, places=6,
+            msg="Test setup assumption violated: ceiling should have moved "
+                "measurably away from its init value")
+
+        # Frame 2: genuine tie, low margin -- ceiling must stay exactly put.
+        self._run_frame(slopec, pixels, tie_frame, t * 2)
+        margin2 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
+        ceiling2 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        self.assertLess(margin2, margin_thresh,
+                        "Test setup assumption violated: expected a low-margin (tied) frame")
+        self.assertEqual(ceiling2, ceiling1,
+                         "rho_sq_ceiling changed on a below-threshold-margin frame")
+
+        # Frame 3: bright again -- ceiling must update again, this time
+        # relative to ceiling2 (== ceiling1), using frame 3's own rho_sq.
+        self._run_frame(slopec, pixels, bright_frame, t * 3)
+        margin3 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
+        rho_sq3 = float(cpuArray(slopec.outputs['out_rho_sq'].value)[0])
+        ceiling3 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        self.assertGreater(margin3, margin_thresh)
+        expected_ceiling3 = (1.0 - ema_alpha) * ceiling2 + ema_alpha * rho_sq3
+        self.assertAlmostEqual(ceiling3, expected_ceiling3, places=5,
+            msg="rho_sq_ceiling did not update by the documented EMA on a "
+                "second high-margin frame")
+
+    @cpu_and_gpu
+    def test_relative_gate_ceiling_updates_independently_per_subaperture(self, target_device_idx, xp):
+        """
+        Reproduces the manual multi-subaperture finding in the handoff: in a
+        2x2 sub-aperture grid, each sub-aperture's rho_sq_ceiling must update
+        (or not) based purely on its OWN margin, independent of the other
+        three. Deterministic construction (no noise, no reliance on flux-
+        driven SNR variability, hence no flakiness): sub-apertures 0 and 1
+        each get a single bright, clean, centred spot (high margin); 2 gets
+        two equal-height, well-separated spots (a genuine tie, margin ~0);
+        3 gets no spot at all (zero flux, margin exactly 0 -- the
+        best_val==0 branch). Only 0 and 1's ceilings should move.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx, n_sub_side=2)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        self.assertEqual(subapdata.n_subaps, 4)
+        np_sub = subapdata.np_sub
+
+        def build_multi_subap_frame(spot_specs):
+            """spot_specs: {subap_index: [(flux, shift_dx, shift_dy), ...]}.
+            Missing indices get an all-zero region. Mirrors generate_spots()'s
+            per-subaperture embedding via subapdata.idxs, but allows a
+            different spot configuration per sub-aperture."""
+            ccd = np.zeros(ccd_shape, dtype=np.float32)
+            cntrd = (np_sub - 1) / 2.0
+            xg = np.arange(np_sub) - cntrd
+            yg = np.arange(np_sub) - cntrd
+            xx0, yy0 = np.meshgrid(xg, yg)
+            sigma = 1.5 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+
+            for k in range(subapdata.n_subaps):
+                idx_1d = cpuArray(subapdata.idxs[k])
+                iy, ix = np.unravel_index(idx_1d, ccd_shape)
+                min_y, max_y = np.min(iy), np.max(iy) + 1
+                min_x, max_x = np.min(ix), np.max(ix) + 1
+                for flux, shift_dx, shift_dy in spot_specs.get(k, []):
+                    xx = xx0 - shift_dx
+                    yy = yy0 - shift_dy
+                    gaussian = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+                    gaussian = (gaussian / np.sum(gaussian)) * flux
+                    ccd[min_y:max_y, min_x:max_x] += gaussian
+            return xp.asarray(ccd)
+
+        spot_specs = {
+            0: [(1000.0, 0.0, 0.0)],
+            1: [(1000.0, 0.0, 0.0)],
+            2: [(500.0, -3.0, 0.0), (500.0, 3.0, 0.0)],
+            3: [],  # zero flux
+        }
+        frame = build_multi_subap_frame(spot_specs)
+
+        k_wiener = 10.0
+        margin_thresh = 0.5
+        ema_alpha = 0.05
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, k_wiener=k_wiener, ron_e=0.0,
+                                         relative_gate_enable=True,
+                                         relative_gate_margin_thresh=margin_thresh,
+                                         relative_gate_ema_alpha=ema_alpha,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        self._run_frame(slopec, pixels, frame, t)
+
+        margin = cpuArray(slopec.outputs['out_margin'].value)
+        rho_sq = cpuArray(slopec.outputs['out_rho_sq'].value)
+        ceiling = cpuArray(slopec.rho_sq_ceiling)
+
+        self.assertGreater(margin[0], margin_thresh, "subap 0 (bright) should have a high margin")
+        self.assertGreater(margin[1], margin_thresh, "subap 1 (bright) should have a high margin")
+        self.assertLessEqual(margin[2], margin_thresh, "subap 2 (tie) should have a low margin")
+        self.assertEqual(margin[3], 0.0, "subap 3 (zero flux) should have margin exactly 0")
+
+        expected_ceiling_0 = (1.0 - ema_alpha) * k_wiener + ema_alpha * rho_sq[0]
+        expected_ceiling_1 = (1.0 - ema_alpha) * k_wiener + ema_alpha * rho_sq[1]
+        self.assertAlmostEqual(ceiling[0], expected_ceiling_0, places=5,
+            msg="subap 0's ceiling did not update per its own high margin")
+        self.assertAlmostEqual(ceiling[1], expected_ceiling_1, places=5,
+            msg="subap 1's ceiling did not update per its own high margin")
+        self.assertEqual(ceiling[2], k_wiener,
+                         "subap 2's ceiling moved despite a low (tied) margin -- "
+                         "not independent of the bright sub-apertures")
+        self.assertEqual(ceiling[3], k_wiener,
+                         "subap 3's ceiling moved despite zero flux/margin -- "
+                         "not independent of the bright sub-apertures")
+
+    @cpu_and_gpu
+    def test_relative_gate_gain_formula_differs_from_absolute_gate(self, target_device_idx, xp):
+        """
+        For the SAME frame (hence the same rho_sq, verified directly), the
+        relative gate's emitted gain must equal
+        rho_sq / (rho_sq + relative_gate_k_rel * rho_sq_ceiling), computed
+        independently here, and the absolute gate's must equal
+        rho_sq / (rho_sq + k_wiener) -- and, with the ceiling driven well
+        above k_wiener, the relative gate's gain must come out strictly
+        LOWER (a bigger ceiling is a stricter relative bar), matching the
+        sign derived from the two formulas rather than assumed.
+
+        Uses w_ema_alpha=1.0 (no EMA lag, so w_out == w_raw exactly) and
+        relative_gate_ema_alpha=1.0 during a warm-up frame so the ceiling is
+        set to EXACTLY that warm-up frame's own rho_sq (a known, very high
+        value). The comparison frame is a genuine tie (margin ~0, verified
+        below threshold), so the ceiling is guaranteed frozen at the warm-up
+        value while w_raw is computed for the comparison frame.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_abs, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_rel, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_abs = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_rel = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        np_sub = subapdata_abs.np_sub
+
+        def two_spot_frame(spots):
+            cntrd = (np_sub - 1) / 2.0
+            xg = np.arange(np_sub) - cntrd
+            yg = np.arange(np_sub) - cntrd
+            xx0, yy0 = np.meshgrid(xg, yg)
+            sigma = 1.5 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            ccd = np.zeros((np_sub, np_sub), dtype=np.float32)
+            for flux, shift_dx, shift_dy in spots:
+                xx = xx0 - shift_dx
+                yy = yy0 - shift_dy
+                gaussian = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+                gaussian = (gaussian / np.sum(gaussian)) * flux
+                ccd += gaussian
+            return xp.asarray(ccd)
+
+        k_wiener = 10.0
+        k_rel = 0.3
+        common = dict(fwhm_pix=1.5, k_wiener=k_wiener, ron_e=1.0, w_ema_alpha=1.0,
+                     target_device_idx=target_device_idx)
+        slopec_abs = AdaptiveShrinkageSlopec(subapdata_abs, relative_gate_enable=False, **common)
+        slopec_rel = AdaptiveShrinkageSlopec(subapdata_rel, relative_gate_enable=True,
+                                             relative_gate_k_rel=k_rel,
+                                             relative_gate_margin_thresh=0.5,
+                                             relative_gate_ema_alpha=1.0,
+                                             **common)
+        slopec_abs.inputs['in_pixels'].set(pixels_abs)
+        slopec_rel.inputs['in_pixels'].set(pixels_rel)
+
+        # Warm-up: single bright, clean, high-margin spot -- with
+        # relative_gate_ema_alpha=1.0 this sets rho_sq_ceiling to EXACTLY
+        # this frame's own rho_sq.
+        warmup_frame = two_spot_frame([(1e6, 0.0, 0.0)])
+        self._run_frame(slopec_rel, pixels_rel, warmup_frame, t * 1)
+        warmup_margin = float(cpuArray(slopec_rel.outputs['out_margin'].value)[0])
+        self.assertGreater(warmup_margin, 0.5,
+                           "Test setup assumption violated: expected a high-margin warm-up frame")
+        ceiling_frozen = float(cpuArray(slopec_rel.rho_sq_ceiling)[0])
+        self.assertGreater(ceiling_frozen, 100.0 * k_wiener,
+                           "Test setup assumption violated: expected the warm-up ceiling "
+                           "to be driven well above k_wiener")
+
+        # Comparison frame: a genuine tie, fed identically to both instances.
+        tie_frame = two_spot_frame([(500.0, -4.0, 0.0), (500.0, 4.0, 0.0)])
+        self._run_frame(slopec_abs, pixels_abs, tie_frame, t * 2)
+        self._run_frame(slopec_rel, pixels_rel, tie_frame, t * 2)
+
+        comparison_margin = float(cpuArray(slopec_rel.outputs['out_margin'].value)[0])
+        self.assertLess(comparison_margin, 0.5,
+                        "Test setup assumption violated: expected the comparison "
+                        "frame's margin to stay below threshold (ceiling must not "
+                        "move on this frame)")
+        ceiling_after_comparison = float(cpuArray(slopec_rel.rho_sq_ceiling)[0])
+        self.assertEqual(ceiling_after_comparison, ceiling_frozen,
+                         "rho_sq_ceiling moved on the (low-margin) comparison frame -- "
+                         "it is no longer frozen at the warm-up value")
+
+        rho_sq_abs = float(cpuArray(slopec_abs.outputs['out_rho_sq'].value)[0])
+        rho_sq_rel = float(cpuArray(slopec_rel.outputs['out_rho_sq'].value)[0])
+        np.testing.assert_allclose(rho_sq_rel, rho_sq_abs, rtol=1e-6,
+            err_msg="rho_sq differs between the absolute- and relative-gate "
+                    "instances on the identical comparison frame -- rho_sq "
+                    "itself must not depend on relative_gate_enable")
+
+        expected_w_abs = rho_sq_abs / (rho_sq_abs + k_wiener)
+        expected_w_rel = rho_sq_rel / (rho_sq_rel + k_rel * ceiling_frozen)
+        actual_w_abs = float(cpuArray(slopec_abs.w_out)[0])
+        actual_w_rel = float(cpuArray(slopec_rel.w_out)[0])
+
+        self.assertAlmostEqual(actual_w_abs, expected_w_abs, places=6,
+            msg="Absolute-gate w_out did not match rho_sq / (rho_sq + k_wiener)")
+        self.assertAlmostEqual(actual_w_rel, expected_w_rel, places=6,
+            msg="Relative-gate w_out did not match rho_sq / (rho_sq + "
+                "k_rel * rho_sq_ceiling)")
+        self.assertLess(actual_w_rel, actual_w_abs,
+            "Relative gate did not give a strictly lower gain than the "
+            "absolute gate despite a ceiling driven far above k_wiener")
+
+    @cpu_and_gpu
+    def test_relative_gate_all_dark_frame_gives_zero_margin_no_nan(self, target_device_idx, xp):
+        """
+        Edge case explicitly called out in the handoff: a literal all-dark
+        (zero flux, zero noise, zero background) frame with
+        relative_gate_enable=True must not crash or emit NaN/Inf, and must
+        give margin exactly 0 (the best_val==0 branch, guarding the division
+        that would otherwise be 0/0) -- this exercises the div-by-zero fix
+        already applied to the new code (an xp.where-based safe denominator).
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         relative_gate_enable=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        zero_frame = xp.zeros(ccd_shape, dtype=xp.float32)
+        try:
+            self._run_frame(slopec, pixels, zero_frame, t)
+        except Exception as e:  # pragma: no cover - failure path
+            self.fail(f"AdaptiveShrinkageSlopec raised on an all-dark frame "
+                      f"with relative_gate_enable=True: {e!r}")
+
+        margin = cpuArray(slopec.outputs['out_margin'].value)
+        xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
+        yslopes = cpuArray(slopec.outputs['out_slopes'].yslopes)
+        w_out = cpuArray(slopec.w_out)
+        ceiling = cpuArray(slopec.outputs['out_rho_sq_ceiling'].value)
+
+        np.testing.assert_array_equal(margin, np.zeros_like(margin),
+            err_msg="margin was not exactly 0 on an all-dark frame")
+        self.assertTrue(np.all(np.isfinite(xslopes)) and np.all(np.isfinite(yslopes)),
+                        "NaN/Inf in emitted slopes on an all-dark frame")
+        self.assertTrue(np.all(np.isfinite(w_out)), "NaN/Inf in w_out on an all-dark frame")
+        self.assertTrue(np.all(np.isfinite(ceiling)), "NaN/Inf in rho_sq_ceiling on an all-dark frame")
+
+    @cpu_and_gpu
+    def test_relative_gate_tied_peaks_give_near_zero_margin(self, target_device_idx, xp):
+        """
+        Two exactly-equal-height, well-separated Gaussian spots are a
+        genuine tie: Step 1's own winning peak and the best competing value
+        elsewhere (outside the exclusion disk) are then (numerically) the
+        same value, so margin = (best - second) / |best| must land at or
+        very near 0 -- reproducing the manual sanity check in the handoff.
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        np_sub = subapdata.np_sub
+
+        cntrd = (np_sub - 1) / 2.0
+        xg = np.arange(np_sub) - cntrd
+        yg = np.arange(np_sub) - cntrd
+        xx0, yy0 = np.meshgrid(xg, yg)
+        sigma = 1.5 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        ccd = np.zeros((np_sub, np_sub), dtype=np.float32)
+        for shift_dx in (-4.0, 4.0):
+            xx = xx0 - shift_dx
+            gaussian = np.exp(-(xx**2 + yy0**2) / (2 * sigma**2))
+            gaussian = (gaussian / np.sum(gaussian)) * 500.0
+            ccd += gaussian
+        tie_frame = xp.asarray(ccd)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                         relative_gate_enable=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+        self._run_frame(slopec, pixels, tie_frame, t)
+
+        margin = cpuArray(slopec.outputs['out_margin'].value)
+        self.assertTrue(np.all(np.abs(margin) < 0.05),
+                        f"Expected a near-zero margin for a genuine tie, got {margin}")
+
+    @cpu_and_gpu
+    def test_relative_gate_margin_exclude_radius_treats_near_bump_as_same_lobe(self, target_device_idx, xp):
+        """
+        relative_gate_margin_exclude_radius_px behaviour (see its docstring):
+        a competing bump placed WITHIN the exclusion radius of the winning
+        peak must be treated as part of that peak's own shoulder (excluded
+        from the margin search), while one placed OUTSIDE it must be counted
+        as a genuine competitor.
+
+        Baseline: a single spot alone gives some margin. Adding a lower
+        (but non-trivial) competing bump 1px away (inside the default 3.0px
+        exclusion radius) must leave the margin close to baseline; the same
+        bump placed 4.5px away (outside) must pull the margin down clearly.
+
+        The "inside" offset is chosen close to the winning peak (not right
+        at the exclusion boundary): a competing Gaussian bump's OWN
+        correlation footprint has a width comparable to the exclusion
+        radius itself, so a bump sitting right at ~2-3px still leaks a
+        measurable tail past the boundary and is partially counted --
+        this is an inherent property of a fixed-radius exclusion disk
+        applied to a smooth (not delta-function) correlation feature, not a
+        bug in the exclusion logic, but it means the clean "fully excluded"
+        regime is only reached well inside the radius (verified empirically
+        at 1px: margin within ~0.02 of baseline).
+        """
+        subap_npx, t = 16, int(1e9)
+        np_sub = subap_npx
+
+        def margin_for(offsets_and_fluxes):
+            subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+            pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+            cntrd = (np_sub - 1) / 2.0
+            xg = np.arange(np_sub) - cntrd
+            yg = np.arange(np_sub) - cntrd
+            xx0, yy0 = np.meshgrid(xg, yg)
+            sigma = 1.5 / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            ccd = np.zeros((np_sub, np_sub), dtype=np.float32)
+            for flux, shift_dx in offsets_and_fluxes:
+                xx = xx0 - shift_dx
+                gaussian = np.exp(-(xx**2 + yy0**2) / (2 * sigma**2))
+                gaussian = (gaussian / np.sum(gaussian)) * flux
+                ccd += gaussian
+            frame = xp.asarray(ccd)
+
+            slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
+                                             relative_gate_enable=True,
+                                             relative_gate_margin_exclude_radius_px=3.0,
+                                             target_device_idx=target_device_idx)
+            slopec.inputs['in_pixels'].set(pixels)
+            self._run_frame(slopec, pixels, frame, t)
+            return float(cpuArray(slopec.outputs['out_margin'].value)[0])
+
+        baseline_margin = margin_for([(1000.0, 0.0)])
+        inside_margin = margin_for([(1000.0, 0.0), (700.0, 1.0)])     # 1px, well inside 3.0px radius
+        outside_margin = margin_for([(1000.0, 0.0), (700.0, 4.5)])    # 4.5px, clearly outside
+
+        self.assertAlmostEqual(inside_margin, baseline_margin, delta=0.05,
+            msg=f"A competing bump WELL WITHIN the exclusion radius changed the "
+                f"margin more than expected (baseline={baseline_margin}, "
+                f"inside={inside_margin}) -- it should be treated as the winning "
+                f"peak's own shoulder")
+        self.assertLess(outside_margin, baseline_margin - 0.3,
+            f"A competing bump OUTSIDE the exclusion radius did not reduce the "
+            f"margin (baseline={baseline_margin}, outside={outside_margin}) -- "
+            f"it should count as a genuine competitor")
+        self.assertGreater(inside_margin, outside_margin + 0.3,
+            f"Expected a clearly higher margin when the competing bump is "
+            f"excluded than when it is counted (inside={inside_margin}, "
+            f"outside={outside_margin})")
+
+    @cpu_and_gpu
+    def test_relative_gate_telemetry_outputs_wired_correctly(self, target_device_idx, xp):
+        """
+        out_margin/out_rho_sq_ceiling (2026-09-17) must be registered in
+        output_names() and in self.outputs as BaseValue instances, one value
+        per sub-aperture, and their .value must match the internal
+        margin_out/rho_sq_ceiling_out buffers after a frame -- same
+        registration/verification pattern as
+        test_x_c_y_c_outputs_exist_with_correct_type_and_shape /
+        test_x_c_y_c_populated_by_trigger_code.
+        """
+        subap_npx, t = 8, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx, n_sub_side=2)
+        n_subaps = subapdata.n_subaps
+        self.assertEqual(n_subaps, 4)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        output_desc = AdaptiveShrinkageSlopec.output_names()
+        self.assertIn('out_margin', output_desc)
+        self.assertIn('out_rho_sq_ceiling', output_desc)
+        self.assertIs(output_desc['out_margin'].type, BaseValue)
+        self.assertIs(output_desc['out_rho_sq_ceiling'].type, BaseValue)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         relative_gate_enable=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        for name in ('out_margin', 'out_rho_sq_ceiling'):
+            self.assertIn(name, slopec.outputs, f"{name} missing from self.outputs")
+            self.assertIsInstance(slopec.outputs[name], BaseValue,
+                                  f"{name} is not a BaseValue instance")
+            self.assertEqual(slopec.outputs[name].value.shape, (n_subaps,),
+                             f"{name} does not have one value per sub-aperture")
+
+        frame = self.generate_spots(ccd_shape, subapdata, xp, flux=1e4, bg=0.0)
+        self._run_frame(slopec, pixels, frame, t)
+
+        margin_value = cpuArray(slopec.outputs['out_margin'].value)
+        ceiling_value = cpuArray(slopec.outputs['out_rho_sq_ceiling'].value)
+        np.testing.assert_array_equal(margin_value, cpuArray(slopec.margin_out),
+            err_msg="out_margin.value does not match the internal margin_out buffer")
+        np.testing.assert_array_equal(ceiling_value, cpuArray(slopec.rho_sq_ceiling_out),
+            err_msg="out_rho_sq_ceiling.value does not match the internal "
+                    "rho_sq_ceiling_out buffer")
+        np.testing.assert_array_equal(ceiling_value, cpuArray(slopec.rho_sq_ceiling),
+            err_msg="out_rho_sq_ceiling.value does not match the actual "
+                    "persistent rho_sq_ceiling state")
+
+        self.assertEqual(slopec.outputs['out_margin'].generation_time, t)
+        self.assertEqual(slopec.outputs['out_rho_sq_ceiling'].generation_time, t)
+
+    @cpu_and_gpu
+    def test_relative_gate_no_exceptions_or_nan_across_full_flux_sweep(self, target_device_idx, xp):
+        """
+        Same flux sweep (including a literal all-zero frame) and structure
+        as test_no_exceptions_or_nan_across_full_flux_sweep_including_exact_zero,
+        but with relative_gate_enable=True -- catches numerical edge cases
+        (e.g. xp.inf/xp.where broadcasting or int32/float32 handling under
+        cupy) that the handoff's manual spot-checks (5 flux levels only)
+        might have missed. Additionally checks margin/rho_sq_ceiling stay
+        finite and the ceiling never goes negative throughout.
+        """
+        np.random.seed(1234)
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
+                                         relative_gate_enable=True,
+                                         target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        flux_sweep = [1e6, 1e4, 1e2, 10.0, 1.0, 0.1, 0.0, 0.0]
+        for i, flux in enumerate(flux_sweep, start=1):
+            noise_std = 0.5 if flux > 0 else 0.0
+            frame = self.generate_spots(ccd_shape, subapdata, xp, flux=flux, bg=1.0,
+                                        noise_std=noise_std)
+            try:
+                self._run_frame(slopec, pixels, frame, t * i)
+            except Exception as e:  # pragma: no cover - failure path
+                self.fail(f"AdaptiveShrinkageSlopec (relative_gate_enable=True) "
+                          f"raised at flux={flux}: {e!r}")
+
+            xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
+            yslopes = cpuArray(slopec.outputs['out_slopes'].yslopes)
+            w_out = cpuArray(slopec.w_out)
+            margin = cpuArray(slopec.outputs['out_margin'].value)
+            ceiling = cpuArray(slopec.outputs['out_rho_sq_ceiling'].value)
+
+            self.assertTrue(np.all(np.isfinite(xslopes)), f"NaN/Inf in xslopes at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(yslopes)), f"NaN/Inf in yslopes at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(w_out)), f"NaN/Inf in w_out at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(margin)), f"NaN/Inf in margin at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(ceiling)), f"NaN/Inf in rho_sq_ceiling at flux={flux}")
+            self.assertTrue(np.all(w_out >= -1e-9) and np.all(w_out <= 1.0 + 1e-9),
+                            f"w_out out of [0, 1] at flux={flux}: {w_out}")
+            self.assertTrue(np.all(ceiling >= -1e-9), f"rho_sq_ceiling went negative at flux={flux}: {ceiling}")
+
+        # The literal all-zero (no background either) frame is the strictest case.
+        zero_frame = xp.zeros(ccd_shape, dtype=xp.float32)
+        self._run_frame(slopec, pixels, zero_frame, t * (len(flux_sweep) + 1))
+        xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
+        yslopes = cpuArray(slopec.outputs['out_slopes'].yslopes)
+        w_out = cpuArray(slopec.w_out)
+        margin = cpuArray(slopec.outputs['out_margin'].value)
+        self.assertTrue(np.all(np.isfinite(xslopes)) and np.all(np.isfinite(yslopes)),
+                        "NaN/Inf on a literal all-zero frame")
+        self.assertTrue(np.all(np.isfinite(w_out)), "NaN/Inf in w_out on a literal all-zero frame")
+        np.testing.assert_array_equal(margin, np.zeros_like(margin),
+            err_msg="margin was not exactly 0 on a literal all-zero frame")
+
 
 if __name__ == '__main__':
     unittest.main()
