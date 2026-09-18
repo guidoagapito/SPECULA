@@ -1,6 +1,7 @@
 from specula.base_processing_obj import OutputDesc
 from specula.base_value import BaseValue
 from specula.data_objects.subap_data import SubapData
+from specula.lib.confidence_gates import build_confidence_gate
 from specula.lib.utils import unravel_index_2d
 from specula.processing_objects.slopec import Slopec
 
@@ -245,70 +246,47 @@ class AdaptiveShrinkageSlopec(Slopec):
         step through calc_slopes_nofor() eagerly every frame) or on CPU,
         where it is a no-op regardless (BaseProcessingObj.build_stream() only
         acts when target_device_idx >= 0).
-    relative_gate_enable : bool [1]
-        When True, replace the absolute SNR gate (`rho_sq/(rho_sq +
-        k_wiener)`) with a RELATIVE one, self-normalising to the best
-        recently-achievable quality instead of a single fixed constant
-        (2026-09-17). Default False, bit-for-bit identical to prior
-        behaviour. Motivation: a fixed `k_wiener` (or, equivalently, a
-        fixed temporal-filter gain -- both were shown to move the same
+    gate_type : str [1]
+        Which Step-3 confidence-gate strategy to use (2026-09-18,
+        replaces the earlier `relative_gate_enable` flag). One of:
+        'wiener' (default) -- the classic fixed-threshold
+        `rho_sq/(rho_sq+k_wiener)` gate, bit-for-bit identical to this
+        class's original behaviour.
+        'relative_ceiling' -- self-normalises to an EMA ceiling of the
+        best recently-achievable `rho_sq` instead of a fixed constant.
+        Motivation: a fixed `k_wiener` (or, equivalently, a fixed
+        temporal-filter gain -- both were shown to move the same
         underlying quantity) can fix one condition while destabilising
         another, and was found NOT to give a clean, universal fix even
         for a single nominal condition across seeds (d30/H=19.5 with
         windshake: G=1.6 fixed 2 of 3 catastrophic seeds but made the
-        third 2x worse) -- the "right" absolute threshold depends on a
-        typical achievable SNR that varies with magnitude, HO-distance,
-        and realisation, none of which a single constant can track.
-        This tracks a per-subaperture EMA `rho_sq_ceiling` of the best
-        recently-seen `rho_sq`, updated ONLY on high-confidence frames
-        (`relative_gate_margin_thresh`), and gates relative to that
-        ceiling instead: `w_raw = rho_sq / (rho_sq +
-        relative_gate_k_rel * rho_sq_ceiling)`. A frame as good as the
-        recent normal for this condition tends toward gain 1 regardless
-        of the absolute flux level; a frame relatively worse than that
-        (whether from low SNR or Step-1 locking onto the wrong,
-        dimmer/structurally-ambiguous lobe -- see the confusion-
-        mechanism findings this parameter is also motivated by) is
-        discounted proportionally. The ceiling is NOT updated on
-        low-confidence frames specifically so a run of bad frames
-        (e.g. during a windshake episode) does not itself drag the
-        reference down and make the gate complacent about a genuinely
-        degraded run -- it holds the last known-good level and is ready
-        to trust fully again the instant a confident frame reappears.
-        Validated so far only in a toy 1D closed-loop model (consistent
-        win over both no-gate and a fixed absolute gate across every
-        regime and stress level tried, same fixed hyperparameters
-        throughout -- see RESULTS.md) -- NOT yet validated in real
-        closed loop; treat as experimental until it is.
-    relative_gate_k_rel : float [1]
-        Dimensionless ratio in the relative gate's denominator (see
-        relative_gate_enable) -- plays the role `k_wiener` plays in the
-        absolute gate, but relative to `rho_sq_ceiling` instead of a
-        fixed constant, so the same value is intended to transfer across
-        conditions without retuning (not yet confirmed in real closed
-        loop). Only used when relative_gate_enable=True.
-    relative_gate_margin_thresh : float [1]
-        Confidence threshold (see `global_margin`-style diagnostic
-        computed internally from Step 1's own prior-weighted correlation
-        map: (best - best-competing-value-outside-an-exclusion-disk) /
-        best) above which a frame is trusted enough to update
-        `rho_sq_ceiling`. Only used when relative_gate_enable=True.
-    relative_gate_margin_exclude_radius_px : float [pixels]
+        third 2x worse). Validated only in a toy 1D closed-loop model
+        and found to cleanly fix one hard real case (d30/H=19.5 seed=3)
+        but be uniformly harmful for another (d55/H=19.0, because
+        `margin` and `rho_sq` are not well correlated in a uniformly
+        flux-starved regime) -- see RESULTS.md. Treat as experimental.
+        'shifted_sigmoid' -- a 2D `min(S_snr(rho_sq), S_margin(margin))`
+        gate (soft-minimum of two logistic sigmoids), toy-validated to
+        improve tracking over 'wiener' across several stress regimes
+        with much less chattering than a naive product-of-steep-sigmoids
+        design -- see RESULTS.md, "Confidence-gate redesign" section.
+        NOT yet validated in real closed loop.
+        See `specula.lib.confidence_gates` for the full parameter set and
+        design rationale of each gate class.
+    gate_params : dict or None
+        Extra keyword arguments forwarded to the chosen `gate_type`'s
+        constructor (see `specula.lib.confidence_gates`). Ignored (and
+        may be omitted) for the default 'wiener' gate, which only needs
+        `k_wiener` above. Example for 'shifted_sigmoid':
+        `{'boost_mult': 6.0, 'beta_snr': 0.5, 'margin_thresh': 0.25,
+        'beta_margin': 2.0}`.
+    margin_exclude_radius_px : float [pixels]
         Exclusion radius around Step 1's own coarse peak used when
         searching for the best competing correlation value elsewhere in
         the sub-aperture (excludes the peak's own shoulder, not a
-        genuine distant competitor). Only used when
-        relative_gate_enable=True.
-    relative_gate_ema_alpha : float [1]
-        EMA smoothing factor for `rho_sq_ceiling`'s update on a
-        high-confidence frame. Only used when relative_gate_enable=True.
-    relative_gate_ceiling_init : float [1] or None
-        Initial value of `rho_sq_ceiling` before any high-confidence
-        frame has been seen. None (default) initialises it to
-        `k_wiener` itself, so the relative gate's initial behaviour is
-        comparable in scale to the absolute gate's until it adapts,
-        rather than starting from an arbitrary, potentially very wrong,
-        transient. Only used when relative_gate_enable=True.
+        genuine distant competitor), for gate types whose
+        `needs_margin` is True. Unused (and margin is not computed at
+        all) for `gate_type='wiener'`.
     subpixel_peak_refine : bool [1]
         Refine Step 1's coarse peak (x_c/y_c) with a 3-point parabolic
         sub-pixel interpolation on the prior-weighted correlation map,
@@ -379,12 +357,9 @@ class AdaptiveShrinkageSlopec(Slopec):
                  prior_widen_after_frames: int = 1_000_000,
                  stream_enable: bool = True,
                  subpixel_peak_refine: bool = False,
-                 relative_gate_enable: bool = False,
-                 relative_gate_k_rel: float = 0.3,
-                 relative_gate_margin_thresh: float = 0.5,
-                 relative_gate_margin_exclude_radius_px: float = 3.0,
-                 relative_gate_ema_alpha: float = 0.05,
-                 relative_gate_ceiling_init: float = None,
+                 gate_type: str = 'wiener',
+                 gate_params: dict = None,
+                 margin_exclude_radius_px: float = 3.0,
                  **kwargs):
 
         self.subapdata = subapdata
@@ -440,13 +415,14 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.stream_enable = stream_enable
         self.subpixel_peak_refine = subpixel_peak_refine
 
-        # --- Relative/self-normalising confidence gate (2026-09-17, opt-in,
-        # see relative_gate_enable docstring) -----------------------------
-        self.relative_gate_enable = relative_gate_enable
-        self.relative_gate_k_rel = relative_gate_k_rel
-        self.relative_gate_margin_thresh = relative_gate_margin_thresh
-        self.relative_gate_margin_exclude_radius_sq = relative_gate_margin_exclude_radius_px ** 2
-        self.relative_gate_ema_alpha = relative_gate_ema_alpha
+        # --- Pluggable Step-3 confidence gate (2026-09-18, see gate_type
+        # docstring) -- built once here and never swapped, so dispatching
+        # to it every frame (self._gate.compute(...)) is CUDA-graph safe,
+        # same reasoning as the other constructor-time flags below.
+        self.margin_exclude_radius_sq = margin_exclude_radius_px ** 2
+        self._gate = build_confidence_gate(gate_type, xp=xp, n_subaps=n_subaps,
+                                            dtype=self.dtype, k_wiener=k_wiener,
+                                            gate_params=gate_params)
 
         self.outputs['out_subapdata'] = self.subapdata
         self.slopes.single_mask = self.subapdata.single_mask()
@@ -529,15 +505,6 @@ class AdaptiveShrinkageSlopec(Slopec):
         # inert at init even before the first rho_sq is available.
         self.stuck_counter = xp.zeros(n_subaps, dtype=xp.int32)
 
-        # Relative gate's EMA ceiling (2026-09-17, see relative_gate_enable
-        # docstring). Initialised to k_wiener itself (not an arbitrary
-        # value) when relative_gate_ceiling_init is None, so the relative
-        # gate's initial scale is comparable to the absolute gate's before
-        # any high-confidence frame has updated it. Inert (never read)
-        # unless relative_gate_enable=True.
-        ceiling_init_value = k_wiener if relative_gate_ceiling_init is None else relative_gate_ceiling_init
-        self.rho_sq_ceiling = xp.full(n_subaps, ceiling_init_value, dtype=self.dtype)
-
         # Telemetry-only radar
         self.ema_corr = xp.zeros((n_subaps, np_sub, np_sub), dtype=self.dtype)
         self.lock_counter = xp.zeros(n_subaps, dtype=xp.int32)
@@ -593,12 +560,14 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.outputs['out_x_c'] = self.x_c_value
         self.outputs['out_y_c'] = self.y_c_value
 
-        # Relative gate telemetry (2026-09-17): both zero/inert unless
-        # relative_gate_enable=True. TELEMETRY ONLY: rho_sq_ceiling
-        # itself (the actual persistent state read by the gate) is
-        # self.rho_sq_ceiling, allocated above -- this is a copy exposed
-        # as a data_store-capturable output, same split as w_smooth/
-        # w_smooth_value above.
+        # Gate telemetry (2026-09-18): out_margin is zero/inert unless
+        # self._gate.needs_margin; out_rho_sq_ceiling is zero/inert unless
+        # the active gate exposes a 'rho_sq_ceiling' key from its own
+        # telemetry() (currently only RelativeCeilingGate). TELEMETRY
+        # ONLY: any persistent state the gate itself reads (e.g.
+        # RelativeCeilingGate.rho_sq_ceiling) lives on the gate object --
+        # these are copies exposed as data_store-capturable outputs, same
+        # split as w_smooth/w_smooth_value above.
         self.margin_out = xp.zeros(n_subaps, dtype=self.dtype)
         self.rho_sq_ceiling_out = xp.zeros(n_subaps, dtype=self.dtype)
         self.margin_value = BaseValue(value=xp.copy(self.margin_out),
@@ -625,8 +594,8 @@ class AdaptiveShrinkageSlopec(Slopec):
             'out_rho_sq': OutputDesc(BaseValue, 'Detector-model correlation SNR^2 (rho^2) per subaperture (telemetry only)'),
             'out_x_c': OutputDesc(BaseValue, 'Step-1 coarse-peak x position, integer-pixel-quantized (telemetry only)'),
             'out_y_c': OutputDesc(BaseValue, 'Step-1 coarse-peak y position, integer-pixel-quantized (telemetry only)'),
-            'out_margin': OutputDesc(BaseValue, 'Relative-gate confidence margin per subaperture (telemetry only; zero unless relative_gate_enable=True)'),
-            'out_rho_sq_ceiling': OutputDesc(BaseValue, 'Relative-gate EMA ceiling of rho_sq per subaperture (telemetry only; unused unless relative_gate_enable=True)'),
+            'out_margin': OutputDesc(BaseValue, 'Confidence-gate margin per subaperture (telemetry only; zero unless the active gate_type has needs_margin=True)'),
+            'out_rho_sq_ceiling': OutputDesc(BaseValue, "EMA ceiling of rho_sq per subaperture (telemetry only; unused unless gate_type='relative_ceiling')"),
         })
         return result
 
@@ -718,24 +687,26 @@ class AdaptiveShrinkageSlopec(Slopec):
         x_c = x_idx.astype(self.dtype) + self.offset
         y_c = y_idx.astype(self.dtype) + self.offset
 
-        # Relative gate's confidence signal (2026-09-17, see
-        # relative_gate_enable docstring): margin between Step 1's own
-        # winning peak and the best OTHER value elsewhere in the same
-        # prior-weighted decision surface (self._tmp -- still holding
-        # this frame's Step-1 map here, not yet overwritten by Step 2
-        # below), excluding a disk around the peak's own shoulder (not a
-        # genuine distant competitor). relative_gate_enable is a fixed
-        # constructor-time flag, so branching on it is safe for CUDA
-        # graph capture, same reasoning as subpixel_peak_refine below;
-        # `margin` itself is a local temporary, freely (re)computed per
-        # frame like the Step-2 WCoG intermediates, not a persistent
-        # buffer.
-        if self.relative_gate_enable:
+        # Confidence-gate margin signal (2026-09-17, see gate_type
+        # docstring): margin between Step 1's own winning peak and the
+        # best OTHER value elsewhere in the same prior-weighted decision
+        # surface (self._tmp -- still holding this frame's Step-1 map
+        # here, not yet overwritten by Step 2 below), excluding a disk
+        # around the peak's own shoulder (not a genuine distant
+        # competitor). self._gate.needs_margin is a fixed constructor-
+        # time property of whichever gate class was chosen, so branching
+        # on it is safe for CUDA graph capture, same reasoning as
+        # subpixel_peak_refine below; `margin` itself is a local
+        # temporary, freely (re)computed per frame like the Step-2 WCoG
+        # intermediates, not a persistent buffer. Left as None when the
+        # active gate does not need it (WienerGate.compute ignores it).
+        margin = None
+        if self._gate.needs_margin:
             dx_peak = self.xx[None, :, :] - x_idx[:, None, None].astype(self.dtype)
             dy_peak = self.yy[None, :, :] - y_idx[:, None, None].astype(self.dtype)
             dx_wrap = xp.minimum(xp.abs(dx_peak), np_sub - xp.abs(dx_peak))
             dy_wrap = xp.minimum(xp.abs(dy_peak), np_sub - xp.abs(dy_peak))
-            excluded = (dx_wrap * dx_wrap + dy_wrap * dy_wrap) <= self.relative_gate_margin_exclude_radius_sq
+            excluded = (dx_wrap * dx_wrap + dy_wrap * dy_wrap) <= self.margin_exclude_radius_sq
             best_val = self._tmp[self._arange_n, y_idx, x_idx]
             corr_masked = xp.where(excluded, -xp.inf, self._tmp)
             second_val = xp.max(corr_masked.reshape(n, -1), axis=1)
@@ -837,23 +808,14 @@ class AdaptiveShrinkageSlopec(Slopec):
         # =================================================================
         rho_sq = d_pos * d_pos / (self.excess_sq * d_pos + self.ron_var_eff + eps)
 
-        # Relative/self-normalising gate (2026-09-17, opt-in, see
-        # relative_gate_enable docstring): gate relative to an EMA
-        # ceiling of the best recently-achievable rho_sq, updated only on
-        # high-margin (high-confidence) frames, instead of a fixed
-        # absolute k_wiener. relative_gate_enable is a fixed
-        # constructor-time flag, so branching on it is safe for CUDA
-        # graph capture (same reasoning as gain_correction_enable/
-        # subpixel_peak_refine elsewhere in this method). In place
-        # (rho_sq_ceiling is never reassigned, only mutated).
-        if self.relative_gate_enable:
-            do_update = margin > self.relative_gate_margin_thresh
-            updated_ceiling = ((1.0 - self.relative_gate_ema_alpha) * self.rho_sq_ceiling
-                                + self.relative_gate_ema_alpha * rho_sq)
-            xp.copyto(self.rho_sq_ceiling, xp.where(do_update, updated_ceiling, self.rho_sq_ceiling))
-            w_raw = rho_sq / (rho_sq + self.relative_gate_k_rel * self.rho_sq_ceiling + eps)
-        else:
-            w_raw = rho_sq / (rho_sq + self.k_wiener)
+        # Pluggable confidence gate (see gate_type docstring): self._gate
+        # is fixed at construction time and never swapped, so this
+        # dispatch is CUDA-graph safe (same reasoning as
+        # gain_correction_enable/subpixel_peak_refine elsewhere in this
+        # method). Any persistent state a gate needs (e.g.
+        # RelativeCeilingGate.rho_sq_ceiling) is owned and mutated in
+        # place by the gate object itself.
+        w_raw = self._gate.compute(xp, rho_sq, margin, eps)
 
         # The ONLY temporal filter in the measurement path, and it acts on the
         # gain, not the signal: it decorrelates w_t from the current-frame noise
@@ -953,10 +915,12 @@ class AdaptiveShrinkageSlopec(Slopec):
         self.y_c_out[:] = y_c
         self.x_c_value.value[:] = self.x_c_out
         self.y_c_value.value[:] = self.y_c_out
-        if self.relative_gate_enable:
+        if self._gate.needs_margin:
             self.margin_out[:] = margin
-            self.rho_sq_ceiling_out[:] = self.rho_sq_ceiling
             self.margin_value.value[:] = self.margin_out
+        gate_telemetry = self._gate.telemetry()
+        if 'rho_sq_ceiling' in gate_telemetry:
+            self.rho_sq_ceiling_out[:] = gate_telemetry['rho_sq_ceiling']
             self.rho_sq_ceiling_value.value[:] = self.rho_sq_ceiling_out
 
         # =================================================================

@@ -2205,30 +2205,33 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                 "two-component template")
 
     # =====================================================================
-    # relative_gate_enable (2026-09-17): opt-in, default-False relative/
-    # self-normalising confidence gate. See the class docstring's
-    # relative_gate_enable entry for the full design rationale.
+    # gate_type/gate_params (2026-09-18): pluggable Step-3 confidence-gate
+    # strategy abstraction, replacing the earlier relative_gate_enable/
+    # relative_gate_* flag family. See specula/lib/confidence_gates.py and
+    # the class docstring's gate_type entry for the full design rationale.
     # =====================================================================
 
     @cpu_and_gpu
     def test_relative_gate_disabled_is_bit_for_bit_inert_and_matches_classic_formula(self, target_device_idx, xp):
         """
-        relative_gate_enable=False (the default) must be exactly the
-        pre-2026-09-17 behaviour: margin_out stays identically 0 and
-        rho_sq_ceiling stays identically at its init value (k_wiener) across
-        several varying frames, REGARDLESS of how aggressively the other new
-        relative_gate_* knobs are set (same "new knob is inert" pattern as
+        gate_type='wiener' (the default) must be exactly the pre-2026-09-17
+        behaviour: out_margin stays identically 0 (WienerGate.needs_margin is
+        False) and out_rho_sq_ceiling stays identically 0 (WienerGate.telemetry()
+        returns {}, so that output is never written) across several varying
+        frames, REGARDLESS of what gate_params is set to alongside
+        gate_type='wiener' -- build_confidence_gate() ignores gate_params
+        entirely for the 'wiener' class (same "new knob is inert" pattern as
         test_stuck_detector_and_both_fixes_default_inert /
         test_subpixel_peak_refine_default_false_is_pure_no_op) -- an
-        aggressive-but-disabled instance must emit bit-for-bit identical
+        aggressive-but-wiener instance must emit bit-for-bit identical
         slopes to the plain default instance.
 
         Separately, with the EMA lag removed (w_ema_alpha=1.0, so
         w_out == w_raw exactly after one frame), the emitted gain must equal
         the classic absolute formula rho_sq / (rho_sq + k_wiener) computed
         independently here from the class's own out_rho_sq telemetry --
-        pinning down that the disabled path truly depends only on k_wiener,
-        not on anything relative-gate-specific.
+        pinning down that the wiener-gate path truly depends only on
+        k_wiener, not on anything relative-gate-specific.
         """
         subap_npx, t = 16, int(1e9)
         subapdata_default, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -2239,16 +2242,15 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         common = dict(fwhm_pix=1.5, k_wiener=10.0, ron_e=1.0, w_ema_alpha=0.2,
                      target_device_idx=target_device_idx)
         slopec_default = AdaptiveShrinkageSlopec(subapdata_default, **common)
-        # Every relative_gate_* knob pushed to an aggressive, would-visibly-
-        # fire-if-live value, but the flag itself stays False.
+        # gate_type explicitly 'wiener' with gate_params that WOULD visibly
+        # fire if they were forwarded to a margin/ceiling-based gate --
+        # build_confidence_gate() ignores gate_params entirely for 'wiener'.
         slopec_aggressive = AdaptiveShrinkageSlopec(
             subapdata_aggressive,
-            relative_gate_enable=False,
-            relative_gate_k_rel=100.0,
-            relative_gate_margin_thresh=-1.0,   # would arm the ceiling update on every frame if live
-            relative_gate_margin_exclude_radius_px=0.0,
-            relative_gate_ema_alpha=1.0,        # would replace the ceiling every frame if live
-            relative_gate_ceiling_init=999.0,   # would be blatantly visible on the emitted gain if live
+            gate_type='wiener',
+            gate_params={'k_rel': 100.0, 'margin_thresh': -1.0,
+                         'ema_alpha': 1.0, 'ceiling_init': 999.0},
+            margin_exclude_radius_px=0.0,
             **common)
         slopec_default.inputs['in_pixels'].set(pixels_default)
         slopec_aggressive.inputs['in_pixels'].set(pixels_aggressive)
@@ -2265,36 +2267,22 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             self._run_frame(slopec_default, pixels_default, frame, t * i)
             self._run_frame(slopec_aggressive, pixels_aggressive, frame, t * i)
 
-            # Each instance's own construction-time ceiling value: the
-            # default instance falls back to k_wiener (no
-            # relative_gate_ceiling_init passed), while the aggressive
-            # instance explicitly set relative_gate_ceiling_init=999.0 --
-            # that constructor-time init always applies regardless of
-            # relative_gate_enable, only its later MUTATION is gated. So
-            # the two instances are expected to sit at DIFFERENT constants,
-            # each unchanged from its own init value.
-            expected_ceiling = {id(slopec_default): 10.0, id(slopec_aggressive): 999.0}
-            for slopec, label in ((slopec_default, "default"), (slopec_aggressive, "aggressive-but-disabled")):
-                # out_margin (see __init__: self.margin_out is only ever
-                # written under "if self.relative_gate_enable") is left at
-                # its zero-initialized default and never touched while
-                # disabled -- checking it is identically 0 doubles as
-                # confirming that code path never runs.
+            for slopec, label in ((slopec_default, "default"), (slopec_aggressive, "aggressive-but-wiener")):
+                # out_margin is only ever written under "if
+                # self._gate.needs_margin", False for WienerGate -- checking
+                # it is identically 0 doubles as confirming that path never runs.
                 margin = cpuArray(slopec.outputs['out_margin'].value)
                 np.testing.assert_array_equal(margin, np.zeros_like(margin),
-                    err_msg=f"frame {i} ({label}): margin_out is not identically 0 "
-                            f"with relative_gate_enable=False")
-                # The actual persistent state (self.rho_sq_ceiling) must stay
-                # at its own init value -- NOT the out_rho_sq_ceiling
-                # telemetry copy, which (like margin_out) is only ever
-                # synced from it under "if self.relative_gate_enable" and so
-                # stays at ITS OWN zero-initialized default while disabled
-                # (see the OutputDesc docstring: "unused unless
-                # relative_gate_enable=True").
-                ceiling = cpuArray(slopec.rho_sq_ceiling)
-                np.testing.assert_array_equal(ceiling, np.full_like(ceiling, expected_ceiling[id(slopec)]),
-                    err_msg=f"frame {i} ({label}): rho_sq_ceiling moved away from "
-                            f"its init value with relative_gate_enable=False")
+                    err_msg=f"frame {i} ({label}): out_margin is not identically 0 "
+                            f"with gate_type='wiener'")
+                # out_rho_sq_ceiling is only written when the gate's own
+                # telemetry() dict contains 'rho_sq_ceiling' -- WienerGate's
+                # telemetry() is always {}, so this must stay at its
+                # zero-initialized default regardless of gate_params.
+                ceiling = cpuArray(slopec.outputs['out_rho_sq_ceiling'].value)
+                np.testing.assert_array_equal(ceiling, np.zeros_like(ceiling),
+                    err_msg=f"frame {i} ({label}): out_rho_sq_ceiling is not identically 0 "
+                            f"with gate_type='wiener' (WienerGate.telemetry() should be empty)")
 
             xd = cpuArray(slopec_default.outputs['out_slopes'].xslopes)
             xa = cpuArray(slopec_aggressive.outputs['out_slopes'].xslopes)
@@ -2302,12 +2290,12 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             ya = cpuArray(slopec_aggressive.outputs['out_slopes'].yslopes)
             np.testing.assert_allclose(xa, xd, atol=1e-9, rtol=0,
                 err_msg=f"frame {i}: xslopes diverged between default and "
-                        f"aggressive-but-disabled instances -- relative_gate_enable=False "
-                        f"is not fully inert")
+                        f"aggressive-but-wiener instances -- gate_params is not "
+                        f"fully ignored for gate_type='wiener'")
             np.testing.assert_allclose(ya, yd, atol=1e-9, rtol=0,
                 err_msg=f"frame {i}: yslopes diverged between default and "
-                        f"aggressive-but-disabled instances -- relative_gate_enable=False "
-                        f"is not fully inert")
+                        f"aggressive-but-wiener instances -- gate_params is not "
+                        f"fully ignored for gate_type='wiener'")
 
         # Classic absolute-formula check, EMA lag removed.
         subapdata_formula, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
@@ -2323,48 +2311,49 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         expected_w = rho_sq / (rho_sq + 10.0)
         actual_w = cpuArray(slopec_formula.w_out)
         np.testing.assert_allclose(actual_w, expected_w, atol=1e-6,
-            err_msg="Disabled relative gate did not reproduce the classic "
+            err_msg="Default gate_type='wiener' did not reproduce the classic "
                     "absolute formula rho_sq / (rho_sq + k_wiener)")
 
     @cpu_and_gpu
     def test_relative_gate_ceiling_init_defaults_to_k_wiener_or_explicit_value(self, target_device_idx, xp):
         """
-        rho_sq_ceiling (see relative_gate_ceiling_init docstring) must equal
-        k_wiener itself at construction when relative_gate_ceiling_init is
-        left at its default None, for any k_wiener value -- and must equal
-        the explicit value when one is passed, regardless of k_wiener.
-        Checked before any frame is run (construction-time state only).
+        self._gate.rho_sq_ceiling (see RelativeCeilingGate's ceiling_init
+        docstring) must equal k_wiener itself at construction when
+        ceiling_init is left at its default None, for any k_wiener value --
+        and must equal the explicit value when one is passed via
+        gate_params, regardless of k_wiener. Checked before any frame is
+        run (construction-time state only).
         """
         subap_npx = 16
         subapdata_a, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
         subapdata_b, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
         subapdata_c, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
 
-        slopec_default_k10 = AdaptiveShrinkageSlopec(subapdata_a, relative_gate_enable=True,
+        slopec_default_k10 = AdaptiveShrinkageSlopec(subapdata_a, gate_type='relative_ceiling',
                                                      k_wiener=10.0, target_device_idx=target_device_idx)
-        slopec_default_k25 = AdaptiveShrinkageSlopec(subapdata_b, relative_gate_enable=True,
+        slopec_default_k25 = AdaptiveShrinkageSlopec(subapdata_b, gate_type='relative_ceiling',
                                                      k_wiener=25.0, target_device_idx=target_device_idx)
-        slopec_explicit = AdaptiveShrinkageSlopec(subapdata_c, relative_gate_enable=True,
-                                                  k_wiener=10.0, relative_gate_ceiling_init=7.5,
+        slopec_explicit = AdaptiveShrinkageSlopec(subapdata_c, gate_type='relative_ceiling',
+                                                  k_wiener=10.0, gate_params={'ceiling_init': 7.5},
                                                   target_device_idx=target_device_idx)
 
-        np.testing.assert_array_equal(cpuArray(slopec_default_k10.rho_sq_ceiling),
+        np.testing.assert_array_equal(cpuArray(slopec_default_k10._gate.rho_sq_ceiling),
             np.full(subapdata_a.n_subaps, 10.0),
             err_msg="rho_sq_ceiling did not default-initialise to k_wiener=10.0")
-        np.testing.assert_array_equal(cpuArray(slopec_default_k25.rho_sq_ceiling),
+        np.testing.assert_array_equal(cpuArray(slopec_default_k25._gate.rho_sq_ceiling),
             np.full(subapdata_b.n_subaps, 25.0),
             err_msg="rho_sq_ceiling did not default-initialise to k_wiener=25.0")
-        np.testing.assert_array_equal(cpuArray(slopec_explicit.rho_sq_ceiling),
+        np.testing.assert_array_equal(cpuArray(slopec_explicit._gate.rho_sq_ceiling),
             np.full(subapdata_c.n_subaps, 7.5),
             err_msg="rho_sq_ceiling did not honour an explicit "
-                    "relative_gate_ceiling_init, using k_wiener instead")
+                    "ceiling_init, using k_wiener instead")
 
     @cpu_and_gpu
     def test_relative_gate_ceiling_updates_only_on_high_margin_frames(self, target_device_idx, xp):
         """
         rho_sq_ceiling must update by the documented EMA
         ((1-alpha)*ceiling + alpha*rho_sq) exactly on a frame whose OWN
-        margin exceeds relative_gate_margin_thresh, using that SAME frame's
+        margin exceeds the gate's own margin_thresh, using that SAME frame's
         own rho_sq (Step 1's margin and Step 3's rho_sq/ceiling-update both
         run on the same frame's pixel data -- there is no one-frame lag),
         and must stay EXACTLY unchanged on a frame whose margin does not
@@ -2405,20 +2394,20 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         margin_thresh = 0.5
         ema_alpha = 0.05
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, k_wiener=10.0, ron_e=1.0,
-                                         relative_gate_enable=True,
-                                         relative_gate_margin_thresh=margin_thresh,
-                                         relative_gate_ema_alpha=ema_alpha,
+                                         gate_type='relative_ceiling',
+                                         gate_params={'margin_thresh': margin_thresh,
+                                                      'ema_alpha': ema_alpha},
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
-        ceiling_before = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        ceiling_before = float(cpuArray(slopec._gate.rho_sq_ceiling)[0])
         self.assertAlmostEqual(ceiling_before, 10.0, places=9)
 
         # Frame 1: bright, clean, high-margin.
         self._run_frame(slopec, pixels, bright_frame, t * 1)
         margin1 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
         rho_sq1 = float(cpuArray(slopec.outputs['out_rho_sq'].value)[0])
-        ceiling1 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        ceiling1 = float(cpuArray(slopec._gate.rho_sq_ceiling)[0])
         self.assertGreater(margin1, margin_thresh,
                            "Test setup assumption violated: expected a high-margin frame")
         expected_ceiling1 = (1.0 - ema_alpha) * ceiling_before + ema_alpha * rho_sq1
@@ -2432,7 +2421,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         # Frame 2: genuine tie, low margin -- ceiling must stay exactly put.
         self._run_frame(slopec, pixels, tie_frame, t * 2)
         margin2 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
-        ceiling2 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        ceiling2 = float(cpuArray(slopec._gate.rho_sq_ceiling)[0])
         self.assertLess(margin2, margin_thresh,
                         "Test setup assumption violated: expected a low-margin (tied) frame")
         self.assertEqual(ceiling2, ceiling1,
@@ -2443,7 +2432,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         self._run_frame(slopec, pixels, bright_frame, t * 3)
         margin3 = float(cpuArray(slopec.outputs['out_margin'].value)[0])
         rho_sq3 = float(cpuArray(slopec.outputs['out_rho_sq'].value)[0])
-        ceiling3 = float(cpuArray(slopec.rho_sq_ceiling)[0])
+        ceiling3 = float(cpuArray(slopec._gate.rho_sq_ceiling)[0])
         self.assertGreater(margin3, margin_thresh)
         expected_ceiling3 = (1.0 - ema_alpha) * ceiling2 + ema_alpha * rho_sq3
         self.assertAlmostEqual(ceiling3, expected_ceiling3, places=5,
@@ -2506,9 +2495,9 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         margin_thresh = 0.5
         ema_alpha = 0.05
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, k_wiener=k_wiener, ron_e=0.0,
-                                         relative_gate_enable=True,
-                                         relative_gate_margin_thresh=margin_thresh,
-                                         relative_gate_ema_alpha=ema_alpha,
+                                         gate_type='relative_ceiling',
+                                         gate_params={'margin_thresh': margin_thresh,
+                                                      'ema_alpha': ema_alpha},
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
@@ -2516,7 +2505,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
 
         margin = cpuArray(slopec.outputs['out_margin'].value)
         rho_sq = cpuArray(slopec.outputs['out_rho_sq'].value)
-        ceiling = cpuArray(slopec.rho_sq_ceiling)
+        ceiling = cpuArray(slopec._gate.rho_sq_ceiling)
 
         self.assertGreater(margin[0], margin_thresh, "subap 0 (bright) should have a high margin")
         self.assertGreater(margin[1], margin_thresh, "subap 1 (bright) should have a high margin")
@@ -2541,7 +2530,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         """
         For the SAME frame (hence the same rho_sq, verified directly), the
         relative gate's emitted gain must equal
-        rho_sq / (rho_sq + relative_gate_k_rel * rho_sq_ceiling), computed
+        rho_sq / (rho_sq + k_rel * rho_sq_ceiling), computed
         independently here, and the absolute gate's must equal
         rho_sq / (rho_sq + k_wiener) -- and, with the ceiling driven well
         above k_wiener, the relative gate's gain must come out strictly
@@ -2549,7 +2538,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         sign derived from the two formulas rather than assumed.
 
         Uses w_ema_alpha=1.0 (no EMA lag, so w_out == w_raw exactly) and
-        relative_gate_ema_alpha=1.0 during a warm-up frame so the ceiling is
+        gate_params={'ema_alpha': 1.0} during a warm-up frame so the ceiling is
         set to EXACTLY that warm-up frame's own rho_sq (a known, very high
         value). The comparison frame is a genuine tie (margin ~0, verified
         below threshold), so the ceiling is guaranteed frozen at the warm-up
@@ -2581,24 +2570,24 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         k_rel = 0.3
         common = dict(fwhm_pix=1.5, k_wiener=k_wiener, ron_e=1.0, w_ema_alpha=1.0,
                      target_device_idx=target_device_idx)
-        slopec_abs = AdaptiveShrinkageSlopec(subapdata_abs, relative_gate_enable=False, **common)
-        slopec_rel = AdaptiveShrinkageSlopec(subapdata_rel, relative_gate_enable=True,
-                                             relative_gate_k_rel=k_rel,
-                                             relative_gate_margin_thresh=0.5,
-                                             relative_gate_ema_alpha=1.0,
+        slopec_abs = AdaptiveShrinkageSlopec(subapdata_abs, **common)
+        slopec_rel = AdaptiveShrinkageSlopec(subapdata_rel, gate_type='relative_ceiling',
+                                             gate_params={'k_rel': k_rel,
+                                                          'margin_thresh': 0.5,
+                                                          'ema_alpha': 1.0},
                                              **common)
         slopec_abs.inputs['in_pixels'].set(pixels_abs)
         slopec_rel.inputs['in_pixels'].set(pixels_rel)
 
         # Warm-up: single bright, clean, high-margin spot -- with
-        # relative_gate_ema_alpha=1.0 this sets rho_sq_ceiling to EXACTLY
-        # this frame's own rho_sq.
+        # ema_alpha=1.0 this sets rho_sq_ceiling to EXACTLY this frame's own
+        # rho_sq.
         warmup_frame = two_spot_frame([(1e6, 0.0, 0.0)])
         self._run_frame(slopec_rel, pixels_rel, warmup_frame, t * 1)
         warmup_margin = float(cpuArray(slopec_rel.outputs['out_margin'].value)[0])
         self.assertGreater(warmup_margin, 0.5,
                            "Test setup assumption violated: expected a high-margin warm-up frame")
-        ceiling_frozen = float(cpuArray(slopec_rel.rho_sq_ceiling)[0])
+        ceiling_frozen = float(cpuArray(slopec_rel._gate.rho_sq_ceiling)[0])
         self.assertGreater(ceiling_frozen, 100.0 * k_wiener,
                            "Test setup assumption violated: expected the warm-up ceiling "
                            "to be driven well above k_wiener")
@@ -2613,7 +2602,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
                         "Test setup assumption violated: expected the comparison "
                         "frame's margin to stay below threshold (ceiling must not "
                         "move on this frame)")
-        ceiling_after_comparison = float(cpuArray(slopec_rel.rho_sq_ceiling)[0])
+        ceiling_after_comparison = float(cpuArray(slopec_rel._gate.rho_sq_ceiling)[0])
         self.assertEqual(ceiling_after_comparison, ceiling_frozen,
                          "rho_sq_ceiling moved on the (low-margin) comparison frame -- "
                          "it is no longer frozen at the warm-up value")
@@ -2623,7 +2612,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         np.testing.assert_allclose(rho_sq_rel, rho_sq_abs, rtol=1e-6,
             err_msg="rho_sq differs between the absolute- and relative-gate "
                     "instances on the identical comparison frame -- rho_sq "
-                    "itself must not depend on relative_gate_enable")
+                    "itself must not depend on gate_type")
 
         expected_w_abs = rho_sq_abs / (rho_sq_abs + k_wiener)
         expected_w_rel = rho_sq_rel / (rho_sq_rel + k_rel * ceiling_frozen)
@@ -2644,7 +2633,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         """
         Edge case explicitly called out in the handoff: a literal all-dark
         (zero flux, zero noise, zero background) frame with
-        relative_gate_enable=True must not crash or emit NaN/Inf, and must
+        gate_type='relative_ceiling' must not crash or emit NaN/Inf, and must
         give margin exactly 0 (the best_val==0 branch, guarding the division
         that would otherwise be 0/0) -- this exercises the div-by-zero fix
         already applied to the new code (an xp.where-based safe denominator).
@@ -2654,7 +2643,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
 
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
-                                         relative_gate_enable=True,
+                                         gate_type='relative_ceiling',
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
@@ -2663,7 +2652,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             self._run_frame(slopec, pixels, zero_frame, t)
         except Exception as e:  # pragma: no cover - failure path
             self.fail(f"AdaptiveShrinkageSlopec raised on an all-dark frame "
-                      f"with relative_gate_enable=True: {e!r}")
+                      f"with gate_type='relative_ceiling': {e!r}")
 
         margin = cpuArray(slopec.outputs['out_margin'].value)
         xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
@@ -2706,7 +2695,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         tie_frame = xp.asarray(ccd)
 
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
-                                         relative_gate_enable=True,
+                                         gate_type='relative_ceiling',
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
         self._run_frame(slopec, pixels, tie_frame, t)
@@ -2718,7 +2707,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
     @cpu_and_gpu
     def test_relative_gate_margin_exclude_radius_treats_near_bump_as_same_lobe(self, target_device_idx, xp):
         """
-        relative_gate_margin_exclude_radius_px behaviour (see its docstring):
+        margin_exclude_radius_px behaviour (see its docstring):
         a competing bump placed WITHIN the exclusion radius of the winning
         peak must be treated as part of that peak's own shoulder (excluded
         from the margin search), while one placed OUTSIDE it must be counted
@@ -2760,8 +2749,8 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             frame = xp.asarray(ccd)
 
             slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=0.0,
-                                             relative_gate_enable=True,
-                                             relative_gate_margin_exclude_radius_px=3.0,
+                                             gate_type='relative_ceiling',
+                                             margin_exclude_radius_px=3.0,
                                              target_device_idx=target_device_idx)
             slopec.inputs['in_pixels'].set(pixels)
             self._run_frame(slopec, pixels, frame, t)
@@ -2809,7 +2798,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         self.assertIs(output_desc['out_rho_sq_ceiling'].type, BaseValue)
 
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
-                                         relative_gate_enable=True,
+                                         gate_type='relative_ceiling',
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
@@ -2830,9 +2819,9 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         np.testing.assert_array_equal(ceiling_value, cpuArray(slopec.rho_sq_ceiling_out),
             err_msg="out_rho_sq_ceiling.value does not match the internal "
                     "rho_sq_ceiling_out buffer")
-        np.testing.assert_array_equal(ceiling_value, cpuArray(slopec.rho_sq_ceiling),
+        np.testing.assert_array_equal(ceiling_value, cpuArray(slopec._gate.rho_sq_ceiling),
             err_msg="out_rho_sq_ceiling.value does not match the actual "
-                    "persistent rho_sq_ceiling state")
+                    "persistent rho_sq_ceiling state on the gate object")
 
         self.assertEqual(slopec.outputs['out_margin'].generation_time, t)
         self.assertEqual(slopec.outputs['out_rho_sq_ceiling'].generation_time, t)
@@ -2842,7 +2831,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         """
         Same flux sweep (including a literal all-zero frame) and structure
         as test_no_exceptions_or_nan_across_full_flux_sweep_including_exact_zero,
-        but with relative_gate_enable=True -- catches numerical edge cases
+        but with gate_type='relative_ceiling' -- catches numerical edge cases
         (e.g. xp.inf/xp.where broadcasting or int32/float32 handling under
         cupy) that the handoff's manual spot-checks (5 flux levels only)
         might have missed. Additionally checks margin/rho_sq_ceiling stay
@@ -2854,7 +2843,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
 
         slopec = AdaptiveShrinkageSlopec(subapdata, fwhm_pix=1.5, ron_e=1.0,
-                                         relative_gate_enable=True,
+                                         gate_type='relative_ceiling',
                                          target_device_idx=target_device_idx)
         slopec.inputs['in_pixels'].set(pixels)
 
@@ -2866,7 +2855,7 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
             try:
                 self._run_frame(slopec, pixels, frame, t * i)
             except Exception as e:  # pragma: no cover - failure path
-                self.fail(f"AdaptiveShrinkageSlopec (relative_gate_enable=True) "
+                self.fail(f"AdaptiveShrinkageSlopec (gate_type='relative_ceiling') "
                           f"raised at flux={flux}: {e!r}")
 
             xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
@@ -2896,6 +2885,132 @@ class TestAdaptiveShrinkageSlopec(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(w_out)), "NaN/Inf in w_out on a literal all-zero frame")
         np.testing.assert_array_equal(margin, np.zeros_like(margin),
             err_msg="margin was not exactly 0 on a literal all-zero frame")
+
+    # =====================================================================
+    # gate_type='shifted_sigmoid' (2026-09-18): end-to-end wiring test for
+    # the third gate strategy, previously exercised only in isolation in
+    # test_confidence_gates.py. Uses the toy-validated candidate config
+    # from ShiftedSigmoidGate's docstring / RESULTS.md's "Confidence-gate
+    # redesign" section: boost_mult=6.0, beta_snr=0.5, margin_thresh=0.25,
+    # beta_margin=2.0.
+    # =====================================================================
+
+    @cpu_and_gpu
+    def test_shifted_sigmoid_gate_no_exceptions_and_bounded_output(self, target_device_idx, xp):
+        """
+        Wired through the real class across a full flux sweep (same
+        structure as test_relative_gate_no_exceptions_or_nan_across_full_flux_sweep):
+        no NaN/exceptions, out_margin actually populated (non-zero for at
+        least one frame -- confirms needs_margin=True is engaged, not
+        silently left at its zero-initialized default), and out_w_smooth
+        stays inside [0, 1] throughout.
+        """
+        np.random.seed(1234)
+        subap_npx, t = 16, int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        slopec = AdaptiveShrinkageSlopec(
+            subapdata, fwhm_pix=1.5, ron_e=1.0,
+            gate_type='shifted_sigmoid',
+            gate_params={'boost_mult': 6.0, 'beta_snr': 0.5,
+                         'margin_thresh': 0.25, 'beta_margin': 2.0},
+            target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+
+        flux_sweep = [1e6, 1e4, 1e2, 10.0, 1.0, 0.1, 0.0, 0.0]
+        any_nonzero_margin = False
+        for i, flux in enumerate(flux_sweep, start=1):
+            noise_std = 0.5 if flux > 0 else 0.0
+            frame = self.generate_spots(ccd_shape, subapdata, xp, flux=flux, bg=1.0,
+                                        noise_std=noise_std)
+            try:
+                self._run_frame(slopec, pixels, frame, t * i)
+            except Exception as e:  # pragma: no cover - failure path
+                self.fail(f"AdaptiveShrinkageSlopec (gate_type='shifted_sigmoid') "
+                          f"raised at flux={flux}: {e!r}")
+
+            xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
+            yslopes = cpuArray(slopec.outputs['out_slopes'].yslopes)
+            w_out = cpuArray(slopec.w_out)
+            w_smooth = cpuArray(slopec.outputs['out_w_smooth'].value)
+            margin = cpuArray(slopec.outputs['out_margin'].value)
+
+            self.assertTrue(np.all(np.isfinite(xslopes)), f"NaN/Inf in xslopes at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(yslopes)), f"NaN/Inf in yslopes at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(w_out)), f"NaN/Inf in w_out at flux={flux}")
+            self.assertTrue(np.all(np.isfinite(margin)), f"NaN/Inf in margin at flux={flux}")
+            self.assertTrue(np.all(w_smooth >= -1e-9) and np.all(w_smooth <= 1.0 + 1e-9),
+                            f"out_w_smooth out of [0, 1] at flux={flux}: {w_smooth}")
+            if np.any(margin != 0.0):
+                any_nonzero_margin = True
+
+        self.assertTrue(any_nonzero_margin,
+            "out_margin stayed identically 0 across the whole sweep -- "
+            "ShiftedSigmoidGate.needs_margin does not appear to be engaged")
+
+        # The literal all-zero frame is the strictest case.
+        zero_frame = xp.zeros(ccd_shape, dtype=xp.float32)
+        self._run_frame(slopec, pixels, zero_frame, t * (len(flux_sweep) + 1))
+        xslopes = cpuArray(slopec.outputs['out_slopes'].xslopes)
+        yslopes = cpuArray(slopec.outputs['out_slopes'].yslopes)
+        w_smooth = cpuArray(slopec.outputs['out_w_smooth'].value)
+        self.assertTrue(np.all(np.isfinite(xslopes)) and np.all(np.isfinite(yslopes)),
+                        "NaN/Inf on a literal all-zero frame")
+        self.assertTrue(np.all(w_smooth >= -1e-9) and np.all(w_smooth <= 1.0 + 1e-9),
+                        "out_w_smooth out of [0, 1] on a literal all-zero frame")
+
+    @cpu_and_gpu
+    def test_shifted_sigmoid_gate_differs_from_wiener_at_low_snr(self, target_device_idx, xp):
+        """
+        Sanity check that gate_type='shifted_sigmoid' is actually wired
+        into Step 3, not silently falling back to WienerGate: for the same
+        low-flux frame (same k_wiener, no EMA lag), the shifted-sigmoid
+        gate's w_out must differ measurably from the plain Wiener default's,
+        since the two gates implement genuinely different formulas
+        (min of two shifted/scaled sigmoids vs. a fixed-threshold
+        rational function).
+        """
+        subap_npx, t = 16, int(1e9)
+        subapdata_wiener, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx)
+        subapdata_sigmoid, _ = self.get_test_setup(target_device_idx, xp, subap_npx)
+        pixels_wiener = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        pixels_sigmoid = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+
+        common = dict(fwhm_pix=1.5, k_wiener=10.0, ron_e=1.0, w_ema_alpha=1.0,
+                     target_device_idx=target_device_idx)
+        slopec_wiener = AdaptiveShrinkageSlopec(subapdata_wiener, **common)
+        slopec_sigmoid = AdaptiveShrinkageSlopec(
+            subapdata_sigmoid,
+            gate_type='shifted_sigmoid',
+            gate_params={'boost_mult': 6.0, 'beta_snr': 0.5,
+                         'margin_thresh': 0.25, 'beta_margin': 2.0},
+            **common)
+        slopec_wiener.inputs['in_pixels'].set(pixels_wiener)
+        slopec_sigmoid.inputs['in_pixels'].set(pixels_sigmoid)
+
+        # A single, clean, low-flux spot: low-ish SNR (rho_sq well below
+        # boost_mult*k_wiener=60) but a clean, well-defined coarse peak
+        # (moderate-to-high margin) -- exactly the regime where the two
+        # gates' differing formulas should diverge.
+        low_flux_frame = self.generate_spots(ccd_shape, subapdata_wiener, xp,
+                                             flux=30.0, bg=0.0)
+        self._run_frame(slopec_wiener, pixels_wiener, low_flux_frame, t)
+        self._run_frame(slopec_sigmoid, pixels_sigmoid, low_flux_frame, t)
+
+        rho_sq_wiener = float(cpuArray(slopec_wiener.outputs['out_rho_sq'].value)[0])
+        rho_sq_sigmoid = float(cpuArray(slopec_sigmoid.outputs['out_rho_sq'].value)[0])
+        np.testing.assert_allclose(rho_sq_sigmoid, rho_sq_wiener, rtol=1e-6,
+            err_msg="rho_sq differs between the two instances on an identical "
+                    "frame -- rho_sq itself must not depend on gate_type")
+
+        w_wiener = float(cpuArray(slopec_wiener.w_out)[0])
+        w_sigmoid = float(cpuArray(slopec_sigmoid.w_out)[0])
+
+        self.assertGreater(abs(w_sigmoid - w_wiener), 1e-3,
+            f"gate_type='shifted_sigmoid' gave a w_out ({w_sigmoid}) "
+            f"indistinguishable from the plain Wiener default ({w_wiener}) -- "
+            f"the strategy does not appear to be actually wired in")
 
 
 if __name__ == '__main__':
