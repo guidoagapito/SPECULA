@@ -231,6 +231,14 @@ isotropic, deliberately *uninformative* prior, :math:`C_p = \sigma_p^2 I`:
    ``petal_sigma_nm`` is not really a tunable parameter of the method; any
    plausible order of magnitude works.
 
+   The same reasoning covers the choice of prior structure. If the six
+   absolute petals were independent with variance :math:`\sigma_p^2`, the
+   exact covariance of the five petals relative to the reference would be
+   :math:`\sigma_p^2 (I + \mathbf{1}\mathbf{1}^T)`, not :math:`\sigma_p^2 I`.
+   For :math:`\sigma_p` of a few hundred nm or more the two priors give
+   the same reconstructor to within numerical precision, so we use the
+   simpler diagonal form.
+
 Step 5: Computing and checking the reconstructor
 ------------------------------------------------------
 
