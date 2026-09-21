@@ -8,12 +8,14 @@ import glob
 from specula import np
 from specula import cpuArray
 
+from specula.base_value import BaseValue
 from specula.data_objects.electric_field import ElectricField
 from specula.processing_objects.sh import SH
 from specula.data_objects.laser_launch_telescope import LaserLaunchTelescope
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.slopes import Slopes
 from specula.data_objects.subap_data import SubapData
+from specula.lib.make_mask import make_mask
 from specula.processing_objects.sh_slopec import ShSlopec
 from test.specula_testlib import cpu_and_gpu
 
@@ -89,6 +91,130 @@ class TestShSlopec(unittest.TestCase):
         subapdata = SubapData(idxs=v, display_map = m, nx=subap_on_diameter, ny=subap_on_diameter, target_device_idx=target_device_idx)
 
         return sh, v, m, flat_ef, subapdata
+
+    def get_single_subap_data(self, target_device_idx, np_sub):
+        """
+        Build a minimal SubapData with a single subaperture covering the
+        whole np_sub x np_sub pixel frame, with row-major pixel ordering.
+        This lets a plain (np_sub, np_sub) numpy array be compared directly
+        against mask_weighted (also row-major) with no index bookkeeping.
+        """
+        mask_subap = np.ones((np_sub, np_sub))
+        idx = np.where(mask_subap == 1)
+        v = np.zeros((1, np_sub * np_sub), dtype=int)
+        v[0] = np.ravel_multi_index(idx, mask_subap.shape)
+        m = np.zeros(1, dtype=int)
+        return SubapData(idxs=v, display_map=m, nx=1, ny=1, target_device_idx=target_device_idx)
+
+    @cpu_and_gpu
+    def test_windowed_flux_output_registered(self, target_device_idx, xp):
+        """
+        out_windowed_flux must be declared in output_names() and present
+        (zero-initialized) in self.outputs right after construction.
+        """
+        np_sub = 8
+        subapdata = self.get_single_subap_data(target_device_idx, np_sub)
+
+        output_names = ShSlopec.output_names()
+        self.assertIn('out_windowed_flux', output_names)
+        self.assertIs(output_names['out_windowed_flux'].type, BaseValue)
+
+        slopec = ShSlopec(subapdata, weightedPixRad=2.0, windowing=True,
+                          target_device_idx=target_device_idx)
+
+        self.assertIn('out_windowed_flux', slopec.outputs)
+        self.assertIsInstance(slopec.outputs['out_windowed_flux'], BaseValue)
+        np.testing.assert_array_equal(cpuArray(slopec.outputs['out_windowed_flux'].value),
+                                      np.zeros(subapdata.n_subaps))
+
+    @cpu_and_gpu
+    def test_windowed_flux_value_and_generation_time(self, target_device_idx, xp):
+        """
+        out_windowed_flux must equal the WCoG-weighted flux (subap_tot),
+        computed independently here with the same make_mask/make_xy
+        formula used internally by computeXYweights(), and its
+        generation_time must be updated after a trigger.
+        """
+        np_sub = 8
+        weighted_pix_rad = 2.0
+        subapdata = self.get_single_subap_data(target_device_idx, np_sub)
+
+        # Independent expected mask: mirrors the "windowing" branch of
+        # ShSlopec.computeXYweights() (hard-edged circular window).
+        expected_mask = make_mask(np_sub, diaratio=(2.0 * weighted_pix_rad / np_sub), xp=np)
+
+        pixel_values = np.arange(1, np_sub * np_sub + 1, dtype=float).reshape(np_sub, np_sub)
+        expected_windowed_flux = np.sum(pixel_values * expected_mask)
+
+        pixels = Pixels(np_sub, np_sub, target_device_idx=target_device_idx)
+        pixels.pixels = xp.array(pixel_values)
+        t = 1
+        pixels.generation_time = t
+
+        slopec = ShSlopec(subapdata, weightedPixRad=weighted_pix_rad, windowing=True,
+                          target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+        slopec.check_ready(t)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        windowed_flux = slopec.outputs['out_windowed_flux'].value
+        np.testing.assert_allclose(cpuArray(windowed_flux), expected_windowed_flux, rtol=1e-6)
+
+        self.assertEqual(slopec.outputs['out_windowed_flux'].generation_time, t)
+
+    @cpu_and_gpu
+    def test_windowed_flux_differs_from_raw_flux(self, target_device_idx, xp):
+        """
+        out_windowed_flux (WCoG-weighted, local-SNR proxy) must differ from
+        out_flux_per_subaperture (raw, unweighted sum over the whole
+        subaperture) when weightedPixRad restricts the window to a small
+        central region and there is signal/background outside that window
+        (e.g. an acquisition-field corner far from the spot).
+        """
+        np_sub = 8
+        weighted_pix_rad = 1.0
+        subapdata = self.get_single_subap_data(target_device_idx, np_sub)
+
+        pixel_values = np.zeros((np_sub, np_sub))
+        # Signal inside the WCoG window (central 2x2 block, see below).
+        pixel_values[3:5, 3:5] = 10.0
+        # Background flux far from the window center: included in the raw
+        # flux, excluded by the small weightedPixRad window.
+        pixel_values[0, 0] = 1000.0
+
+        # Sanity check: reproduce the window with the same formula used by
+        # ShSlopec.computeXYweights() and confirm the corner pixel is
+        # outside of it while the central block is inside.
+        expected_mask = make_mask(np_sub, diaratio=(2.0 * weighted_pix_rad / np_sub), xp=np)
+        self.assertEqual(expected_mask[0, 0], 0)
+        self.assertTrue(np.all(expected_mask[3:5, 3:5] == 1))
+        expected_windowed_flux = np.sum(pixel_values * expected_mask)
+        expected_raw_flux = np.sum(pixel_values)
+        self.assertNotEqual(expected_windowed_flux, expected_raw_flux)
+
+        pixels = Pixels(np_sub, np_sub, target_device_idx=target_device_idx)
+        pixels.pixels = xp.array(pixel_values)
+        t = 1
+        pixels.generation_time = t
+
+        slopec = ShSlopec(subapdata, weightedPixRad=weighted_pix_rad, windowing=True,
+                          target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+        slopec.check_ready(t)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        windowed_flux = cpuArray(slopec.outputs['out_windowed_flux'].value)
+        raw_flux = cpuArray(slopec.outputs['out_flux_per_subaperture'].value)
+
+        np.testing.assert_allclose(windowed_flux, expected_windowed_flux, rtol=1e-6)
+        np.testing.assert_allclose(raw_flux, expected_raw_flux, rtol=1e-6)
+
+        # The whole point of out_windowed_flux: it must differ from the
+        # inherited raw-subaperture flux whenever the window doesn't cover
+        # the full subaperture.
+        self.assertFalse(np.allclose(windowed_flux, raw_flux))
 
     @cpu_and_gpu
     def test_pixelscale_and_slopes(self, target_device_idx, xp):

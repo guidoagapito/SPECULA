@@ -83,14 +83,29 @@ class ShSlopec(Slopec):
         self.set_xy_weights()
         self.outputs['out_subapdata'] = self.subapdata
 
+        # Windowed flux (2026-09-19): subap_tot, the WCoG-weighted flux
+        # already computed below in calc_slopes_nofor() to normalise the
+        # slopes, exposed as telemetry. Unlike out_flux_per_subaperture
+        # (inherited from Slopec, summed over the RAW subaperture footprint
+        # before any weighting), this is flux local to wherever the WCoG
+        # window currently sits -- the meaningful local-SNR proxy, same
+        # role as AdaptiveShrinkageSlopec's d_pos/rho_sq (see that class's
+        # noise-model docstring for why the raw-subaperture sum is not a
+        # useful SNR proxy on a large acquisition footprint).
+        self.windowed_flux_out = self.xp.zeros(self.nsubaps(), dtype=self.dtype)
+        self.windowed_flux_value = BaseValue(value=self.xp.copy(self.windowed_flux_out),
+                                              target_device_idx=self.target_device_idx)
+        self.outputs['out_windowed_flux'] = self.windowed_flux_value
+
         self.slopes.single_mask = self.subapdata.single_mask()
         self.slopes.display_map = self.subapdata.display_map
 
     @classmethod
     def output_names(cls):
         result =super().output_names()
-        result.update({ 
-            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information')         
+        result.update({
+            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information'),
+            'out_windowed_flux': OutputDesc(BaseValue, 'WCoG-weighted flux per subaperture (telemetry only; local-SNR proxy, unlike out_flux_per_subaperture which sums the raw, unweighted subaperture footprint)'),
         })
         return result
 
@@ -274,6 +289,9 @@ class ShSlopec(Slopec):
         mean_subap_tot = self.xp.mean(subap_tot)
         factor = 1.0 / subap_tot
 
+        self.windowed_flux_out[:] = subap_tot
+        self.windowed_flux_value.value[:] = self.windowed_flux_out
+
 # TEST replacing these three lines with clamp_generic_more
 #        idx_le_0 = self.xp.where(subap_tot <= mean_subap_tot * 1e-3)[0]
 #        if len(idx_le_0) > 0:
@@ -330,3 +348,4 @@ class ShSlopec(Slopec):
     def post_trigger(self):
         super().post_trigger()
         self.outputs['out_subapdata'].generation_time = self.current_time
+        self.outputs['out_windowed_flux'].generation_time = self.current_time
