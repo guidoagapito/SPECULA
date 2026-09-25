@@ -22,6 +22,7 @@
 - Fixed test\_im\_sh\_synim\_generator.py: on a machine with a GPU, the reference IM computed directly via `synim.interaction_matrix()` came back as a cupy array regardless of the test's own `target_device_idx`/`xp` (SynIM's backend is bound once at process start, see synim\_utils.py), crashing the comparison against the always-numpy generated IM with a cupy TypeError; also loosened test\_im\_generator\_no\_misreg/test\_im\_generator\_with\_misreg tolerances from 1e-10/1e-7 to 1e-6, since those paths go through `ImShSynimGenerator`'s float32 (`precision=1`) cast and cannot match a float64 reference to 1e-10 (CI failure was a real ~2.7e-8 relative mismatch, not a fluke).
 - Removed duplicated calculation in `ModalAnalysis.trigger_code()`
 - Fixed ExtSourcePyramid with cuda_stream_enable=True: the CUDA graphs kept reading the data from frame 0, but with FROM_PSF a coeff array is computed for every new PSF. Now a recapturing is performed if necessary.
+- Fixed a bug in ModalAnalysis that was forcing a 64-bit computation even when SPECULA is running with 32 bit precision
 
 ## [1.0.4] - 2026-08-19
 
