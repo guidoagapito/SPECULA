@@ -1,5 +1,4 @@
 import numpy as np
-from specula import show_in_profiler
 
 from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
@@ -221,7 +220,6 @@ class AtmoInfiniteEvolution(BaseProcessingObj):
         scale_wvl = self.ref_wavelengthInNm / (2 * np.pi)
         self.scale_coeff = scale_r0 * scale_wvl
 
-    @show_in_profiler('atmo_evolution.trigger_code')
     def trigger_code(self):
         wind_speed = cpuArray(self.local_inputs['wind_speed'].value)
         wind_direction = cpuArray(self.local_inputs['wind_direction'].value)
