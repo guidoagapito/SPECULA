@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 
 from specula import cpuArray
@@ -58,9 +60,17 @@ class SpotSupervisor(BaseProcessingObj):
     reference (peak/centroid asymmetry, integer-pixel quantisation): the estimates are the centroid
     displacement from the reference, so the window centre ``w`` needs no further correction.
 
-    Coordinates: x = column, y = row, in pixels from the subaperture centre. ``in_command`` is the
-    tip/tilt command really applied during the frame (nm); ``cmd_to_px`` maps it to the spot shift
-    produced by the correction (px per nm, sign and axes to be calibrated on the system).
+    Coordinates: x = column, y = row, in pixels from the subaperture centre. ``cmd_to_px`` maps the
+    tip/tilt command (nm) to the spot shift produced by the correction (px per nm, sign and axes to be
+    calibrated on the system).
+
+    ``cmd_latency`` sets what ``in_command`` is. None (legacy): the command on the mirror during the frame,
+    and the feedforward reaches the mirror one frame after it is issued. An integer L >= 1: the command as
+    issued by the controller, which, like the feedforward, reaches the mirror L frames after the step it is
+    read/issued (transport latency and actuator response lumped into a pure delay). Frames are then
+    registered with the command L frames old, and the window returns from the hold only when the
+    feedforward is expected on the mirror; no new move starts while a return is in flight. A wrong L
+    shows up as a registration error (command change over the error) and a window/feedforward mismatch.
 
     Outputs: ``out_window`` = [wx, wy, hold] (feed it to ShSlopecMovable, delayed by one step),
     ``out_feedforward`` = accumulated feedforward command (nm, feed it to an extra tip/tilt DM),
@@ -94,6 +104,7 @@ class SpotSupervisor(BaseProcessingObj):
                  presence_register: bool = True,
                  confirm: bool = False,
                  confirm_frames: int = None,
+                 cmd_latency: int = None,
                  target_device_idx: int = None,
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -126,6 +137,9 @@ class SpotSupervisor(BaseProcessingObj):
             raise ValueError('confirm needs z_thr_local and/or flux_thr (local evidence at the new window)')
         if self.confirm and ff_mode == 'one':
             raise ValueError("confirm needs a hold phase: use ff_mode 'hold' or 'n3'")
+        if cmd_latency is not None and int(cmd_latency) < 1:
+            raise ValueError('cmd_latency must be None (legacy) or >= 1 frame')
+        self.cmd_latency = None if cmd_latency is None else int(cmd_latency)
 
         cmd = np.asarray(cmd_to_px if cmd_to_px is not None else np.eye(2) * NM_TO_PX, dtype=float)
         self.cmd_to_px = cmd.reshape(2, 2)
@@ -187,11 +201,16 @@ class SpotSupervisor(BaseProcessingObj):
         self.conf_flux = 0.0
         self.confirmed = None
         self.frame = 0
+        L = self.cmd_latency or 1
+        self.cmd_hist = deque(maxlen=L + 1)       # loop command (px) read at steps j-L .. j
+        self.uff_hist = deque(maxlen=L)           # feedforward total at the end of steps j-L .. j-1
+        self.w_queue = []                         # [(step, window)] returns waiting for the feedforward
 
     @classmethod
     def input_names(cls):
         return {'in_pixels': InputDesc(Pixels, 'Detector pixels'),
-                'in_command': InputDesc(BaseValue, 'Tip/tilt command applied during the frame [nm]')}
+                'in_command': InputDesc(BaseValue, 'Tip/tilt command [nm]: on the mirror during the frame '
+                                                   '(cmd_latency None) or as issued by the controller')}
 
     @classmethod
     def output_names(cls):
@@ -295,7 +314,7 @@ class SpotSupervisor(BaseProcessingObj):
     def process_frame(self, frame, u_loop_px):
         """One detector frame. ``u_loop_px``: spot shift (px) produced by the loop command applied
         during the frame; the supervisor adds its own feedforward. Returns a telemetry dict."""
-        u = np.asarray(u_loop_px, dtype=float) + self.u_ff
+        u = self._mirror_command(np.asarray(u_loop_px, dtype=float))
         frame = self.xp.asarray(frame, dtype=self.dtype)
         spectrum = self.xp.fft.fft2(frame)
         corr = self._correlate(spectrum)
@@ -320,11 +339,33 @@ class SpotSupervisor(BaseProcessingObj):
                 med = np.median(arr, axis=0)
                 far = np.linalg.norm(med - (self.w + u)) > self.delta
                 agree = np.linalg.norm(arr - med, axis=1).max() <= self.delta
-                if agree and far and np.median(self.ratios) < self.q_thr:
+                if agree and far and np.median(self.ratios) < self.q_thr and not self.w_queue:
                     self._start_move(med - u)
         self._schedule_feedforward()
+        while self.w_queue and self.w_queue[0][0] <= self.frame:
+            self.w = self.w_queue.pop(0)[1]
+        if self.cmd_latency is not None:
+            self.uff_hist.append(self.u_ff.copy())
         self.frame += 1
         return dict(est=est, z=z, ratio=ratio, dropout=self.dropout)
+
+    def _mirror_command(self, u_loop):
+        """Spot shift (px) produced by what is on the mirror during this frame: loop command + feedforward."""
+        if self.cmd_latency is None:
+            return u_loop + self.u_ff
+        self.cmd_hist.append(u_loop)
+        L = self.cmd_latency
+        cmd = self.cmd_hist[0] if len(self.cmd_hist) == L + 1 else np.zeros(2)
+        ff = self.uff_hist[0] if len(self.uff_hist) == L else np.zeros(2)
+        return cmd + ff
+
+    def _return_window(self, w_new):
+        """Window change caused by a feedforward issued now: applied when the feedforward reaches the mirror
+        (a window set at step k acts on frame k+1, the feedforward issued at step k lands on frame k+L)."""
+        if self.cmd_latency is None or self.cmd_latency == 1:
+            self.w = w_new
+        else:
+            self.w_queue.append((self.frame + self.cmd_latency - 1, w_new))
 
     def _look(self, spectrum, corr, u):
         """Correlation map of one look: the frame itself (look_frames = 1) or the mean of look_frames
@@ -388,16 +429,17 @@ class SpotSupervisor(BaseProcessingObj):
                     return
             if self.ff_mode == 'hold':
                 self.u_ff = self.u_ff + self.w
-                self.w, self.hold_until = np.zeros(2), None
+                self._return_window(np.zeros(2))
+                self.hold_until = None
             else:
                 if self.n3_left == 0:
                     self.n3_left, self.n3_next, self.n3_w0 = 3, self.frame, self.w.copy()
                 if self.frame >= self.n3_next:
                     self.u_ff = self.u_ff + self.n3_w0 / 3
-                    self.w = self.w - self.n3_w0 / 3
                     self.n3_left, self.n3_next = self.n3_left - 1, self.frame + 2
+                    self._return_window(self.n3_w0 * self.n3_left / 3)   # exactly 0 after the last step
                     if self.n3_left == 0:
-                        self.w, self.hold_until = np.zeros(2), None
+                        self.hold_until = None
 
     def trigger_code(self):
         frame = self.local_inputs['in_pixels'].pixels
