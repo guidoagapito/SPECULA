@@ -339,7 +339,8 @@ class TestSpotSupervisorExtra(unittest.TestCase):
         self.assertEqual(np.diff(steps).tolist(), [2, 2])
 
     def test_n3_interrupted_by_a_new_consensus_restarts_cleanly(self):
-        """Spot lost again after the first n3 step: old sequence is dropped, new one brings u_ff to d2."""
+        """Spot lost again after the first n3 step: the new consensus needs looks taken after the last window
+        change, so the old sequence completes first; the new one then brings u_ff to d2."""
         sup = make(ff_mode='n3', n_cons=3, k_hold=0)
         d1, d2 = np.array([12.0, 6.0]), np.array([-12.0, -8.0])
         h1 = physical(sup, self.rng, d1, 3)                            # consensus at frame 3, first n3 step at once
@@ -351,8 +352,8 @@ class TestSpotSupervisorExtra(unittest.TestCase):
         self.assertIsNone(sup.hold_until)
         np.testing.assert_array_equal(sup.w, [0.0, 0.0])
         np.testing.assert_allclose(sup.u_ff, d2, atol=1.0)
-        # 2 steps of the interrupted sequence + 3 of the new one (the third old step never happens)
-        self.assertEqual(n_ff_steps(h1 + h2), 5)
+        # 3 steps of the first sequence (each window step clears the looks) + 3 of the new one
+        self.assertEqual(n_ff_steps(h1 + h2), 6)
 
     # ---- presence / dropout ----
 

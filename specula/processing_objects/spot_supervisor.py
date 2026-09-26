@@ -337,13 +337,15 @@ class SpotSupervisor(BaseProcessingObj):
             if len(self.hist) == self.n_cons:
                 arr = np.array(self.hist)
                 med = np.median(arr, axis=0)
-                far = np.linalg.norm(med - (self.w + u)) > self.delta
+                # "far" on the latest look in detector coordinates: comparing the median of the registered
+                # looks with the CURRENT command adds the disturbance drift over the consensus window
+                far = np.linalg.norm(est - self.w) > self.delta
                 agree = np.linalg.norm(arr - med, axis=1).max() <= self.delta
                 if agree and far and np.median(self.ratios) < self.q_thr and not self.w_queue:
                     self._start_move(med - u)
         self._schedule_feedforward()
         while self.w_queue and self.w_queue[0][0] <= self.frame:
-            self.w = self.w_queue.pop(0)[1]
+            self._set_window(self.w_queue.pop(0)[1])
         if self.cmd_latency is not None:
             self.uff_hist.append(self.u_ff.copy())
         self.frame += 1
@@ -359,11 +361,17 @@ class SpotSupervisor(BaseProcessingObj):
         ff = self.uff_hist[0] if len(self.uff_hist) == L else np.zeros(2)
         return cmd + ff
 
+    def _set_window(self, w_new):
+        """Window return: looks taken with the old window (guard ratio, position) must not enter a consensus."""
+        self.w = w_new
+        self.hist, self.ratios = [], []
+        self.look_count = 0
+
     def _return_window(self, w_new):
         """Window change caused by a feedforward issued now: applied when the feedforward reaches the mirror
         (a window set at step k acts on frame k+1, the feedforward issued at step k lands on frame k+L)."""
         if self.cmd_latency is None or self.cmd_latency == 1:
-            self.w = w_new
+            self._set_window(w_new)
         else:
             self.w_queue.append((self.frame + self.cmd_latency - 1, w_new))
 

@@ -112,5 +112,34 @@ class TestCmdLatency(unittest.TestCase):
         np.testing.assert_array_equal(log[k_ff][1], [0.0, 0.0])
 
 
+class TestFarOnLatestLook(unittest.TestCase):
+    """A captured spot must not trigger a move, even if the command drifts over the consensus window."""
+
+    def test_command_drift_alone_does_not_move_a_captured_spot(self):
+        # spot fixed on the detector at the window while the command follows a drifting disturbance: the
+        # registered positions drift by 0.6 px/frame, so the median of the looks lags the current command by
+        # > delta. The guard is disabled (q_thr > 1) so that only the "far" test decides.
+        rng = np.random.default_rng(5)
+        sup = make(n_cons=2, look_frames=4, q_thr=1.1)
+        for j in range(40):
+            sup.process_frame(spot(0.0, 0.0) + NOISE * rng.standard_normal((N, N)), np.array([0.6 * j, 0.0]))
+        self.assertEqual(sup.n_moves, 0)
+
+    def test_window_return_clears_the_looks(self):
+        sup = make(cmd_latency=3)
+        issued = []
+        rng = np.random.default_rng(6)
+        for j in range(12):
+            on_mirror = issued[j - 4] if j >= 4 else np.zeros(2)
+            sup.process_frame(spot(*(np.array([12.0, 8.0]) - on_mirror)) + NOISE * rng.standard_normal((N, N)),
+                              np.zeros(2))
+            issued.append(sup.u_ff.copy())
+            if np.any(sup.u_ff != 0) and not sup.w_queue and np.all(sup.w == 0):
+                self.assertEqual(sup.hist, [])
+                break
+        else:
+            self.fail('the window never returned')
+
+
 if __name__ == '__main__':
     unittest.main()
