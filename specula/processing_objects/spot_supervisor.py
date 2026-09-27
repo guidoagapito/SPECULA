@@ -56,6 +56,14 @@ class SpotSupervisor(BaseProcessingObj):
     more than the hold). Thresholds are shared with presence, so ``confirm_frames`` defaults to
     ``block_frames``.
 
+    ``presence_tpl_fwhm`` / ``presence_halo_fwhm`` / ``presence_halo_fraction`` (default: the template above) give
+    presence and confirmation their own core + halo template, e.g. fitted to the measured long-exposure PSF: for a
+    broad PSF the fixed template makes the z statistics miss a present star, while a halo-dominated template used for
+    the looks would smooth the correlation map (imprecise peaks, guard C vetoing lost spots). Thresholds must be
+    calibrated with the same presence template. The gain is mostly a lower noise-only threshold (fewer extreme
+    maxima on a smoother map); for a bright star the self-normalised z of a broad template saturates, which does
+    not matter since such a star is present by a wide margin.
+
     ``ref_offset`` is the offset of the matched-filter peak from the WCoG centroid for a spot at the
     reference (peak/centroid asymmetry, integer-pixel quantisation): the estimates are the centroid
     displacement from the reference, so the window centre ``w`` needs no further correction.
@@ -105,6 +113,9 @@ class SpotSupervisor(BaseProcessingObj):
                  confirm: bool = False,
                  confirm_frames: int = None,
                  cmd_latency: int = None,
+                 presence_tpl_fwhm: float = None,
+                 presence_halo_fwhm: float = None,
+                 presence_halo_fraction: float = None,
                  target_device_idx: int = None,
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -158,6 +169,17 @@ class SpotSupervisor(BaseProcessingObj):
 
         tpl = (1.0 - halo_fraction) * gauss(tpl_fwhm) + halo_fraction * gauss(halo_fwhm)
         self.tpl_conj = self.xp.asarray(np.conj(np.fft.fft2(tpl)).astype(self.complex_dtype))
+        # presence template (detection): by default the same; set it to the measured PSF for broad PSFs, while the
+        # sharp template above keeps the looks and guard C localised (a halo-dominated template smooths the map)
+        p_core = tpl_fwhm if presence_tpl_fwhm is None else presence_tpl_fwhm
+        p_halo = halo_fwhm if presence_halo_fwhm is None else presence_halo_fwhm
+        p_frac = halo_fraction if presence_halo_fraction is None else presence_halo_fraction
+        self.separate_presence_tpl = (p_core, p_halo, p_frac) != (tpl_fwhm, halo_fwhm, halo_fraction)
+        if self.separate_presence_tpl:
+            ptpl = (1.0 - p_frac) * gauss(p_core) + p_frac * gauss(p_halo)
+            self.pres_tpl_conj = self.xp.asarray(np.conj(np.fft.fft2(ptpl)).astype(self.complex_dtype))
+        else:
+            self.pres_tpl_conj = self.tpl_conj
         self.c = (self.n - 1) / 2.0
         self.coord = idx - self.c                                  # pixel index -> px from the centre
         fr = np.fft.fftfreq(self.n)
@@ -223,6 +245,9 @@ class SpotSupervisor(BaseProcessingObj):
 
     def _correlate(self, spectrum):
         return self.xp.real(self.xp.fft.ifft2(spectrum * self.tpl_conj))
+
+    def _correlate_presence(self, spectrum):
+        return self.xp.real(self.xp.fft.ifft2(spectrum * self.pres_tpl_conj))
 
     def _restrict(self, corr):
         if self.search_radius <= 0:
@@ -291,7 +316,10 @@ class SpotSupervisor(BaseProcessingObj):
         self.acc_count += 1
         if self.acc_count < self.block_frames:
             return None
-        cp = corr if self.block_frames == 1 else self._correlate(self.acc / self.block_frames)
+        if self.block_frames == 1:
+            cp = self._correlate_presence(spectrum) if self.separate_presence_tpl else corr
+        else:
+            cp = self._correlate_presence(self.acc / self.block_frames)
         z, z_loc = self._block_stats(cp)
         f = self.acc_flux / self.block_frames
         self.last_block = (z, z_loc, f)
@@ -401,7 +429,7 @@ class SpotSupervisor(BaseProcessingObj):
         self.conf_count += 1
         if self.conf_count < self.confirm_frames:
             return
-        corr = self._correlate(self.conf_acc / self.conf_count)
+        corr = self._correlate_presence(self.conf_acc / self.conf_count)
         _, z_loc = self._block_stats(corr)
         f = self.conf_flux / self.conf_count
         self.confirmed = ((self.z_thr_local is not None and z_loc > self.z_thr_local)
