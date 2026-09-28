@@ -9,6 +9,7 @@
 
 ### Interface changes
 
+- Added force limiting to `DM`: new `stiffness` (matrix, `stiffness_data` in YAML, requires `m2c`) and `max_force` parameters. If the forces exceed `max_force`, the highest-order modes are discarded (modes are assumed sorted by increasing spatial frequency), before the position `stroke` clipping. New outputs `out_forces` (forces of the applied command, empty without `stiffness`) and `out_force_nmodes` (number of modes kept).
 - `AtmoEvolution`/`AtmoEvolutionUpDown` (#530): on GPU the trigger is captured in a CUDA graph, so their inputs must be updated in place by the producers (a reallocated input now raises an error). `airmass` is no longer an attribute, `scale_coeff` is now `scale_coef` (device array), `delta_time` is a scalar, and `last_position(s)`, `extra_delta_time(s)` and `last_effective_position` are device arrays.
 - Added `thr_ratio_value` to `ShSlopec`: per-subaperture threshold, as a fraction of the brightest pixel of each subaperture (as in PASSATA). The code path existed but was unreachable and broken (it used the maximum flux over all subapertures).
 - Added `pyr_max_side_ld` to `ModulatedPyramid` and its derived classes to cap the radial support of the pyramid surface in lambda/D units, forcing values outside the support radius to zero and enabling a central fifth pupil.
@@ -33,6 +34,7 @@
 - Fixed ExtSourcePyramid with cuda_stream_enable=True: the CUDA graphs kept reading the data from frame 0, but with FROM_PSF a coeff array is computed for every new PSF. Now a recapturing is performed if necessary.
 - Fixed constructor type hints narrower than what the code accepts (#709):
 - Fixed a bug in ModalAnalysis that was forcing a 64-bit computation even when SPECULA is running with 32 bit precision
+- Fixed `DM` stroke clipping promoting the commands to 64-bit when SPECULA is running with 32 bit precision. Added tests on the `DM` output phase (slice, `idx_modes` and `m2c` paths) and on its precision. `DM` now raises a `ValueError` if the `m2c` rows do not match the influence function modes.
 - Fixed remaining 64-bit promotions in `ModalAnalysis` phase unwrapping (Poisson right-hand side, Laplacian eigenvalues, pupil mask) and missing `precision` in the `out_modes_list` outputs. Removed the unreachable zero-padding branch of `ModalAnalysis.trigger_code()`, and the never-set `_doZeroPad` attribute (with its dead code) from `IFunc` and `IFuncInv`.
 - `PushPullGenerator` no longer allocates the full `(n_steps, nmodes)` push-pull time history (mostly zeros, growing as nmodes^2 * ncycles * nsamples, e.g. ~40 GB for 5000 modes and 100 cycles): each step is now computed on the fly from the per-mode amplitudes and the pattern. The `time_hist` attribute has been removed (the sequence length is available as `nsteps`), and triggering past the end of the sequence raises an explicit `IndexError`. The amplitude computation has been factored out as `specula.lib.modal_pushpull_signal.modal_pushpull_amplitudes()`, and `modal_pushpull_signal()` has been removed (see Interface changes).
 
