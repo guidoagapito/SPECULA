@@ -39,6 +39,9 @@ class BaseProcessingObj(BaseTimeObj):
         self.inputs_changed = False
         self.cuda_graph = None
 
+        # Set by invalidate_graph(): the CUDA graph is captured again at the next trigger()
+        self._cuda_graph_invalid = False
+
         # Will be populated by derived class
         self.inputs = {}
         self.local_inputs = {}
@@ -216,14 +219,22 @@ class BaseProcessingObj(BaseTimeObj):
             cls._streams[target_device_idx] = cp.cuda.Stream(non_blocking=False)
         return cls._streams[target_device_idx]
 
-    def build_stream(self, allow_parallel=True):
+    def build_stream(self, allow_parallel=True, capture=True):
+        '''
+        Create the CUDA stream and capture the CUDA graph.
+        If *capture* is False, the graph is captured at the first trigger() instead,
+        for objects whose trigger_code() needs data that is only available then.
+        '''
         if self.target_device_idx >= 0:
             self._target_device.use()
             if allow_parallel:
                 self.stream = cp.cuda.Stream(non_blocking=False)
             else:
                 self.stream = self.device_stream(self.target_device_idx)
-            self.capture_stream()
+            if capture:
+                self.capture_stream()
+            else:
+                self._cuda_graph_invalid = True
             default_target_device.use()
 
     def capture_stream(self):
@@ -234,6 +245,23 @@ class BaseProcessingObj(BaseTimeObj):
             self.stream.begin_capture()
             self.trigger_code()
             self.cuda_graph = self.stream.end_capture()
+        self._cuda_graph_invalid = False
+
+    def invalidate_graph(self):
+        '''
+        Mark the CUDA graph as invalid, so that it is captured again at the next trigger().
+        To be called by the methods that change something frozen in the graph
+        at capture time, like kernel parameters passed by value.
+        Does nothing if the object does not use a CUDA graph.
+
+        In the trigger() that captures the graph, the GPU work of trigger_code()
+        is executed only once: the graph is not launched, since the warm-up run in
+        capture_stream() already computes the results of that step. The Python code
+        of trigger_code() runs twice (warm-up and capture), so trigger_code() must
+        not keep state in Python variables, as for any code in a CUDA graph.
+        '''
+        if self.stream is not None:
+            self._cuda_graph_invalid = True
 
     def check_ready(self, t):
         self.current_time = t
@@ -257,7 +285,12 @@ class BaseProcessingObj(BaseTimeObj):
 
         if self.target_device_idx >= 0:
             self._target_device.use()
-        if self.target_device_idx >= 0 and self.cuda_graph:
+        if self.target_device_idx >= 0 and self._cuda_graph_invalid:
+            # Capture the graph. The warm-up run in capture_stream() computes
+            # the results of this step, so the new graph is not launched.
+            self.logger.debug('Capturing the CUDA graph')
+            self.capture_stream()
+        elif self.target_device_idx >= 0 and self.cuda_graph:
             self.cuda_graph.launch(stream=self.stream)
         else:
             self.trigger_code()

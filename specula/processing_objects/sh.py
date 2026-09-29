@@ -462,12 +462,15 @@ class SH(BaseProcessingObj):
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
 
-        # Interpolation of input array if needed
-        with tracer('interpolation', self):
-            self.ef_interpolator.interpolate()
-
         if self._kernelobj is not None:
             self._prepare_kernels()
+
+        # The input field interpolation is done in trigger_code(), so that it is
+        # part of the CUDA graph. Its extrapolation data depends on the pupil,
+        # which is only valid from the first step on (it is set by the upstream
+        # objects in their trigger): it is computed here, before the graph is
+        # captured at the first trigger(). Does nothing after the first call.
+        self.ef_interpolator.initialize_extrapolation()
 
     def _prepare_kernels(self):
         if len(self._laser_launch_tel.tel_pos) != 0:
@@ -495,7 +498,12 @@ class SH(BaseProcessingObj):
         oversampled field can reach 8k x 8k pixels: memory usage is as
         important as speed here, so no full-frame temporaries must be added.
 
-        For each row of dimx subapertures:
+        The input field is first interpolated to the oversampled resolution.
+        This is done here rather than in prepare_trigger(), so that it is part
+        of the CUDA graph, and so that SH objects with the same geometry can
+        share the interpolated field (use_out_ef_cache=True).
+
+        Then, for each row of dimx subapertures:
 
         1. the row of the oversampled electric field, viewed as a (dimx, n, n)
            subap cube, is multiplied by the half-pixel tilt and written into
@@ -508,6 +516,10 @@ class SH(BaseProcessingObj):
 
         Finally, _psfimage is rebinned to the CCD pixels with toccd().
         The flux normalization is done in post_trigger().
+
+        The CUDA graph is captured at the first trigger(), because the
+        interpolation needs the pupil, and captured again if the interpolation
+        parameters are changed with update_interpolator_parameters().
 
         Main performance points:
 
@@ -523,6 +535,10 @@ class SH(BaseProcessingObj):
         dimx = self._lenslet.dimx
         rows = self.subap_rows_slice
         n = self._ovs_np_sub
+
+        # Interpolation of the input field, if needed
+        with tracer('interpolation', self):
+            self.ef_interpolator.interpolate()
         wf1 = self.ef_interpolator.interpolated_ef()
 
         for i, psfimage_view in zip(range(rows.start, rows.stop), self._psfimage_views):
@@ -600,8 +616,10 @@ class SH(BaseProcessingObj):
             xShiftPhInPixel=self._xShiftPhInPixel,
             yShiftPhInPixel=self._yShiftPhInPixel,
             mask_threshold=self._mask_threshold,
-            use_out_ef_cache=False, # we cannot reuse the cache here because the interpolated array
-                                    # is computed in prepare_trigger, but is used in trigger_code
+            use_out_ef_cache=True,  # the interpolated field is computed and used in trigger_code(),
+                                    # so SH objects with the same geometry can share it
+                                    # It also needs the allow_parallel=False flag in build_stream()
+                                    # to avoid race conditions on the cache.
             target_device_idx=self.target_device_idx,
             precision=self.precision
         )
@@ -639,8 +657,27 @@ class SH(BaseProcessingObj):
         for view in [self._wf3_view, self._subap_cube_view] + self._psfimage_views:
             assert view.base is not None
 
+        # The CUDA graph is captured at the first trigger(), see prepare_trigger()
+        super().build_stream(allow_parallel=False, capture=False)
 
-        super().build_stream(allow_parallel=False)
+    def update_interpolator_parameters(self, xShiftPhInPixel=None, yShiftPhInPixel=None,
+                                       rotAnglePhInDeg=None, magnification=None):
+        '''
+        Change the misregistration parameters of the input field interpolation.
+
+        The interpolation is part of the CUDA graph, with its parameters
+        frozen at capture time, so the graph is invalidated and captured
+        again at the next trigger(). Always use this method instead of
+        calling ef_interpolator.update_parameters() directly.
+
+        Parameters are the same as EFInterpolator.update_parameters();
+        the ones set to None are left unchanged.
+        '''
+        self.ef_interpolator.update_parameters(xShiftPhInPixel=xShiftPhInPixel,
+                                               yShiftPhInPixel=yShiftPhInPixel,
+                                               rotAnglePhInDeg=rotAnglePhInDeg,
+                                               magnification=magnification)
+        self.invalidate_graph()
 
     def _get_tlt_f(self, p, c):
         '''
