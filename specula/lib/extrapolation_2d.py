@@ -347,7 +347,7 @@ class EFInterpolator():
                           rotAnglePhInDeg=None, magnification=None):
         """Re-initialize the internal Interp2D object with new misalignment parameters."""
 
-        if magnification < 1e-6:
+        if magnification is not None and magnification < 1e-6:
             raise ValueError("Magnification must be greater than 1e-6 to avoid numerical issues.")
 
         # Retrieve current parameters if not provided
@@ -377,6 +377,45 @@ class EFInterpolator():
         '''
         return self.out_ef
 
+    def initialize_extrapolation(self):
+        '''
+        Calculate the extrapolation data from the current input amplitude.
+
+        This is done only once, and is called automatically by the first
+        interpolate(). It can be called explicitly before that, for example
+        to capture interpolate() in a CUDA graph, which requires that no
+        host operations are performed.
+        '''
+        if not self.do_interpolation or self.extrapolation_initialized:
+            return
+
+        (edge_pixels, reference_indices,
+         coefficients, valid_indices) = \
+            _calculate_extrapolation_indices_coeffs(
+                cpuArray(self.in_ef.A),
+                threshold=self.mask_threshold
+            )
+
+        # Convert to xp
+        self.edge_pixels = to_xp(self.xp, edge_pixels)
+        self.reference_indices = to_xp(self.xp, reference_indices)
+        self.coefficients = to_xp(self.xp, coefficients)
+        self.valid_indices = to_xp(self.xp, valid_indices)
+
+        # Check if input amplitude is binary (all values close to 0 or 1) with tolerance
+        unique_values = self.xp.unique(self.in_ef.A)
+        tol = 1e-3
+        is_binary = self.xp.all(
+            self.xp.logical_or(
+                self.xp.abs(unique_values - 0) < tol,
+                self.xp.abs(unique_values - 1) < tol
+            )
+        )
+        # Python bool: testing a GPU array in interpolate() would be a
+        # host synchronization at every call
+        self.amplitude_is_binary = bool(is_binary)
+        self.extrapolation_initialized = True
+
     def interpolate(self):
         '''
         Perform interpolation with edge extrapolation.
@@ -386,31 +425,7 @@ class EFInterpolator():
             return
 
         if self.extrapolation_initialized is False:
-            # Calculate extrapolation data only once
-            (edge_pixels, reference_indices,
-             coefficients, valid_indices) = \
-                _calculate_extrapolation_indices_coeffs(
-                    cpuArray(self.in_ef.A),
-                    threshold=self.mask_threshold
-                )
-
-            # Convert to xp
-            self.edge_pixels = to_xp(self.xp, edge_pixels)
-            self.reference_indices = to_xp(self.xp, reference_indices)
-            self.coefficients = to_xp(self.xp, coefficients)
-            self.valid_indices = to_xp(self.xp, valid_indices)
-
-            # Check if input amplitude is binary (all values close to 0 or 1) with tolerance
-            unique_values = self.xp.unique(self.in_ef.A)
-            tol = 1e-3
-            is_binary = self.xp.all(
-                self.xp.logical_or(
-                    self.xp.abs(unique_values - 0) < tol,
-                    self.xp.abs(unique_values - 1) < tol
-                )
-            )
-            self.amplitude_is_binary = is_binary
-            self.extrapolation_initialized = True
+            self.initialize_extrapolation()
 
         # Amplitude: simple interpolation
         self.interp.interpolate(self.in_ef.A, out=self.out_ef.A)
