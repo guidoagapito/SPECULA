@@ -149,8 +149,7 @@ class TestSH(unittest.TestCase):
 
         # Test 1: sh1 and sh2 should share arrays (same geometry, same rank)
         assert id(sh1._wf3) == id(sh2._wf3), "sh1 and sh2 should share _wf3"
-        assert id(sh1.psf) == id(sh2.psf), "sh1 and sh2 should share psf"
-        assert id(sh1.psf_shifted) == id(sh2.psf_shifted), "sh1 and sh2 should share psf_shifted"
+        assert id(sh1._psfimage) == id(sh2._psfimage), "sh1 and sh2 should share _psfimage"
         assert id(sh1.ef_row) == id(sh2.ef_row), "sh1 and sh2 should share ef_row"
 
         # Test 2: sh3 should NOT share with sh1/sh2 (different geometry)
@@ -163,10 +162,10 @@ class TestSH(unittest.TestCase):
         # We should have entries for:
         # - sh1/sh2 (shared, rank 0, geometry 20)
         # - sh3 (separate, rank 0, geometry 30)
-        # Each geometry allocates 4 arrays
-        #  (_wf3, psf==psf_shifted, ef_row, _psfimage, _psf_reshaped_2d)
-        # So expected: 2 geometries × 5 arrays = 10 entries
-        assert cache_size == 10
+        # Each geometry allocates 3 arrays (_wf3, ef_row, _psfimage),
+        # psf_shifted is only allocated when a convolution kernel is used.
+        # So expected: 2 geometries × 3 arrays = 6 entries
+        assert cache_size == 6
         print(f"Cache has {cache_size} entries")
 
     @cpu_and_gpu
@@ -260,3 +259,44 @@ class TestSH(unittest.TestCase):
         final_size = pixel_pupil * sh._fov_ovs
         self.assertAlmostEqual(final_size % 20, 0, places=5,
                                msg="Final size must be divisible by 20")
+
+    @cpu_and_gpu
+    def test_wf3_not_shared_with_different_subap_size(self, target_device_idx, xp):
+        '''
+        Two SH with the same number of subaps and FFT size, but a different
+        number of pixels per subap, must not share the padded _wf3 buffer:
+        the one with the larger subaps would write into the padding of the other.
+        '''
+        t = 1
+
+        def make(pixel_pupil, fov_ovs_coeff):
+            sh = SH(wavelengthInNm=589,
+                    subap_wanted_fov=3.0,
+                    sensor_pxscale=0.5,
+                    subap_on_diameter=10,
+                    subap_npx=6,
+                    fov_ovs_coeff=fov_ovs_coeff,
+                    target_device_idx=target_device_idx)
+            ef = ElectricField(pixel_pupil, pixel_pupil, 0.05, S0=1,
+                               target_device_idx=target_device_idx)
+            ef.generation_time = t
+            sh.inputs['in_ef'].set(ef)
+            sh.setup()
+            return sh
+
+        def run(sh):
+            sh.check_ready(t)
+            sh.trigger()
+            sh.post_trigger()
+            return cpuArray(sh.outputs['out_i'].i).copy()
+
+        SH._SH__zeros_cache.clear()
+        sh_a = make(40, 3.0)
+        sh_b = make(60, 1.0)
+        assert sh_a._fft_size == sh_b._fft_size
+        assert sh_a._ovs_np_sub > sh_b._ovs_np_sub
+        assert sh_a._wf3 is not sh_b._wf3
+
+        out_b = run(sh_b)
+        run(sh_a)
+        np.testing.assert_array_equal(run(sh_b), out_b)
