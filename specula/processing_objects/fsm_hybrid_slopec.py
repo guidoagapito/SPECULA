@@ -220,7 +220,7 @@ class FsmHybridSlopec(Slopec):
             dy = self.yy[None, :, :] - y_pos[:, None, None]
         return self.xp.exp(-(dx**2 + dy**2) / (2 * sigma**2))
 
-    def trigger_code(self):
+    def compute_slopes(self):
         self.calc_slopes_nofor()
 
     def calc_slopes_nofor(self):

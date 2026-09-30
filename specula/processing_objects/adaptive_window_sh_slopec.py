@@ -307,9 +307,8 @@ class AdaptiveWindowShSlopec(ShSlopec):
         })
         return result
 
-    def trigger_code(self):
-        if self.weight_int_pixel_dt > 0:
-            self.do_accumulation(self.current_time)
+    def compute_slopes(self):
+        # pixel accumulation (weight_int_pixel_dt > 0) is done by ShSlopec.prepare_trigger()
         self.calc_slopes_nofor()
 
     def _update_dynamic_weights(self):
@@ -476,9 +475,6 @@ class AdaptiveWindowShSlopec(ShSlopec):
         else:
             pixels_thr = xp.maximum(self._pixels_cube - thr, 0)
 
-        if self.store_thr_mask_cube:
-            thr_mask_cube = xp.where(pixels_thr > 0, 1.0, 0.0)
-
         subap_tot = xp.sum(pixels_thr * self.mask_weighted_dyn, axis=(1, 2))
 
         # Regularised denominator, not a bare max(subap_tot, eps) floor: the
@@ -504,10 +500,6 @@ class AdaptiveWindowShSlopec(ShSlopec):
             sx *= self.mult_factor
             sy *= self.mult_factor
             self.logger.warning('multiplication factor in the slope computer!')
-
-        if self.store_thr_mask_cube:
-            self.thr_mask_cube.value = xp.transpose(thr_mask_cube, (1, 2, 0))
-            self.thr_mask_cube.generation_time = self.current_time
 
         self.slopes.xslopes = sx
         self.slopes.yslopes = sy

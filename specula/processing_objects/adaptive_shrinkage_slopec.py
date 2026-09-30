@@ -623,7 +623,7 @@ class AdaptiveShrinkageSlopec(Slopec):
         if self.stream_enable:
             super().build_stream()
 
-    def trigger_code(self):
+    def compute_slopes(self):
         self.calc_slopes_nofor()
 
     def calc_slopes_nofor(self):

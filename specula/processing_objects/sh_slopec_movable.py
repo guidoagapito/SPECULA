@@ -86,8 +86,10 @@ class ShSlopecMovable(ShSlopec):
         self.xweights_flat = self.xweights.reshape(n * n, 1)
         self.yweights_flat = self.yweights.reshape(n * n, 1)
         self.mask_weighted_flat = self.mask_weighted.reshape(n * n, 1)
+        # the slopes are computed from the combined (denominator, x, y) array: refresh it, in place
+        self._weights[:] = self.xp.vstack([self.mask_weighted.ravel(), self.xweights.ravel(), self.yweights.ravel()])
 
-    def trigger_code(self):
+    def compute_slopes(self):
         win = self.local_inputs.get('in_window')
         if win is not None:
             v = self.to_xp(win.value)
@@ -100,11 +102,11 @@ class ShSlopecMovable(ShSlopec):
             self._w_applied = (wx, wy)
             self.set_xy_weights()
         self._w[:] = self.xp.asarray([wx, wy], dtype=self.dtype)
-        super().trigger_code()
+        super().compute_slopes()
         # slopes are in units of half a subaperture: 1 px = 2 / np_sub
         px = 2.0 / self.subapdata.np_sub
         if self._hold:
-            # zero after Slopec.post_trigger has subtracted the slope null (if any)
+            # zero after apply_slopes_corrections() has subtracted the slope null (if any)
             sn = self.sn
             self.slopes.xslopes = (sn.xslopes.copy() if sn else self.xp.zeros_like(self.slopes.xslopes))
             self.slopes.yslopes = (sn.yslopes.copy() if sn else self.xp.zeros_like(self.slopes.yslopes))
