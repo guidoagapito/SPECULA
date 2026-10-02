@@ -9,6 +9,7 @@
 
 ### Interface changes
 
+- `make_modal_base_from_ifs_fft()`: the `m2c` columns of the KL modes no longer apply a piston: `influence_functions.T @ m2c` now gives the modes of `kl_basis` (before, a few KL modes carried a piston of several percent of their peak, invisible to the WFS). `kl_basis` and the Zernike columns of `m2c` are unchanged; the KL columns of `m2c` change by a piston command.
 - `ShSlopec` (#776): on GPU the trigger is captured in a CUDA graph, together with the slope corrections of `Slopec` (slope null, filtering, slopes map), about 9x faster per step. `Slopec`-derived classes now implement `compute_slopes()` instead of `trigger_code()` (overriding `trigger_code()` raises a `TypeError`): `Slopec.trigger_code()` calls it and then applies the slope corrections, which are no longer applied in `post_trigger()`. Classes derived from `ShSlopec` do not use the CUDA graph unless they call `build_stream()` in their `setup()`. The unused `ShSlopec.thr_mask_cube` output has been removed.
 - Added `window_xy` ([x, y] screen pixels) to all displays except `DoublePhaseDisplay`, to place the window on screen with GUI backends that allow it (Tk, Qt, GTK); ignored on the others.
 - Added `dark_frame_tag` to `DynamicDarkCalibrator`: dark frame file in `data_dir` loaded in `setup()` (an error is raised if it cannot be loaded).
@@ -23,6 +24,7 @@
 
 ### Other
 
+- Fixed `filt_modes` in `make_modal_base_from_ifs_fft()`, whose content was ignored: only their number was used, to drop the same number of the highest-order KL modes. They are now projected on the influence functions span and removed from the KL basis; modes outside the span, or duplicating piston, the Zernike modes or other `filt_modes`, are discarded with a warning.
 - Fixed display grouping: displays can share a window again, each one in its own `subplot` (an error is raised only if the same subplot of a window is used twice). The window size is set by the first display of the window. Each simulation now starts with no windows, closing those of a previous simulation in the same process (with `--nsimul` or in a notebook, explicit window numbers raised an error).
 - Fixed `DoublePhaseDisplay`, which always showed an error: its `trigger_code()` called `_update_display()` without the data.
 - Fixed `AtmoPropagation` with `doFresnel` and `upwards` (#770): the field was conjugated before the propagation and after it, which amounts to propagating it backwards, so beam wander and scintillation came out mirrored with respect to the phase (the beam drifted towards -grad(phase) instead of +grad(phase)). The output phase and downwards propagation are unchanged; single realizations of upwards propagated fields change, their ensemble statistics do not. The docstring now states that in the Fresnel path the lowest layer is the pupil plane.
