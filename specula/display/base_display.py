@@ -4,6 +4,7 @@ from numbers import Integral
 from specula.scalar_values import IntValue
 from specula.base_processing_obj import BaseProcessingObj
 from specula.base_processing_obj import OutputDesc
+from specula.display import display_process
 
 def runningOnNotebook():
     try:
@@ -15,6 +16,17 @@ def runningOnNotebook():
 class BaseDisplay(BaseProcessingObj):
 
     __plot_completed = {}
+
+    # With --async-displays, updates can be skipped when the display process is busy.
+    # Displays that accumulate a history set this to False
+    skip_updates = True
+
+    def __new__(cls, *args, **kwargs):
+        # Constructor arguments, used to build a replica in the display process
+        obj = super().__new__(cls)
+        obj._init_args = args
+        obj._init_kwargs = kwargs
+        return obj
 
     def __init__(self,
                  title='',
@@ -48,6 +60,21 @@ class BaseDisplay(BaseProcessingObj):
         if window not in self.__plot_completed:
             self.__plot_completed[window] = {}
 
+        self.output_id = IntValue(value=-1)
+        self.outputs['out_window_id'] = self.output_id
+
+        # Drawing happens in the display process: no figure here.
+        # The display code, including setup() and finalize() of derived classes,
+        # runs there: here setup() only checks the inputs
+        self.async_mode = display_process.enabled
+        if self.async_mode:
+            self.fig = self.ax = None
+            self.setup = lambda: BaseProcessingObj.setup(self)
+            self.finalize = lambda: None
+            self.trigger = lambda: display_process.send(self)
+            display_process.displays.append(self)
+            return
+
         self.fig = plt.figure(num=self.window, figsize=self.figsize)
         self.ax = self.fig.add_subplot(self.subplot)
         self.__plot_completed[self.window][self.subplot] = False
@@ -62,9 +89,6 @@ class BaseDisplay(BaseProcessingObj):
         else:
             from IPython.display import display
             self.handle = display(self.fig, display_id=True)
-
-        self.output_id = IntValue(value=-1)
-        self.outputs['out_window_id'] = self.output_id
 
     def _set_window_position(self, window_xy):
         """Place the GUI window at screen pixel (x, y) if the backend allows it."""
@@ -123,6 +147,9 @@ class BaseDisplay(BaseProcessingObj):
         self.__plot_completed[self.window][self.subplot] = True
         self.output_id.value = self.window
         self.output_id.generation_time = self.current_time
+
+        if self.async_mode:
+            return
 
         # If all subplots in this window have completed drawing,
         # call safe_draw() and reset the plot flags
