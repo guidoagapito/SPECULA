@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import weakref
 
 import numpy as np
 from astropy.io import fits
@@ -107,6 +108,11 @@ def lgs_map_sh(nsh, diam, rl, zb, dz, profz, fwhmb, ps, ssp,
     return ccd
 
 
+# Kernels already loaded or computed, shared by all the objects with the same kernel.
+# Weak values: the kernels are freed when no object uses them anymore.
+_kernels_cache = weakref.WeakValueDictionary()
+
+
 class ConvolutionKernel(BaseDataObj):
     """
     Convolution Kernel data object.
@@ -160,14 +166,11 @@ class ConvolutionKernel(BaseDataObj):
         self.last_zlayer = -1
         self.last_zprofile = -1
         self.positive_shift_tt = positive_shift_tt
-        if self.return_fft:
-            dtype = self.complex_dtype
-        else:
-            dtype = self.dtype
         # Real space kernels: only allocated when the kernels are computed, restored
         # from a file or set with set_value(), and freed again by prepare_for_sh()
         self.real_kernels = None
-        self.kernels = self.xp.zeros(self._kernels_shape(self.return_fft), dtype=dtype)
+        # Allocated by process_kernels(), or shared with other objects by prepare_for_sh()
+        self.kernels = None
         self._kernel_fn = None
 
     def _kernels_shape(self, return_fft):
@@ -291,11 +294,15 @@ class ConvolutionKernel(BaseDataObj):
         if self.xp.any(~self.xp.isfinite(self.real_kernels)):
             raise ValueError("Kernel contains non-finite values!")
 
-        # Reallocate only if the requested layout is different from the current one,
-        # since users may keep references to self.kernels (e.g. in CUDA graphs)
+        # Kernels in the cache can be shared with other objects (see prepare_for_sh()):
+        # they are never overwritten, the new ones are stored in a new array.
+        # Other kernels are reused if the layout is the same. Users like SH, that keep
+        # references to self.kernels (e.g. in CUDA graphs), must check if it has changed.
         shape = self._kernels_shape(return_fft)
         dtype = self.complex_dtype if return_fft else self.dtype
-        if self.kernels is None or self.kernels.shape != shape or self.kernels.dtype != dtype:
+        cached = any(k is self.kernels for k in _kernels_cache.values())
+        if cached or self.kernels is None or self.kernels.shape != shape \
+                or self.kernels.dtype != dtype:
             self.kernels = self.xp.zeros(shape, dtype=dtype)
 
         # Process the kernels - apply FFT if needed.
@@ -367,9 +374,20 @@ class ConvolutionKernel(BaseDataObj):
 
         kernel_fn = self.build()
 
+        if current_time is not None:
+            self.generation_time = current_time
+
         # Only reload or recalculate if the kernel has changed
         if kernel_fn != self._kernel_fn:
             self._kernel_fn = kernel_fn  # Update the stored kernel filename
+
+            # Objects with the same kernel (e.g. LGS WFSs with the same launcher) share it.
+            key = (kernel_fn, self.target_device_idx, self.return_fft)
+            cached = _kernels_cache.get(key)
+            if cached is not None:
+                self.kernels = cached
+                self.logger.info(f"Sharing kernel {kernel_fn} with another object")
+                return
 
             # Build full path using data_dir
             if self.data_dir:
@@ -394,8 +412,7 @@ class ConvolutionKernel(BaseDataObj):
             # free memory
             self.real_kernels = None
 
-        if current_time is not None:
-            self.generation_time = current_time
+            _kernels_cache[key] = self.kernels
 
     @staticmethod
     def restore(filename, target_device_idx=None, kernel_obj=None, return_fft=False):
