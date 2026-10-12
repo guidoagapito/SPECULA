@@ -111,19 +111,30 @@ def demodulate_signal(signal_data, carrier_freq, sampling_freq,
               - pphi0[xp.newaxis, :])  # Shape: (nt, nsignals)
 
     if cumulated:
-        # Cumulated demodulation with progressive windows
-        qa = xp.zeros((nt, nsignals), dtype=dtype)
-        pa = xp.zeros((nt, nsignals), dtype=dtype)
+        # Cumulated demodulation with progressive windows: for each j >= 2
+        # the window [0, j] is detrended (mean and linear tilt removed, first
+        # sample at zero) and projected on the phased carriers. With d_i the
+        # data, s_i a carrier and tau_j = (d_j - d_0) / j, the detrended
+        # sample is d_i - d_0 - tau_j * i (the window mean cancels), so
+        #   qa[j] = [sum_{i<=j} d_i s_i - d_0 sum_{i<=j} s_i
+        #            - tau_j sum_{i<=j} i s_i] / (j + 1)
+        # i.e. three cumulative sums instead of one window sum per j: O(nt)
+        # instead of O(nt^2). Accumulated in float64 because the three terms
+        # partially cancel. Rows 0 and 1 are not used (see qa[2:] below).
+        acc_dtype = xp.float64
+        d = data.astype(acc_dtype)
+        idx = xp.arange(nt, dtype=acc_dtype)[:, xp.newaxis]
+        tau = (d - d[0:1, :]) / xp.maximum(idx, 1)
 
-        for j in range(2, nt):
-            # Window from start to j (all signals at once)
-            window_data = data[:j+1, :] - xp.mean(data[:j+1, :], axis=0, keepdims=True)
-            window_tilt = (window_data[j:j+1, :] - window_data[0:1, :]) / j
-            t_window = xp.arange(j+1, dtype=dtype)[:, xp.newaxis]
-            window_data = window_data - window_tilt * t_window - window_data[0:1, :]
+        def cumulated_projection(carrier):
+            carrier = carrier.astype(acc_dtype)
+            proj = (xp.cumsum(d * carrier, axis=0)
+                    - d[0:1, :] * xp.cumsum(carrier, axis=0)
+                    - tau * xp.cumsum(idx * carrier, axis=0)) / (idx + 1)
+            return proj.astype(dtype)
 
-            qa[j, :] = xp.sum(window_data * dem_sin[:j+1, :], axis=0) / (j + 1)
-            pa[j, :] = xp.sum(window_data * dem_cos[:j+1, :], axis=0) / (j + 1)
+        qa = cumulated_projection(dem_sin)
+        pa = cumulated_projection(dem_cos)
 
         # Compute amplitude and phase time series
         data_dem_temp = 2.0 * xp.sqrt(qa[2:, :]**2 + pa[2:, :]**2)

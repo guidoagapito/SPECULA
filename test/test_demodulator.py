@@ -12,6 +12,97 @@ from test.specula_testlib import cpu_and_gpu
 from specula.simul import Simul
 from specula import np, cpuArray
 
+
+def _demodulate_signal_loop_reference(signal_data, carrier_freq, sampling_freq,
+                                      xp=np, dtype=np.float32):
+    """Previous O(nt^2) implementation, kept as a reference for the cumsum version."""
+    data = xp.asarray(signal_data, dtype=dtype)
+    is_1d = (data.ndim == 1)
+    if is_1d:
+        data = data[:, xp.newaxis]
+    nt, nsignals = data.shape
+
+    dt = 1.0 / sampling_freq
+    t = xp.arange(nt, dtype=dtype) * dt
+    w = 2 * xp.pi * carrier_freq
+
+    periods = int(xp.floor(xp.max(t) * carrier_freq))
+    if periods > 0:
+        test_vect = (xp.arange(periods) + 1) * sampling_freq / carrier_freq
+        errors = xp.abs(test_vect - xp.round(test_vect))
+        idx = xp.where(errors <= 1e-3)[0]
+        if len(idx) > 0:
+            n4mean = int(test_vect[xp.max(idx)])
+        else:
+            n4mean = int(test_vect[xp.argmin(errors)])
+    else:
+        n4mean = max(1, nt // 4)
+
+    data_mean = xp.mean(data, axis=0, keepdims=True)
+    cur_data = data - data_mean
+    tilt = (cur_data[-1:, :] - cur_data[0:1, :]) / nt
+    t_ramp = xp.arange(nt, dtype=dtype)[:, xp.newaxis]
+    cur_data = cur_data - tilt * t_ramp - cur_data[0:1, :]
+
+    sin_carrier = xp.sin(w * t)[:, xp.newaxis]
+    cos_carrier = xp.cos(w * t)[:, xp.newaxis]
+    qa_ref = xp.mean(cur_data * sin_carrier, axis=0)
+    pa_ref = xp.mean(cur_data * cos_carrier, axis=0)
+    pphi0 = xp.arctan2(qa_ref, pa_ref)
+
+    dem_sin = xp.sin(w * t[:, xp.newaxis] - pphi0[xp.newaxis, :])
+    dem_cos = xp.cos(w * t[:, xp.newaxis] - pphi0[xp.newaxis, :])
+
+    qa = xp.zeros((nt, nsignals), dtype=dtype)
+    pa = xp.zeros((nt, nsignals), dtype=dtype)
+    for j in range(2, nt):
+        window_data = data[:j+1, :] - xp.mean(data[:j+1, :], axis=0, keepdims=True)
+        window_tilt = (window_data[j:j+1, :] - window_data[0:1, :]) / j
+        t_window = xp.arange(j+1, dtype=dtype)[:, xp.newaxis]
+        window_data = window_data - window_tilt * t_window - window_data[0:1, :]
+        qa[j, :] = xp.sum(window_data * dem_sin[:j+1, :], axis=0) / (j + 1)
+        pa[j, :] = xp.sum(window_data * dem_cos[:j+1, :], axis=0) / (j + 1)
+
+    data_dem_temp = 2.0 * xp.sqrt(qa[2:, :]**2 + pa[2:, :]**2)
+    pphi_temp = xp.arctan2(qa[2:, :], pa[2:, :])
+
+    start_idx = max(0, nt - 2 - n4mean)
+    end_idx = nt - 2
+    if end_idx > start_idx:
+        value = xp.mean(data_dem_temp[start_idx:end_idx, :], axis=0)
+        pphi = xp.mean(pphi_temp[start_idx:end_idx, :], axis=0)
+    else:
+        value = data_dem_temp[-1, :] if len(data_dem_temp) > 0 else xp.zeros(nsignals)
+        pphi = pphi_temp[-1, :] if len(pphi_temp) > 0 else xp.zeros(nsignals)
+
+    pphi = pphi + pphi0
+    if is_1d:
+        return float(value[0]), float(pphi[0])
+    return value, pphi
+
+
+def _wrap_phase(delta):
+    """Wrap a phase difference to [-pi, pi)."""
+    return (delta + np.pi) % (2 * np.pi) - np.pi
+
+
+def _make_sprint_like_signals(nt, nsignals=16, sampling_freq=1000.0, noise_std=0.5, seed=1234):
+    """
+    Host-side (numpy) SPRINT-like multi-signal input: per-signal sinusoid at
+    sampling_freq/35 Hz with random amplitude and phase, DC offset, linear drift
+    and Gaussian noise. Returns (signals, carrier_freq, amplitudes, phases).
+    """
+    rng = np.random.default_rng(seed)
+    carrier_freq = sampling_freq / 35
+    t = np.arange(nt) / sampling_freq
+    amplitudes = rng.uniform(0.5, 5.0, nsignals)
+    phases = rng.uniform(-np.pi, np.pi, nsignals)
+    drift = rng.uniform(-5.0, 5.0, nsignals)  # units/s
+    signals = (amplitudes * np.sin(2 * np.pi * carrier_freq * t[:, None] + phases)
+               + 50.0 + drift * t[:, None]
+               + rng.normal(0.0, noise_std, (nt, nsignals)))
+    return signals, carrier_freq, amplitudes, phases
+
 class TestDemodulator(unittest.TestCase):
     """Test demodulator by running a simulation and checking the output amplitude"""
 
@@ -560,3 +651,88 @@ class TestDemodulateSignal(unittest.TestCase):
         self.assertAlmostEqual(diff_phase, np.pi/3, places=1)
 
 
+class TestDemodulateSignalCumsum(unittest.TestCase):
+    """Cumsum implementation of the cumulated demodulation vs the O(nt^2) loop."""
+
+    sampling_freq = 1000.0
+
+    def _compare(self, xp, nt, dtype, rtol_amp, atol_phase):
+        signals, fc, _, _ = _make_sprint_like_signals(nt)
+        sig = xp.asarray(signals)
+        amp_new, ph_new = demodulate_signal(sig, fc, self.sampling_freq,
+                                            cumulated=True, xp=xp, dtype=dtype)
+        amp_ref, ph_ref = _demodulate_signal_loop_reference(sig, fc, self.sampling_freq,
+                                                            xp=xp, dtype=dtype)
+        amp_new, ph_new = cpuArray(amp_new), cpuArray(ph_new)
+        amp_ref, ph_ref = cpuArray(amp_ref), cpuArray(ph_ref)
+        self.assertEqual(amp_new.dtype, np.dtype(dtype))
+        self.assertEqual(ph_new.dtype, np.dtype(dtype))
+        np.testing.assert_allclose(amp_new, amp_ref, rtol=rtol_amp, atol=0)
+        np.testing.assert_allclose(_wrap_phase(ph_new - ph_ref), 0.0, atol=atol_phase)
+
+    @cpu_and_gpu
+    def test_cumsum_matches_loop_float64(self, target_device_idx, xp):
+        """Both are exact reformulations of the same sums: float64 agrees to rounding."""
+        # Measured (CPU, nt=2000, 16 signals): amplitude rel. diff ~4e-15, phase ~2e-15 rad.
+        # 1e-9 leaves ~5 orders of magnitude of margin (and covers GPU summation order).
+        self._compare(xp, 2000, np.float64, rtol_amp=1e-9, atol_phase=1e-9)
+
+    @cpu_and_gpu
+    def test_cumsum_matches_loop_float32(self, target_device_idx, xp):
+        """In float32 the loop is limited by float32 rounding; new one accumulates in float64."""
+        # Measured (CPU, nt=2000): amplitude rel. diff ~2.6e-7, phase diff 0.
+        # 1e-4 is ~400x above that, still ~1e4 times tighter than the physical errors.
+        self._compare(xp, 2000, np.float32, rtol_amp=1e-4, atol_phase=1e-4)
+
+    @cpu_and_gpu
+    def test_cumsum_matches_loop_short_inputs(self, target_device_idx, xp):
+        """Short inputs exercise the j >= 2 start and the n4mean fallback branches."""
+        # Measured float64: up to ~5e-13 (nt=3, ill-conditioned), float32: up to ~2.4e-7.
+        for nt in (3, 4, 10):
+            with self.subTest(nt=nt, dtype='float64'):
+                self._compare(xp, nt, np.float64, rtol_amp=1e-9, atol_phase=1e-9)
+            with self.subTest(nt=nt, dtype='float32'):
+                self._compare(xp, nt, np.float32, rtol_amp=1e-4, atol_phase=1e-4)
+
+    @cpu_and_gpu
+    def test_cumsum_known_sinusoid_amplitude_and_phase(self, target_device_idx, xp):
+        """
+        Noise-free A sin(2 pi f t + phi) + DC + linear drift, 5 s at 1 kHz.
+        Expected amplitude A; phase follows the module convention: the reference
+        phase is arctan2(<s sin>, <s cos>) = pi/2 - phi (mod 2 pi).
+        """
+        fs = self.sampling_freq
+        fc = fs / 35
+        t = np.arange(5000) / fs
+        amplitudes = np.array([1.0, 2.5, 4.0])
+        phases = np.array([-2.0, 0.3, 1.2])
+        drift = np.array([1.0, -3.0, 2.0])
+        signals = (amplitudes * np.sin(2 * np.pi * fc * t[:, None] + phases)
+                   + 50.0 + drift * t[:, None])
+
+        for dtype in (np.float32, np.float64):
+            with self.subTest(dtype=dtype.__name__):
+                amp, ph = demodulate_signal(xp.asarray(signals), fc, fs,
+                                            cumulated=True, xp=xp, dtype=dtype)
+                self.assertEqual(amp.dtype, dtype)
+                self.assertEqual(ph.dtype, dtype)
+                amp, ph = cpuArray(amp), cpuArray(ph)
+                # Measured: amplitude error <= 1.4e-2 (0.35% of A), phase error <= 2.5e-3 rad
+                # (residual from the progressive-window detrending of a drifting signal).
+                np.testing.assert_allclose(amp, amplitudes, rtol=1e-2)
+                np.testing.assert_allclose(_wrap_phase(ph - (np.pi / 2 - phases)),
+                                           0.0, atol=1e-2)
+
+    @cpu_and_gpu
+    def test_cumsum_known_single_signal(self, target_device_idx, xp):
+        """1D input returns Python floats close to the injected amplitude."""
+        fs = self.sampling_freq
+        fc = fs / 35
+        t = np.arange(5000) / fs
+        sig = 3.0 * np.sin(2 * np.pi * fc * t + 0.7) + 50.0 + 2.0 * t
+        amp, ph = demodulate_signal(xp.asarray(sig), fc, fs, cumulated=True,
+                                    xp=xp, dtype=np.float64)
+        self.assertIsInstance(amp, float)
+        self.assertIsInstance(ph, float)
+        self.assertAlmostEqual(amp, 3.0, delta=0.03)
+        self.assertAlmostEqual(float(_wrap_phase(ph - (np.pi / 2 - 0.7))), 0.0, delta=1e-2)
