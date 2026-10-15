@@ -6,6 +6,7 @@ from specula import cpuArray
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.mmse_reconstructor import compute_mmse_reconstructor
 from specula.base_data_obj import BaseDataObj
+from specula.lib.fits_io import load_fits_array
 from specula.data_objects.recmat import Recmat
 
 
@@ -167,7 +168,6 @@ class Intmat(BaseDataObj):
     def restore(filename, target_device_idx=None):
         with fits.open(filename) as hdul:
             hdr = hdul[0].header
-            intmat = hdul[1].data.copy()
             norm_factor = float(hdr.get('NORMFACT', 0.0))
             pupdata_tag = hdr.get('PUP_TAG', '')
             subapdata_tag = hdr.get('SA_TAG', '')
@@ -177,6 +177,7 @@ class Intmat(BaseDataObj):
                 slope_rms = hdul[3].data.copy()
             else:
                 slope_mm = slope_rms = None
+        intmat = load_fits_array(filename, ext=1, target_device_idx=target_device_idx)
         return Intmat(intmat, slope_mm, slope_rms, pupdata_tag, subapdata_tag, norm_factor, target_device_idx=target_device_idx)
 
     def generate_rec(self, nmodes=None, cut_modes=0, w_vec=None, interactive=False):
