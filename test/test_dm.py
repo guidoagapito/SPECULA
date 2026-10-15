@@ -15,7 +15,7 @@ from specula.data_objects.simul_params import SimulParams
 from test.specula_testlib import cpu_and_gpu
 
 from specula import cpuArray
-from numpy.testing import assert_array_almost_equal
+from numpy.testing import assert_array_almost_equal, assert_array_equal
 
 
 class TestDM(unittest.TestCase):
@@ -709,9 +709,9 @@ class TestDM(unittest.TestCase):
             DM(simul_params, height=0, ifunc=ifunc, m2c=m2c, stroke=[1.] * 4, target_device_idx=target_device_idx)
 
     @cpu_and_gpu
-    def test_dm_m2c_selected_and_ifunc_applied(self, target_device_idx, xp):
-        '''m2c_selected and ifunc_applied expose the basis of the input command:
-        with m2c the selected m2c columns and the full ifunc, without m2c the selected ifunc rows.'''
+    def test_dm_modal_ifunc(self, target_device_idx, xp):
+        '''modal_ifunc() row j is the shape of DM input element j:
+        the selected m2c columns times the ifunc with m2c, the selected ifunc rows without.'''
         simul_params = SimulParams(time_step=1, pixel_pupil=16, pixel_pitch=1)
         ifunc = IFunc(type_str='zernike', npixels=16, nmodes=6, target_device_idx=target_device_idx)
         ifunc_arr = cpuArray(ifunc.influence_function)
@@ -720,18 +720,65 @@ class TestDM(unittest.TestCase):
         m2c_arr = np.random.RandomState(0).randn(6, 4)
         dm = DM(simul_params, height=0, ifunc=ifunc, m2c=M2C(m2c_arr, target_device_idx=target_device_idx),
                 start_mode=1, target_device_idx=target_device_idx)
-        self.assertEqual(dm.m2c_selected.shape, (6, 3))
         self.assertEqual(dm.nmodes, 3)
-        assert_array_almost_equal(cpuArray(dm.m2c_selected), m2c_arr[:, 1:4])
-        assert_array_almost_equal(cpuArray(dm.ifunc_applied), ifunc_arr)
+        modes = dm.modal_ifunc()
+        assert_array_almost_equal(cpuArray(modes.influence_function), m2c_arr[:, 1:4].T @ ifunc_arr, decimal=5)
+        assert_array_equal(cpuArray(modes.mask_inf_func), cpuArray(dm.mask))
+        # Subsets of the input command
+        assert_array_almost_equal(cpuArray(dm.modal_ifunc(start_mode=1).influence_function),
+                                  m2c_arr[:, 2:4].T @ ifunc_arr, decimal=5)
+        assert_array_almost_equal(cpuArray(dm.modal_ifunc(idx_modes=[2, 0]).influence_function),
+                                  m2c_arr[:, [3, 1]].T @ ifunc_arr, decimal=5)
 
-        # Without m2c and idx_modes: only the selected ifunc rows are applied
+        # Without m2c and idx_modes: the selected ifunc rows
         idx_modes = [1, 3, 4]
         dm2 = DM(simul_params, height=0, ifunc=ifunc, idx_modes=idx_modes,
                  target_device_idx=target_device_idx)
-        self.assertIsNone(dm2.m2c_selected)
         self.assertEqual(dm2.nmodes, 3)
-        assert_array_almost_equal(cpuArray(dm2.ifunc_applied), ifunc_arr[idx_modes])
+        assert_array_almost_equal(cpuArray(dm2.modal_ifunc().influence_function), ifunc_arr[idx_modes])
+        assert_array_almost_equal(cpuArray(dm2.modal_ifunc(start_mode=1).influence_function),
+                                  ifunc_arr[[3, 4]])
+
+        # Same layer as the DM for the same command (apart from the sign)
+        for d in (dm, dm2):
+            cmd = np.array([1.0, -0.5, 2.0], dtype=np.float32)
+            in_dm = BaseValue(value=xp.asarray(cmd), target_device_idx=target_device_idx)
+            in_dm.generation_time = 1
+            d.inputs['in_command'].set(in_dm)
+            d.setup()
+            d.check_ready(1)
+            d.trigger()
+            d.post_trigger()
+            idx = cpuArray(d.mask) > 0
+            expected = d.sign * cmd @ cpuArray(d.modal_ifunc().influence_function)
+            assert_array_almost_equal(cpuArray(d.outputs['out_layer'].phaseInNm)[idx], expected, decimal=4)
+
+        # Not shared with the DM, also without m2c and with a slice selection
+        dm3 = DM(simul_params, height=0, ifunc=ifunc, target_device_idx=target_device_idx)
+        modes3 = dm3.modal_ifunc()
+        modes3.influence_function[:] = 0
+        assert_array_almost_equal(cpuArray(dm3.ifunc), ifunc_arr)
+
+        # On another device
+        modes_cpu = dm.modal_ifunc(target_device_idx=-1)
+        self.assertIsInstance(modes_cpu.influence_function, np.ndarray)
+        assert_array_almost_equal(modes_cpu.influence_function, cpuArray(modes.influence_function))
+
+        # Caller precision, with and without m2c
+        for d in (dm, dm2):
+            self.assertEqual(d.modal_ifunc(precision=0).influence_function.dtype, np.float64)
+            self.assertEqual(d.modal_ifunc(precision=1, target_device_idx=-1).influence_function.dtype,
+                             np.float32)
+
+        # Full basis modes driven by the input command
+        self.assertEqual(dm.selected_modes, [1, 2, 3])
+        self.assertEqual(dm2.selected_modes, idx_modes)
+        self.assertEqual(dm3.selected_modes, list(range(6)))
+
+        with self.assertRaises(ValueError):
+            dm.modal_ifunc(start_mode=3)
+        with self.assertRaises(ValueError):
+            dm.modal_ifunc(idx_modes=[])
 
     @cpu_and_gpu
     def test_dm_empty_selection_raises(self, target_device_idx, xp):

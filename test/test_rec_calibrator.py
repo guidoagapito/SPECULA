@@ -786,11 +786,12 @@ class TestRecCalibratorMMSESelection(unittest.TestCase):
 
     def _expected(self, intmat, dm, ifunc_arr, m2c_arr, ncols, target_device_idx):
         """Recmat from generate_rec_mmse called directly with an explicit basis"""
+        if m2c_arr is not None:
+            ifunc_arr = m2c_arr.T @ ifunc_arr
         modal_base = IFunc(ifunc=ifunc_arr, mask=dm.mask, target_device_idx=target_device_idx)
-        m2c = None if m2c_arr is None else M2C(m2c_arr, target_device_idx=target_device_idx)
         diameter = dm.pixel_pitch * dm.pixel_pupil
         rec = intmat.generate_rec_mmse(self.r0, self.L0, diameter, modal_base, self.noise,
-                                       nmodes=ncols, m2c=m2c)
+                                       nmodes=ncols)
         return cpuArray(rec.recmat)
 
     @cpu_and_gpu

@@ -8,6 +8,7 @@ from specula.lib.mmse_reconstructor import compute_mmse_reconstructor
 from specula.base_data_obj import BaseDataObj
 from specula.lib.fits_io import load_fits_array
 from specula.data_objects.recmat import Recmat
+from specula.data_objects.ifunc import IFunc
 
 
 class _ColsView:
@@ -190,18 +191,15 @@ class Intmat(BaseDataObj):
         rec.im_tag = self.norm_factor  # TODO wrong
         return rec
 
-    def generate_rec_mmse(self, r0, L0, diameter, modal_base, c_noise, nmodes=None, m2c=None):
+    def generate_rec_mmse(self, r0: float, L0: float, diameter: float, modal_base: IFunc,
+                          c_noise: float | np.ndarray | list, nmodes: int = None) -> Recmat:
         if nmodes is not None:
             intmat = self.modes[:nmodes]
         else:
             intmat = self.intmat
         # atmosphere covariance matrix
-        if m2c is not None:
-            influence_function = m2c.m2c.T @ modal_base.influence_function
-        else:
-            influence_function = modal_base.influence_function
         c_atm = compute_ifs_covmat(
-            modal_base.mask_inf_func, diameter, influence_function, r0, L0,
+            modal_base.mask_inf_func, diameter, modal_base.influence_function, r0, L0,
             oversampling=2, xp=self.xp, dtype=self.dtype
         )
         if c_atm.shape[0] > intmat.shape[1]:
