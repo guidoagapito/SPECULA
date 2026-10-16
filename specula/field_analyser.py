@@ -207,24 +207,26 @@ class FieldAnalyser(BaseReplayAnalyser):
         # Add field sources to existing parameters
         self._add_field_sources_to_params(replay_params)
 
-        # Add ModalAnalysis for each source
+        # A single ModalAnalysis for all sources, so that the inverse
+        # influence function is allocated and read only once
         modal_input_list = []
+        modal_config = {
+            'class': 'ModalAnalysis',
+            'n_inputs': len(self.sources),
+            'inputs': {'in_ef_list': [f'prop.out_field_source_{i}_ef'
+                                      for i in range(len(self.sources))]},
+            'outputs': [f'out_modes_{i}' for i in range(len(self.sources))]
+        }
+
+        # Forward all modal params as-is; unsupported keys will be caught at object creation time.
+        modal_config.update(modal_params)
+
+        replay_params['field_modal_analysis'] = modal_config
+
         for i, source_dict in enumerate(self.sources):
-            modal_name = f'modal_analysis_{i}'
-            modal_config = {
-                'class': 'ModalAnalysis',
-                'inputs': {'in_ef': f'prop.out_field_source_{i}_ef'},
-                'outputs': ['out_modes']
-            }
-
-            # Forward all modal params as-is; unsupported keys will be caught at object creation time.
-            modal_config.update(modal_params)
-
-            replay_params[modal_name] = modal_config
-
             # Create filename for this source
             modal_filename = self._get_modal_filename(source_dict, modal_params)
-            modal_input_list.append(f'{modal_filename}-{modal_name}.out_modes')
+            modal_input_list.append(f'{modal_filename}-field_modal_analysis.out_modes_{i}')
 
         # Add DataStore to save results
         replay_params['data_store_modal'] = {

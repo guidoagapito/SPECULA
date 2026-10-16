@@ -502,7 +502,7 @@ class BaseProcessingObj(BaseTimeObj):
         for declared_name, declared_desc in output_list.items():
             declared_matches = [
                 name for name in self.outputs
-                if self._match_declared_name(name, declared_name)
+                if self._best_declared_match(name, output_list)[0] == declared_name
             ]
             if not declared_matches:
                 raise ValueError(

@@ -78,7 +78,7 @@ class TestModalAnalysisUnwrapping(unittest.TestCase):
 
         # unwrap phase again
         modal_analysis = ModalAnalysis(npixels=120, nmodes=10, type_str='zernike', wavelengthInNm=1550)
-        unwrapped_phase = modal_analysis.unwrap_2d(wrapped_phase)
+        unwrapped_phase = modal_analysis.unwrap_ls(wrapped_phase)
         unwrapped_phase_skimage = unwrap_phase(cpuArray(wrapped_phase), rng=1)
 
         rel_error_1 = np.mean(np.abs((cpuArray(phase) - cpuArray(unwrapped_phase))) / np.abs(cpuArray(phase)))
@@ -175,6 +175,54 @@ class TestModalAnalysisUnwrapping(unittest.TestCase):
             self.assertTrue(xp.may_share_memory(phase2modes_data, ifunc_inv.ifunc_inv))
         else:
             self.assertEqual(phase2modes_data.data.ptr, ifunc_inv.ifunc_inv.data.ptr)
+
+    @cpu_and_gpu
+    def test_modal_analysis_ifunc_inv_nmodes_none_keeps_object(self, target_device_idx, xp):
+        ifunc_inv = IFuncInv(xp.random.rand(4, 3).astype(xp.float32),
+                             xp.ones((2, 2), dtype=xp.uint8),
+                             target_device_idx=target_device_idx)
+
+        modal_analysis = ModalAnalysis(ifunc_inv=ifunc_inv, nmodes=None,
+                                       target_device_idx=target_device_idx)
+
+        self.assertIs(modal_analysis.phase2modes, ifunc_inv)
+
+    @cpu_and_gpu
+    def test_modal_analysis_ifunc_and_ifunc_inv_nmodes(self, target_device_idx, xp):
+        mask = xp.ones((2, 2), dtype=xp.uint8)
+        ifunc = IFunc(xp.random.rand(3, 4).astype(xp.float32), mask=mask,
+                      target_device_idx=target_device_idx)
+        ifunc_inv = IFuncInv(xp.random.rand(4, 3).astype(xp.float32), mask,
+                             target_device_idx=target_device_idx)
+
+        modal_analysis = ModalAnalysis(ifunc=ifunc, ifunc_inv=ifunc_inv, nmodes=2,
+                                       target_device_idx=target_device_idx)
+
+        self.assertEqual(modal_analysis.phase2modes.size, (4, 2))
+        self.assertEqual(modal_analysis.outputs['out_modes'].value.shape, (2,))
+
+    @cpu_and_gpu
+    def test_modal_analysis_too_many_nmodes(self, target_device_idx, xp):
+        ifunc_inv = IFuncInv(xp.random.rand(4, 3).astype(xp.float32),
+                             xp.ones((2, 2), dtype=xp.uint8),
+                             target_device_idx=target_device_idx)
+
+        with self.assertRaises(ValueError):
+            ModalAnalysis(ifunc_inv=ifunc_inv, nmodes=5, target_device_idx=target_device_idx)
+
+    @cpu_and_gpu
+    def test_modal_analysis_indexed_outputs(self, target_device_idx, xp):
+        ifunc_inv = IFuncInv(xp.random.rand(4, 3).astype(xp.float32),
+                             xp.ones((2, 2), dtype=xp.uint8),
+                             target_device_idx=target_device_idx)
+
+        modal_analysis = ModalAnalysis(ifunc_inv=ifunc_inv, n_inputs=3,
+                                       target_device_idx=target_device_idx)
+        modal_analysis.check_output_names()
+
+        for i in range(3):
+            self.assertIs(modal_analysis.outputs[f'out_modes_{i}'],
+                          modal_analysis.outputs['out_modes_list'][i])
 
     @cpu_and_gpu
     def test_modal_analysis_forwards_remove_piston_default(self, target_device_idx, xp):
@@ -292,8 +340,43 @@ class TestModalAnalysisUnwrapping(unittest.TestCase):
                              target_device_idx=target_device_idx, precision=precision)
 
     @cpu_and_gpu
+    def test_modal_analysis_single_and_list_outputs_are_separate(self, target_device_idx, xp):
+        """in_ef only updates out_modes/rms, in_ef_list only the list outputs."""
+        npixels, nmodes = 20, 4
+        coeffs = xp.array([1.0, -2.0, 3.0, 0.5])
+        ifunc, idx = self._zern_basis(npixels, nmodes, xp)
+
+        single = self._make_ma(npixels, nmodes, target_device_idx)
+        ef = ElectricField(npixels, npixels, 0.1, target_device_idx=target_device_idx)
+        self._set_phase(ef, coeffs, ifunc, idx, t=1)
+        single.inputs['in_ef'].set(ef)
+        list_time = single.outputs['out_modes_list'][0].generation_time
+        self._run_once(single, 1)
+
+        self.assertEqual(single.outputs['out_modes'].generation_time, 1)
+        self.assertGreater(float(xp.abs(single.outputs['out_modes'].value).max()), 0)
+        self.assertEqual(single.outputs['out_modes_list'][0].generation_time, list_time)
+        self.assertEqual(float(xp.abs(single.outputs['out_modes_list'][0].value).max()), 0)
+        self.assertEqual(float(xp.abs(single.outputs['rms_list'][0].value).max()), 0)
+
+        multi = self._make_ma(npixels, nmodes, target_device_idx, n_inputs=2)
+        ef_list = [ElectricField(npixels, npixels, 0.1, target_device_idx=target_device_idx)
+                   for _ in range(2)]
+        for e in ef_list:
+            self._set_phase(e, coeffs, ifunc, idx, t=1)
+        multi.inputs['in_ef_list'].set(ef_list)
+        single_time = multi.outputs['out_modes'].generation_time
+        self._run_once(multi, 1)
+
+        self.assertEqual(multi.outputs['out_modes_list'][0].generation_time, 1)
+        self.assertGreater(float(xp.abs(multi.outputs['out_modes_list'][0].value).max()), 0)
+        self.assertEqual(multi.outputs['out_modes'].generation_time, single_time)
+        self.assertEqual(float(xp.abs(multi.outputs['out_modes'].value).max()), 0)
+        self.assertEqual(float(xp.abs(multi.outputs['rms'].value).max()), 0)
+
+    @cpu_and_gpu
     def test_modal_analysis_precision_dtypes(self, target_device_idx, xp):
-        """precision=0/1 must propagate to all outputs and to unwrap_2d()."""
+        """precision=0/1 must propagate to all outputs and to unwrap_ls()."""
         npixels, nmodes = 20, 4
         ifunc, idx = self._zern_basis(npixels, nmodes, xp)
 
@@ -325,7 +408,9 @@ class TestModalAnalysisUnwrapping(unittest.TestCase):
             for v in multi.outputs['rms_list']:
                 self.assertEqual(v.value.dtype, expected_dtype)
 
-            unwrapped = single.unwrap_2d(xp.zeros((npixels, npixels), dtype=expected_dtype))
+            unwrapping = self._make_ma(npixels, nmodes, target_device_idx,
+                                       wavelengthInNm=1550, precision=precision)
+            unwrapped = unwrapping.unwrap_ls(xp.zeros((npixels, npixels), dtype=expected_dtype))
             self.assertEqual(unwrapped.dtype, expected_dtype)
 
     @cpu_and_gpu
