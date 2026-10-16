@@ -2,6 +2,7 @@ from collections import defaultdict, namedtuple
 import contextlib
 import fnmatch
 import re
+import weakref
 
 from specula import cpuArray, default_target_device, cp
 from specula.tracing import tracer
@@ -250,9 +251,12 @@ class BaseProcessingObj(BaseTimeObj):
         # Taken from the default memory pool, that memory could be given to other
         # arrays (overwritten by the graph) or freed (illegal address at launch).
         # It is taken instead from a pool used only for this graph.
-        if cp is not None:
+        if cp is not None:  # pragma: gpu
             if self._graph_mempool is None:
                 self._graph_mempool = cp.cuda.MemoryPool()
+                # A deleted MemoryPool does not release its memory to the device,
+                # free it explicitly when this object is garbage collected
+                weakref.finalize(self, self._graph_mempool.free_all_blocks)
             else:
                 # Recapture: the old graph is not launched anymore
                 self.cuda_graph = None
@@ -502,7 +506,7 @@ class BaseProcessingObj(BaseTimeObj):
         for declared_name, declared_desc in output_list.items():
             declared_matches = [
                 name for name in self.outputs
-                if self._match_declared_name(name, declared_name)
+                if self._best_declared_match(name, output_list)[0] == declared_name
             ]
             if not declared_matches:
                 raise ValueError(

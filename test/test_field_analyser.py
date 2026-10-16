@@ -538,7 +538,7 @@ class TestModalParamsHandling(unittest.TestCase):
             result = analyzer._build_replay_params_modal(
                 {'ifunc_ref': 'my_ifunc', 'nmodes': 50}
             )
-        ma = result['modal_analysis_0']
+        ma = result['field_modal_analysis']
         self.assertEqual(ma['class'], 'ModalAnalysis')
         self.assertEqual(ma['ifunc_ref'], 'my_ifunc')
         self.assertEqual(ma['nmodes'], 50)
@@ -552,7 +552,7 @@ class TestModalParamsHandling(unittest.TestCase):
                           return_value=self._fake_replay_base()), \
              patch.object(analyzer, '_add_field_sources_to_params'):
             result = analyzer._build_replay_params_modal({'ifunc_inv_ref': 'my_inv'})
-        ma = result['modal_analysis_0']
+        ma = result['field_modal_analysis']
         self.assertEqual(ma['ifunc_inv_ref'], 'my_inv')
         self.assertNotIn('ifunc_ref', ma)
 
@@ -566,7 +566,7 @@ class TestModalParamsHandling(unittest.TestCase):
             result = analyzer._build_replay_params_modal(
                 {'type_str': 'zernike', 'nmodes': 30, 'npixels': 8, 'obsratio': 0.2}
             )
-        ma = result['modal_analysis_0']
+        ma = result['field_modal_analysis']
         self.assertEqual(ma['type_str'], 'zernike')
         self.assertEqual(ma['nmodes'], 30)
         self.assertEqual(ma['npixels'], 8)
@@ -690,7 +690,7 @@ class TestModalParamsHandling(unittest.TestCase):
                           return_value=self._fake_replay_base()), \
              patch.object(analyzer, '_add_field_sources_to_params'):
             result = analyzer._build_replay_params_modal({'ifunc': mock_ifunc})
-        ma = result['modal_analysis_0']
+        ma = result['field_modal_analysis']
         self.assertIs(ma['ifunc'], mock_ifunc)
         self.assertNotIn('type_str', ma)
 
@@ -707,7 +707,7 @@ class TestModalParamsHandling(unittest.TestCase):
              patch.object(analyzer, '_add_field_sources_to_params'):
             result = analyzer._build_replay_params_modal({'custom_key': 123})
 
-        ma = result['modal_analysis_0']
+        ma = result['field_modal_analysis']
         self.assertEqual(ma['custom_key'], 123)
 
 

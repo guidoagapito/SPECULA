@@ -71,7 +71,7 @@ class CalibManager():
             'Lenslet': 'lenslet/',
             'Phasescreen': 'phasescreens/',
             'Pixels': 'pixels/',
-            'Slopes': 'slopes/',
+            'Slopes': 'slopenulls/',
             'TimeHistory': 'data/',
             'time_hist': 'data/',
             'Source': 'data/',

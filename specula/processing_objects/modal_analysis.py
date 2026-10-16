@@ -78,7 +78,17 @@ class ModalAnalysis(BaseProcessingObj):
         if pupilstop:
             mask = pupilstop.A
 
-        if ifunc is None and ifunc_inv is None:
+        if ifunc_inv is not None:
+            # ifunc_inv has priority over ifunc
+            if nmodes is not None and nmodes != ifunc_inv.nmodes():
+                ifunc_inv = IFuncInv(ifunc_inv.ifunc_inv[:, :nmodes],
+                                     mask=ifunc_inv.mask_inf_func,
+                                     target_device_idx=ifunc_inv.target_device_idx,
+                                     precision=ifunc_inv.precision)
+            self.phase2modes = ifunc_inv
+        elif ifunc is not None:
+            self.phase2modes = ifunc.inverse(nmodes=nmodes, remove_piston=remove_piston)
+        else:
             if type_str is None:
                 raise ValueError('At least one of ifunc and type must be set')
             if mask is not None:
@@ -95,54 +105,65 @@ class ModalAnalysis(BaseProcessingObj):
                 raise ValueError(f'Invalid ifunc type {type_str}')
 
             ifunc = IFunc(ifunc, mask=mask, nmodes=nmodes, target_device_idx=self.target_device_idx)
-            self.phase2modes = ifunc.inverse(remove_piston=remove_piston)
-        elif ifunc is None and ifunc_inv is not None:
-            # Use ifunc_inv directly, don't attempt to call inverse() on None
-            if nmodes != ifunc_inv.nmodes():
-                ifunc_inv = IFuncInv(ifunc_inv.ifunc_inv[:, :nmodes],
-                                     mask=ifunc_inv.mask_inf_func,
-                                     target_device_idx=ifunc_inv.target_device_idx,
-                                     precision=ifunc_inv.precision)
-            self.phase2modes = ifunc_inv
-        elif ifunc is not None and ifunc_inv is None:
-            # This is the case where only ifunc is provided
-            self.phase2modes = ifunc.inverse(nmodes=nmodes, remove_piston=remove_piston)
-        else:  # Both are provided
-            # Prioritize ifunc_inv
-            self.phase2modes = ifunc_inv
+            # compute_zern_ifunc already removes the piston from each mode
+            self.phase2modes = ifunc.inverse(remove_piston=False)
 
-        self.rms = BaseValue('output RMS of phase from modal reconstructor',
-                             target_device_idx=target_device_idx,
-                             precision=precision)
-        self.rms.value = self.xp.zeros(1, dtype=self.dtype)
+        self._n_modes = self.phase2modes.nmodes()
+        if nmodes is not None and nmodes > self._n_modes:
+            raise ValueError(f'nmodes ({nmodes}) is larger than the number of available modes ({self._n_modes})')
+        self._n_inputs = n_inputs
+
         if dorms is not None:
             warnings.warn('ModalAnalysis: dorms is deprecated and ignored, '
                           'the RMS is always computed', FutureWarning, stacklevel=2)
         self.wavelengthInNm = wavelengthInNm
+        if wavelengthInNm > 0:
+            mask_inf_func = self.phase2modes.mask_inf_func
+            self._nm_to_rad_masked = mask_inf_func.astype(self.dtype) * (2 * np.pi / wavelengthInNm)
+            # Eigenvalues of the finite difference Laplacian in the DCT domain
+            rows, cols = mask_inf_func.shape
+            v = self.xp.cos(np.pi * self.xp.arange(rows, dtype=self.dtype) / rows)
+            u = self.xp.cos(np.pi * self.xp.arange(cols, dtype=self.dtype) / cols)
+            self._laplacian_denom = 2 * (v.reshape(-1, 1) + u - 2)
+            self._laplacian_denom[0, 0] = 1.0  # avoid division by zero
 
-        if nmodes is None:
-            self._n_modes = self.phase2modes.nmodes()
-        else:
-            self._n_modes = nmodes
-        self._n_inputs = n_inputs
+        # One row per input: all inputs are projected with a single matrix product,
+        # reading the (possibly very large) inverse matrix only once.
+        # The values of the list outputs are views on rows of these buffers.
+        n_rows = max(n_inputs, 1)
+        self._ph = self.xp.zeros((n_rows, self.phase2modes.npoints()), dtype=self.dtype)
+        self._modes = self.xp.zeros((n_rows, self._n_modes), dtype=self.dtype)
+        self._rms = self.xp.zeros(n_rows, dtype=self.dtype)
 
+        # Single input outputs, only updated for in_ef
         self.out_modes = BaseValue('output modes from modal analysis',
                                    target_device_idx=target_device_idx,
                                    precision=precision)
         self.out_modes.value = self.xp.zeros(self._n_modes, dtype=self.dtype)
+        self.rms = BaseValue('output RMS of phase from modal reconstructor',
+                             target_device_idx=target_device_idx,
+                             precision=precision)
+        self.rms.value = self.xp.zeros(1, dtype=self.dtype)
+
         self.inputs['in_ef'] = InputValue(type=ElectricField, optional=True)
         self.inputs['in_ef_list'] = InputList(type=ElectricField, optional=True)
         self.outputs['out_modes'] = self.out_modes
         self.outputs['rms'] = self.rms
-        self.outputs['out_modes_list'] = []
-        self.outputs['rms_list'] = []
-        for _ in range(self._n_inputs):
-            self.outputs['out_modes_list'].append(BaseValue('modes', target_device_idx=self.target_device_idx,
-                                                            precision=precision))
-            self.outputs['rms_list'].append(BaseValue('phase RMS', target_device_idx=self.target_device_idx,
-                                                      precision=precision))
-        self.out_modes_list = self.outputs['out_modes_list']
-        self.rms_list = self.outputs['rms_list']
+        self.out_modes_list = []
+        self.rms_list = []
+        for i in range(self._n_inputs):
+            out_modes = BaseValue('modes', target_device_idx=self.target_device_idx,
+                                  precision=precision)
+            out_modes.value = self._modes[i]
+            rms = BaseValue('phase RMS', target_device_idx=self.target_device_idx,
+                            precision=precision)
+            rms.value = self._rms[i:i+1]
+            self.out_modes_list.append(out_modes)
+            self.rms_list.append(rms)
+            # Also available as a single output, e.g. for a DataStore
+            self.outputs[f'out_modes_{i}'] = out_modes
+        self.outputs['out_modes_list'] = self.out_modes_list
+        self.outputs['rms_list'] = self.rms_list
 
     @classmethod
     def input_names(cls):
@@ -151,10 +172,11 @@ class ModalAnalysis(BaseProcessingObj):
 
     @classmethod
     def output_names(cls):
-        return {'out_modes': OutputDesc(BaseValue, 'Modal coefficients from the combined/single input electric field'),
-                'rms': OutputDesc(BaseValue, 'RMS of the wavefront of the single input electric field'),
+        return {'out_modes': OutputDesc(BaseValue, 'Modal coefficients of the single input electric field (in_ef only, not updated with in_ef_list)'),
+                'rms': OutputDesc(BaseValue, 'RMS of the wavefront of the single input electric field (in_ef only, not updated with in_ef_list)'),
                 'out_modes_list': OutputDesc(list, 'Per-input modal coefficient vectors (list, one per connected input)'),
-                'rms_list': OutputDesc(list, 'Per-input wavefront RMS (list, one per connected input)')}
+                'rms_list': OutputDesc(list, 'Per-input wavefront RMS (list, one per connected input)'),
+                'out_modes_{input_idx}': OutputDesc(BaseValue, 'Modal coefficients of input [input_idx], same as out_modes_list[input_idx]')}
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
@@ -187,23 +209,12 @@ class ModalAnalysis(BaseProcessingObj):
         # 2D discrete cosine transform
         dct_rho = self.dct(self.dct(rho, axis=0, norm='ortho'), axis=1, norm='ortho')
 
-        # Create the Eigenvalues of the Laplacian in DCT domain
-        v = self.xp.cos(np.pi * self.xp.arange(rows, dtype=self.dtype) / rows)
-        u = self.xp.cos(np.pi * self.xp.arange(cols, dtype=self.dtype) / cols)
-
-        # Finite difference Laplacian
-        denom = 2 * (v.reshape(-1, 1) + u - 2)
-
         # Solve in frequency domain
-        denom[0, 0] = 1.0
-        dct_phi = dct_rho / denom
+        dct_phi = dct_rho / self._laplacian_denom
         dct_phi[0, 0] = 0.0 # avoid division by zero
 
         # Inverse 2D DCT
         return self.idct(self.idct(dct_phi, axis=0, norm='ortho'), axis=1, norm='ortho')
-
-    def unwrap_2d(self, p):
-        return self.unwrap_ls(p)
 
     def setup(self):
         super().setup()
@@ -211,37 +222,32 @@ class ModalAnalysis(BaseProcessingObj):
         if input_list:
             if self._n_inputs != len(input_list):
                 raise ValueError(f"Number of inputs ({len(input_list)}) does not match expected number ({self._n_inputs})")
-            for i in range(len(input_list)):
-                self.outputs['out_modes_list'][i].value = self.xp.zeros(self._n_modes, dtype=self.dtype)
-                self.outputs['rms_list'][i].value = self.xp.zeros(1, dtype=self.dtype)
 
     def trigger_code(self):
+        # Each input mode only updates its own outputs
         if self.in_ef:
             ef_list = [self.in_ef]
-            output_list = [self.out_modes]
-            rms_list = [self.rms]
+            modes, rms = self.out_modes.value[None, :], self.rms.value
+            outputs = [self.out_modes, self.rms]
         else:
             ef_list = self.in_ef_list
-            output_list = self.out_modes_list
-            rms_list = self.rms_list
+            modes, rms = self._modes[:len(ef_list)], self._rms[:len(ef_list)]
+            outputs = self.out_modes_list + self.rms_list
 
-        for li, current_ef in enumerate(ef_list):
+        idx = self.phase2modes.idx_inf_func
+        ph = self._ph[:len(ef_list)]
+        for i, current_ef in enumerate(ef_list):
             if self.wavelengthInNm > 0:
-                phase_in_rad = current_ef.phaseInNm * (2 * self.xp.pi / self.wavelengthInNm)
-                phase_in_rad *= self.phase2modes.mask_inf_func.astype(self.dtype)
-                phase_in_rad = self.unwrap_2d(phase_in_rad)
-                phase_in_nm = phase_in_rad * (self.wavelengthInNm / (2 * self.xp.pi))
-                ph = phase_in_nm[self.phase2modes.idx_inf_func]
+                phase_in_rad = self.unwrap_ls(current_ef.phaseInNm * self._nm_to_rad_masked)
+                ph[i] = phase_in_rad[idx] * (self.wavelengthInNm / (2 * np.pi))
             else:
-                ph = current_ef.phaseInNm[self.phase2modes.idx_inf_func]
+                ph[i] = current_ef.phaseInNm[idx]
 
-            m = self.xp.dot(ph, self.phase2modes.ifunc_inv)
-
-            # This also sets self.out_modes in case of a non-list input
-            output_list[li].value[:] = m
-            output_list[li].generation_time = self.current_time
-            rms_list[li].value[:] = self.xp.std(ph)
-            rms_list[li].generation_time = self.current_time
+        # modes and rms are views on the output values
+        modes[:] = ph @ self.phase2modes.ifunc_inv
+        rms[:] = self.xp.std(ph, axis=1)
+        for output in outputs:
+            output.generation_time = self.current_time
 
     def post_trigger(self):
         super().post_trigger()

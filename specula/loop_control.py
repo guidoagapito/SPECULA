@@ -13,6 +13,7 @@ class LoopControl(BaseTimeObj):
         super().__init__(target_device_idx=-1, precision=1)
         self.logger.set_instance_name(None)
         self.trigger_lists = defaultdict(list)
+        self.setup_order = None
         self.run_time = None
         self.dt = None
         self.t0 = None
@@ -38,7 +39,29 @@ class LoopControl(BaseTimeObj):
             idx (int): The index of the trigger list to which the object should be added.
         """
         self.trigger_lists[idx].append(obj)
-        
+
+    def set_setup_order(self, objs):
+        """
+        Set the order in which the objects are set up by start().
+        Objects added to the loop but not in *objs* are set up after them,
+        in trigger order. If not set, objects are set up in trigger order.
+
+        Parameters:
+            objs (list): processing objects in setup order.
+        """
+        self.setup_order = list(objs)
+
+    def setup_list(self):
+        """
+        Return all the objects in the loop, in setup order.
+        """
+        in_trigger_order = [element for i in sorted(self.trigger_lists.keys())
+                            for element in self.trigger_lists[i]]
+        if self.setup_order is None:
+            return in_trigger_order
+        ordered = [element for element in self.setup_order if element in in_trigger_order]
+        return ordered + [element for element in in_trigger_order if element not in ordered]
+
     def niters(self):
         """
         Calculate the number of iterations based on the run time and time step.
@@ -97,28 +120,27 @@ class LoopControl(BaseTimeObj):
 
         self.logger.mpi_debug(f'{self.trigger_lists=}')
 
-        for i in sorted(self.trigger_lists.keys()):
-            # all the objects having this trigger order could be remote            
-            for element in self.trigger_lists[i]:
+        # Setup order can differ from trigger order, see Simul.build_setup_order()
+        for element in self.setup_list():
+            try:
+                self.logger.mpi_debug(f'' + str(element) + ' startMemUsageCount')
+                element.startMemUsageCount()
                 try:
-                    self.logger.mpi_debug(f'' + str(element) + ' startMemUsageCount')
-                    element.startMemUsageCount()
-                    try:
-                        self.logger.mpi_debug(f'' + str(element) + ' setup')
-                        with tracer('setup', element):
-                            element.setup()
-                        element.sanity_check()
-                    finally:
-                        self.logger.mpi_debug(f'' + str(element) + ' stopMemUsageCount')
-                        element.stopMemUsageCount()
-                    self.logger.mpi_debug(f'setup '+str(element))
-                    #  workaround for objects that need to send outputs
-                    # before the first iter() call
-                    # because their outputs are used with ":-1"
-                    element.send_outputs(delayed_only=True, first_mpi_send=False)
-                except:
-                    self.logger.error('Exception in ' + element.name)
-                    raise
+                    self.logger.mpi_debug(f'' + str(element) + ' setup')
+                    with tracer('setup', element):
+                        element.setup()
+                    element.sanity_check()
+                finally:
+                    self.logger.mpi_debug(f'' + str(element) + ' stopMemUsageCount')
+                    element.stopMemUsageCount()
+                self.logger.mpi_debug(f'setup '+str(element))
+                #  workaround for objects that need to send outputs
+                # before the first iter() call
+                # because their outputs are used with ":-1"
+                element.send_outputs(delayed_only=True, first_mpi_send=False)
+            except:
+                self.logger.error('Exception in ' + element.name)
+                raise
         
         self.logger.debug(f'Setups DONE')
         self._report_mem('after setup')

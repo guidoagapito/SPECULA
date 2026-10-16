@@ -108,7 +108,7 @@ Create a YAML configuration file, for example ``params_fresnel_propagation.yml``
    # through the atmosphere, and the pupil stop. It takes the source and the atmospheric layers
    # as inputs and outputs the electric field at the pupil plane in all the directions corresponding
    # to the source polar coordinates.
-   # To activate Fresnel propagation doFresnel is set to true. In this case also the wavelenghtInNm must be provided.
+   # To activate Fresnel propagation doFresnel is set to true. In this case also the wavelengthInNm must be provided.
    # In order to deal with the FFT and numerical issues a padding_factor is recommended.
    # To enable upwards propagation, the standard one is downwards, upwards has to be set to true.
    # The output is a list of electric fields, one for each source direction.
@@ -150,7 +150,7 @@ Create a YAML configuration file, for example ``params_fresnel_propagation.yml``
     * **Fresnel propagation**: When ``doFresnel=True`` SPECULA employs the Angular Spectrum Method (ASM) for step-by-step propagation between consecutive phase screens. When evaluating beam propagation across long vacuum distances such as from the top of the atmospheric turbulence layer to a GEO or LEO satellite receiver the propagation distance satisfies the far-field condition. In this regime, SPECULA transitions from ASM to Fraunhofer diffraction.
     * **Pupilstop**: The ``pupilstop`` block defines a circular aperture mask for both paths, though alternative geometries, such as a Gaussian profile for simulating uplink laser beams, can also be configured.  If the beam for upwards propagation is not centered, it is required to set the ``beam_center`` parameter for the ``AtmoPropagation`` class.
     * **Zero padding**: To mitigate circular wrapping artifacts arising from the Fast Fourier Transforms (FFTs) inherent to ASM and Fraunhofer implementations, setting a large enough ``padding_factor`` is highly recommend. If the padding factor is too small, SPECULA will automatically reduce the propagation distance and output a warning.
-    * **Phase wrapping**: While phase extraction following these propagation methods naturally yields a wrapped field, SPECULA incorporates a dedicated 2D phase unwrapping function ``unwrap_2d`` to reconstruct continuous, smooth phase maps in ``modal_analysis.py``. If you perform a modal analysis of a Fresnel propagated electric field, you have to set the ``wavelenghtInNm`` to perform an automatic unwrapping.
+    * **Phase wrapping**: While phase extraction following these propagation methods naturally yields a wrapped field, SPECULA incorporates a dedicated 2D phase unwrapping function ``unwrap_ls`` to reconstruct continuous, smooth phase maps in ``modal_analysis.py``. If you perform a modal analysis of a Fresnel propagated electric field, you have to set the ``wavelengthInNm`` to perform an automatic unwrapping.
 
 Now run the full propagation simulation:
 
