@@ -21,13 +21,6 @@ from specula.simul_diagram import SimulDiagram
 from specula.display import display_process
 
 import yaml
-import hashlib
-
-
-def computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name):
-    s = output_obj_name + '%' + dest_object + '%' + str(output_attr_name) + '%' + str(input_attr_name)
-    rr = int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**6
-    return rr
 
 
 class Simul():
@@ -532,11 +525,12 @@ class Simul():
             if type(self.objs[key]) is DataStore:
                 self.objs[key].setParams(params)
 
-    def connect(self, output_name, input_name, dest_object):
+    def connect(self, output_name, input_name, dest_object, tag):
         '''
         Connect the output *output_name*, defined by object *output_obj_name*,
         and whose reference is *output_ref*, which might be None if the object is remote,
         to the input *input_name* of the object *dest_object*, which might be local or remote.
+        *tag* is the MPI tag of the connection, used if the two objects are on different ranks.
 
         This routine handles the three cases:
         1. local output to local input - use Python references
@@ -549,8 +543,6 @@ class Simul():
         send = output.ref is not None and local_dest_object is False
         recv = output.ref is None and local_dest_object is True
         local = output.ref is not None and local_dest_object is True
-        if send or recv:
-            tag = computeTag(output.obj_name, dest_object, output.output_key, input_name)
 
         self.logger.mpi_debug(f'{output.obj_name}.{output.output_key} -> {dest_object} : {send=} {recv=} {local=}')
 
@@ -572,7 +564,12 @@ class Simul():
                                                                             output.delay))
                 
     def connect_objects(self, params):
-        
+
+        # MPI tags are assigned sequentially to all connections, in the same order
+        # on all ranks, since all of them iterate over the same params.
+        # Each connection uses two tags: the data and its generation time (tag+1)
+        tags = itertools.count(start=0, step=2)
+
         for dest_object, pars in params.items():
 
             self.logger.mpi_debug(f'connect_objects for {dest_object}')
@@ -612,6 +609,7 @@ class Simul():
                 for single_output_name in output_name if isinstance(output_name, list) else [output_name]:
                     self.logger.mpi_debug(f'List input')
 
+                    tag = next(tags)
                     output = self.split_output(single_output_name, get_ref=True)
 
                     if self.diagram:
@@ -625,7 +623,7 @@ class Simul():
                         continue
                     
                     try:
-                        self.connect(single_output_name, input_name, dest_object)
+                        self.connect(single_output_name, input_name, dest_object, tag)
                     except ValueError:
                         self.logger.error(f'Exception while connecting {single_output_name} {dest_object}.{input_name}')
                         raise

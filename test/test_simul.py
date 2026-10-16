@@ -14,7 +14,7 @@ from pathlib import PureWindowsPath
 from typing import Dict, List
 
 import numpy as np
-from specula.simul import Simul, computeTag
+from specula.simul import Simul
 from specula.loop_control import LoopControl
 from specula.connections import InputValue, InputList
 from specula.data_objects.recmat import Recmat
@@ -967,29 +967,41 @@ store:
         with self.assertRaises(ValueError):
             simul.build_objects(params)
 
-    def test_compute_tag(self):
-        '''Test that even small changes in names result in a different tag'''
+    def test_connection_tags(self):
+        '''Test that each connection gets its own pair of MPI tags (tag, tag+1),
+        including the connections not involving this rank'''
+        from types import SimpleNamespace
 
-        output_obj_name = 'foo'
-        dest_object = 'bar'
-        output_attr_name = 'test1'
-        input_attr_name = 'test2'
+        params = {
+            'src': {'outputs': ['out_a', 'out_b']},
+            'remote_src': {'outputs': ['out_c']},
+            'dst': {'inputs': {'in_x': 'src.out_a',
+                               'in_list': ['src.out_b', 'remote_src.out_c', 'src.out_a']}},
+            'remote_dst': {'inputs': {'in_y': 'remote_src.out_c'}},
+            'dst2': {'inputs': {'in_z': 'src.out_b:-1'}},
+        }
+        simul = Simul('dummy.yaml')
+        simul.objs = {
+            'src': SimpleNamespace(outputs={'out_a': 1, 'out_b': 2}),
+            'dst': SimpleNamespace(outputs={}, inputs={'in_x': None, 'in_list': None}),
+            'dst2': SimpleNamespace(outputs={}, inputs={'in_z': None}),
+        }
+        simul.remote_objs_ranks = {'remote_src': 1, 'remote_dst': 1}
+        simul.all_objs_ranks = {'src': 0, 'remote_src': 1, 'dst': 0, 'remote_dst': 1, 'dst2': 0}
 
-        tag1 = computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name)
+        connected = []
+        simul.connect = lambda output_name, input_name, dest_object, tag: \
+            connected.append((dest_object, input_name, output_name, tag))
+        simul.connect_objects(params)
 
-        output_obj_name = 'foo2'
-        tag2 = computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name)
-
-        dest_object = 'bar2'
-        tag3 = computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name)
-
-        output_attr_name = 'atest1'
-        tag4 = computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name)
-
-        input_attr_name = 'atest2'
-        tag5 = computeTag(output_obj_name, dest_object, output_attr_name, input_attr_name)
-
-        assert len(set((tag1, tag2, tag3, tag4, tag5))) == 5
+        # remote_dst <- remote_src is skipped, but still uses tag 8
+        assert connected == [
+            ('dst', 'in_x', 'src.out_a', 0),
+            ('dst', 'in_list', 'src.out_b', 2),
+            ('dst', 'in_list', 'remote_src.out_c', 4),
+            ('dst', 'in_list', 'src.out_a', 6),
+            ('dst2', 'in_z', 'src.out_b:-1', 10),
+        ]
 
     def test_target_device_idx(self):
 
