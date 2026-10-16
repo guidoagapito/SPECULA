@@ -192,6 +192,57 @@ class Simul():
             self.logger.warning(f'the following objects will not be triggered: {params.keys()}')
         return order, order_index
 
+    def build_setup_order(self, params, trigger_order):
+        '''
+        Order in which the objects in *trigger_order* are set up.
+
+        The trigger order ignores delayed inputs (:-1 syntax), since they come
+        from the previous iteration. Setup instead must follow them too:
+        objects read their inputs in setup(), for example to allocate outputs
+        with the input size or to capture a CUDA graph, so the producer of a
+        delayed input must be set up first, except when the producer itself
+        depends on the consumer: then the delayed input closes a feedback loop,
+        and the objects in the loop are set up in trigger order. Objects in
+        a feedback loop must not depend on their delayed inputs in setup().
+
+        Ties are broken by trigger order, so without delayed inputs
+        the setup order is the same as the trigger order.
+        '''
+        inputs = {name: [(self.output_owner(x), self.output_delay(x) < 0)
+                         for v in params[name].get('inputs', {}).values()
+                         for x in (v if isinstance(v, list) else [v])]
+                  for name in trigger_order}
+
+        def upstream(name):
+            '''Objects that *name* depends on, directly or indirectly, delayed inputs included'''
+            found, stack = set(), [name]
+            while stack:
+                for owner, _ in inputs.get(stack.pop(), []):
+                    if owner not in found:
+                        found.add(owner)
+                        stack.append(owner)
+            return found
+
+        up = {name: upstream(name) for name in trigger_order}
+
+        def ready(name):
+            '''
+            True if *name* can be set up now, that is, if the producers
+            of all its inputs have already been set up. A delayed input is
+            not waited for if its producer depends on *name*: the input
+            closes a feedback loop (or is the object's own delayed output),
+            and waiting for it would never end.
+            '''
+            return not any(owner in remaining and not (delayed and name in up[owner])
+                           for owner, delayed in inputs[name])
+
+        order, remaining = [], list(trigger_order)
+        while remaining:
+            name = next(n for n in remaining if ready(n))
+            order.append(name)
+            remaining.remove(name)
+        return order
+
     def validate_section_names(self, params):
         '''
         Reject section (object) names that use characters reserved by the
@@ -1008,6 +1059,12 @@ class Simul():
         
         self.loop.max_global_order = max(self.trigger_order_idx)
         self.logger.debug(f'{self.loop.max_global_order=}')
+
+        setup_order = self.build_setup_order(params, self.trigger_order)
+        self.logger.info(f'{setup_order=}')
+        self.loop.set_setup_order([self.objs[name] for name in setup_order
+                                   if name not in self.remote_objs_ranks
+                                   and isinstance(self.objs.get(name), BaseProcessingObj)])
 
         # Default display web server
         if 'display_server' in self.mainParams and self.mainParams['display_server'] and process_rank in [0, None]:

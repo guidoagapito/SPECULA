@@ -229,6 +229,83 @@ class TestSimul(unittest.TestCase):
         self.assertIn('obj1', str(context.exception))
         self.assertIn('obj2', str(context.exception))
 
+    def test_setup_order_same_as_trigger_order_without_delays(self):
+        pars = {
+            'gen': {'class': 'WaveGenerator'},
+            'slicer': {'class': 'BaseSlicer', 'inputs': {'in_value': 'gen.output'}},
+            'comb': {'class': 'LinearCombination', 'inputs': {'in_vectors_list': ['gen.output', 'slicer.out_value']}},
+        }
+        simul = Simul('dummy.yaml')
+        trigger_order, _ = simul.build_trigger_order(pars)
+        assert simul.build_setup_order(pars, trigger_order) == trigger_order
+
+    def test_setup_order_follows_delayed_inputs(self):
+        # The slicer is triggered before its delayed producer,
+        # but must be set up after it
+        pars = {
+            'gen': {'class': 'WaveGenerator'},
+            'slicer': {'class': 'BaseSlicer', 'inputs': {'in_value': 'comb.out_vector:-1'}},
+            'comb': {'class': 'LinearCombination', 'inputs': {'in_vectors_list': ['gen.output']}},
+        }
+        simul = Simul('dummy.yaml')
+        trigger_order, _ = simul.build_trigger_order(pars)
+        setup_order = simul.build_setup_order(pars, trigger_order)
+        assert trigger_order.index('slicer') < trigger_order.index('comb')
+        assert setup_order.index('comb') < setup_order.index('slicer')
+        assert sorted(setup_order) == sorted(trigger_order)
+
+    def test_setup_order_feedback_loop(self):
+        # Closed loop: the delayed DM command closes a cycle, so it is ignored
+        # and the cycle is set up in trigger order. The delayed input of the
+        # slicer outside the cycle is still followed.
+        pars = {
+            'dm': {'class': 'DM', 'inputs': {'in_command': 'integ.out_comm:-1'}},
+            'wfs': {'class': 'SH', 'inputs': {'in_ef': 'dm.out_layer'}},
+            'integ': {'class': 'Integrator', 'inputs': {'delta_comm': 'wfs.out_i'}},
+            'slicer': {'class': 'BaseSlicer', 'inputs': {'in_value': 'integ.out_comm:-1'}},
+        }
+        simul = Simul('dummy.yaml')
+        trigger_order, _ = simul.build_trigger_order(pars)
+        setup_order = simul.build_setup_order(pars, trigger_order)
+        cycle = [name for name in setup_order if name != 'slicer']
+        assert cycle == [name for name in trigger_order if name != 'slicer']
+        assert setup_order.index('integ') < setup_order.index('slicer')
+
+    def test_setup_order_delayed_input_from_feedback_loop_triggered_first(self):
+        # As above, but the slicer outside the loop comes first in
+        # trigger order: it must still wait for its delayed producer
+        pars = {
+            'slicer': {'class': 'BaseSlicer', 'inputs': {'in_value': 'integ.out_comm:-1'}},
+            'dm': {'class': 'DM', 'inputs': {'in_command': 'integ.out_comm:-1'}},
+            'wfs': {'class': 'SH', 'inputs': {'in_ef': 'dm.out_layer'}},
+            'integ': {'class': 'Integrator', 'inputs': {'delta_comm': 'wfs.out_i'}},
+        }
+        simul = Simul('dummy.yaml')
+        trigger_order, _ = simul.build_trigger_order(pars)
+        setup_order = simul.build_setup_order(pars, trigger_order)
+        assert trigger_order.index('slicer') < trigger_order.index('integ')
+        assert setup_order == ['dm', 'wfs', 'integ', 'slicer']
+
+    def test_loop_control_setup_order(self):
+        calls = []
+
+        class Recorder:
+            def __init__(self, name):
+                self.name = name
+            def __getattr__(self, attr):
+                return lambda *args, **kwargs: None
+            def setup(self):
+                calls.append(self.name)
+
+        a, b, c = Recorder('a'), Recorder('b'), Recorder('c')
+        loop = LoopControl()
+        loop.add(a, 0)
+        loop.add(b, 1)
+        loop.add(c, 2)
+        # c not in the setup order: set up last
+        loop.set_setup_order([b, a])
+        loop.start(run_time=1, dt=1)
+        assert calls == ['b', 'a', 'c']
 
     def test_combine_params(self):
 
