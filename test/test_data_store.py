@@ -336,6 +336,38 @@ class TestDataStore(unittest.TestCase):
             self.assertEqual(ds.tn_dir, expected_path)
             mock_makedirs.assert_called_once_with(expected_path)
 
+    def test_create_tn_folder_skips_existing_names(self):
+        """Existing TN folders are skipped: TN, TN.0 taken -> TN.1."""
+        with patch("time.strftime", return_value="20250101_120000"):
+            ds = DataStore(store_dir=self.tmp_dir, data_format="fits")
+            base = os.path.join(self.tmp_dir, "20250101_120000")
+            os.makedirs(base)
+            os.makedirs(base + ".0")
+            ds.create_TN_folder()
+            self.assertEqual(ds.tn_dir, base + ".1")
+            self.assertTrue(os.path.isdir(base + ".1"))
+
+    def test_create_tn_folder_race_with_another_process(self):
+        """Another process creates the same TN between the name choice and mkdir (simulated by a
+        makedirs that creates the folder just before the real call): the next free name must be
+        used, not an error."""
+        base = os.path.join(self.tmp_dir, "20250101_120000")
+        real_makedirs = os.makedirs
+
+        # Do not patch os.path.exists: os.makedirs uses it internally to walk up the parents,
+        # and on Windows that walk ends in a PermissionError on the drive root
+        def racing_makedirs(path, *args, **kwargs):
+            if path == base and not os.path.isdir(base):
+                real_makedirs(base)  # the other process wins the race
+            return real_makedirs(path, *args, **kwargs)
+
+        with patch("time.strftime", return_value="20250101_120000"), \
+             patch("os.makedirs", side_effect=racing_makedirs):
+            ds = DataStore(store_dir=self.tmp_dir, data_format="fits")
+            ds.create_TN_folder()
+        self.assertEqual(ds.tn_dir, base + ".0")
+        self.assertTrue(os.path.isdir(base + ".0"))
+
     def test_finalize_does_not_save_when_split_tn_set(self):
         """
         Verify that finalize() does not call save() when split_size > 0.
