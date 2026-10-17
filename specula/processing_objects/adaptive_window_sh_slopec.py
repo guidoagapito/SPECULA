@@ -70,7 +70,8 @@ class AdaptiveWindowShSlopec(ShSlopec):
                  gain_comp_min: float = 0.25,
                  gain_comp_max: float = 4.0,
                  ron_e: float = 0.0,
-                 b_reg_nsigma: float = 2.5):
+                 b_reg_nsigma: float = 2.5,
+                 background_subtract: bool = True):
         """
         Parameters
         ----------
@@ -165,6 +166,16 @@ class AdaptiveWindowShSlopec(ShSlopec):
             direct test: pure read noise at zero flux produced spurious
             slopes up to ~22% of the full dynamic range under the old floor;
             see test_adaptive_window_sh_slopec.py.
+        background_subtract : bool, optional
+            Subtract a per-frame background estimate from the total and the
+            in-window flux used by the reliability (``flux_frac``) and fading
+            tests. Without it, a detector background (dark current + sky) over
+            the whole sub-aperture dominates the total flux: ``flux_frac``
+            collapses (permanent LOST_KINEMATIC at ``max_pix_rad``) and the
+            fading test never fires. Background = mean of the sub-aperture
+            pixels outside a disk of radius ``3 * max_pix_rad`` around the
+            correlation peak (no subtraction if the disk covers the whole
+            sub-aperture). With no background the estimate is ~0.
         """
 
         super().__init__(subapdata=subapdata,
@@ -206,6 +217,8 @@ class AdaptiveWindowShSlopec(ShSlopec):
         self.gain_comp_max = float(gain_comp_max)
         self.ron_e = float(ron_e)
         self.b_reg_nsigma = float(b_reg_nsigma)
+        self.background_subtract = bool(background_subtract)
+        self._bg_excl_rad_sq = (3.0 * self.max_pix_rad) ** 2
 
         if self.lost_behavior_kinematic not in ('expand', 'hold'):
             raise ValueError('lost_behavior_kinematic must be "expand" or "hold"')
@@ -367,9 +380,20 @@ class AdaptiveWindowShSlopec(ShSlopec):
 
         self.distance_coarse[:] = xp.sqrt((x_coarse - self._cntrd) ** 2 + (y_coarse - self._cntrd) ** 2)
 
-        flux_total = xp.maximum(xp.sum(pixels_cube, axis=(1, 2)), 0.0)
-        flux_in_window = xp.maximum(xp.sum(pixels_cube * self.mask_weighted_dyn, axis=(1, 2)), 0.0)
-        self.flux_frac[:] = flux_in_window / (flux_total + self._eps)
+        flux_total = xp.sum(pixels_cube, axis=(1, 2))
+        flux_in_window = xp.sum(pixels_cube * self.mask_weighted_dyn, axis=(1, 2))
+        if self.background_subtract:
+            # mean (not median: the low-count pixel distribution is skewed and sums are corrected) of the pixels
+            # outside a disk around the correlation peak, which excludes the star core and most of its halo
+            outside = ((self._xx[None, :, :] - x_coarse[:, None, None]) ** 2
+                       + (self._yy[None, :, :] - y_coarse[:, None, None]) ** 2) > self._bg_excl_rad_sq
+            n_out = xp.sum(outside, axis=(1, 2))
+            bkg = xp.sum(pixels_cube * outside, axis=(1, 2)) / xp.maximum(n_out, 1)
+            flux_total = flux_total - bkg * (np_sub * np_sub)
+            flux_in_window = flux_in_window - bkg * xp.sum(self.mask_weighted_dyn, axis=(1, 2))
+        flux_total = xp.maximum(flux_total, 0.0)
+        flux_in_window = xp.maximum(flux_in_window, 0.0)
+        self.flux_frac[:] = xp.minimum(flux_in_window / (flux_total + self._eps), 1.0)
 
         good = (self.corr_snr >= self.corr_snr_thr) & (self.flux_frac >= self.flux_frac_thr)
         fading_event = (flux_total <= self.fading_flux_thr)

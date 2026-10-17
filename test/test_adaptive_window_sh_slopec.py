@@ -118,6 +118,96 @@ class TestAdaptiveWindowShSlopec(unittest.TestCase):
         self.assertEqual(state_code, AdaptiveWindowShSlopec.STATE_LOST_FADING)
         self.assertAlmostEqual(radius_after_fade, radius_before_fade, delta=1e-3)
 
+    def _run_bg_scenario(self, target_device_idx, xp, bg, background_subtract,
+                         n_frames=6, spot_flux=1000.0, **slopec_kwargs):
+        """Run ``n_frames`` identical frames (spot + uniform ``bg``) on one sub-aperture."""
+        t = int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx=32)
+        pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+        slopec = AdaptiveWindowShSlopec(
+            subapdata,
+            base_pix_rad=2.0,
+            max_pix_rad=4.0,
+            background_subtract=background_subtract,
+            target_device_idx=target_device_idx,
+            **slopec_kwargs,
+        )
+        slopec.inputs['in_pixels'].set(pixels)
+        frame = self.generate_spots(ccd_shape, subapdata, xp, fwhm=1.5, flux=spot_flux, bg=bg)
+        for i in range(1, n_frames + 1):
+            self._run_frame(slopec, pixels, frame, t * i)
+        return slopec
+
+    @cpu_and_gpu
+    def test_flux_fraction_independent_of_background(self, target_device_idx, xp):
+        """
+        With background subtraction, the weighted in-window flux fraction of a
+        centred Gaussian spot is sigma_w^2 / (sigma_w^2 + sigma_p^2) and does
+        not depend on a uniform background.
+        """
+        fwhm = 1.5
+        sigma_p = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+
+        slopec_0 = self._run_bg_scenario(target_device_idx, xp, 0.0, True)
+        slopec_b = self._run_bg_scenario(target_device_idx, xp, 0.5, True)
+        slopec_raw = self._run_bg_scenario(target_device_idx, xp, 0.5, False)
+
+        ff_0 = float(cpuArray(slopec_0.flux_frac)[0])
+        ff_b = float(cpuArray(slopec_b.flux_frac)[0])
+        ff_raw = float(cpuArray(slopec_raw.flux_frac)[0])
+
+        radius = float(cpuArray(slopec_b.radius_curr)[0])
+        sigma_w = radius / np.sqrt(2.0 * np.log(2.0))
+        # The spot is centred between pixels (offset d^2 = 0.5 px^2 from the
+        # nearest pixel), but the weight mask is normalised to peak 1 on the
+        # pixel grid, so all weights are scaled by exp(d^2 / (2 sigma_w^2)).
+        # Measured: without this factor the discrepancy is ~9%; with it the
+        # residual (pixel sampling of the narrow spot) is ~0.2%, hence 1%.
+        analytic = (sigma_w ** 2 / (sigma_w ** 2 + sigma_p ** 2)
+                    * np.exp(0.5 / (2.0 * sigma_w ** 2)))
+
+        self.assertAlmostEqual(radius, 2.0, delta=1e-3)
+        self.assertAlmostEqual(ff_b, ff_0, delta=1e-3 * ff_0)
+        self.assertAlmostEqual(ff_0, analytic, delta=0.01 * analytic)
+        self.assertAlmostEqual(ff_b, analytic, delta=0.01 * analytic)
+        # Without subtraction the background (512 counts vs 1000 of flux,
+        # mostly outside the window) biases the fraction low (measured ~0.73x).
+        self.assertLess(ff_raw, 0.85 * analytic)
+
+    @cpu_and_gpu
+    def test_fading_detected_with_background(self, target_device_idx, xp):
+        """
+        Star off but uniform background present: the background-subtracted
+        total flux is ~0 so fading is detected; the raw total (0.5 * 1024 = 512)
+        would never go below the threshold.
+        """
+        t = int(1e9)
+        subapdata, ccd_shape = self.get_test_setup(target_device_idx, xp, subap_npx=32)
+        spot = self.generate_spots(ccd_shape, subapdata, xp, flux=1000.0, bg=0.5)
+        off = self.generate_spots(ccd_shape, subapdata, xp, flux=0.0, bg=0.5)
+
+        states = {}
+        for background_subtract in (True, False):
+            pixels = Pixels(*ccd_shape, target_device_idx=target_device_idx)
+            slopec = AdaptiveWindowShSlopec(
+                subapdata,
+                base_pix_rad=2.0,
+                max_pix_rad=4.0,
+                lost_frames_req=2,
+                fading_flux_thr=10.0,
+                background_subtract=background_subtract,
+                target_device_idx=target_device_idx,
+            )
+            slopec.inputs['in_pixels'].set(pixels)
+            for i in range(1, 5):
+                self._run_frame(slopec, pixels, spot, t * i)
+            self._run_frame(slopec, pixels, off, t * 5)
+            self._run_frame(slopec, pixels, off, t * 6)
+            states[background_subtract] = int(cpuArray(slopec.state_code)[0])
+
+        self.assertEqual(states[True], AdaptiveWindowShSlopec.STATE_LOST_FADING)
+        self.assertNotEqual(states[False], AdaptiveWindowShSlopec.STATE_LOST_FADING)
+
     @cpu_and_gpu
     def test_kinematic_lost_can_expand_radius(self, target_device_idx, xp):
         """Kinematic loss with expand policy must drive radius to ``max_pix_rad``."""
