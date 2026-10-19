@@ -88,6 +88,9 @@ class TestDiagrams(unittest.TestCase):
         )
         return diagram
 
+    # The mocks below only work in this process: call _build() directly
+    # instead of build(), which runs it in a separate process
+    @patch.object(SimulDiagram, "build", SimulDiagram._build)
     @patch("orthogram.write_png")
     def test_build_diagram_basic(self, mock_write_png):
         """Test that buildDiagram() creates a diagram and calls write_png."""
@@ -96,6 +99,7 @@ class TestDiagrams(unittest.TestCase):
         args, kwargs = mock_write_png.call_args
         self.assertEqual(str(self.tmp_png_path), str(args[1]))
 
+    @patch.object(SimulDiagram, "build", SimulDiagram._build)
     @patch("orthogram.write_png")
     def test_build_diagram_with_colors(self, mock_write_png):
         """Test diagram creation with colors enabled."""
@@ -104,6 +108,20 @@ class TestDiagrams(unittest.TestCase):
         args, kwargs = mock_write_png.call_args
         self.assertIn(".png", str(args[1]))
 
+    def test_build_in_subprocess_ignores_cwd(self):
+        """Real build() in a separate process, started from a directory
+        containing another specula package, which must not be imported"""
+        os.remove(self.tmp_png_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, 'specula'))
+            with open(os.path.join(tmpdir, 'specula', '__init__.py'), 'w') as f:
+                f.write('raise ImportError("wrong specula imported")\n')
+            os.chdir(tmpdir)
+            self._make_diagram()
+            os.chdir(self.cwd)
+        self.assertTrue(self.tmp_png_path.stat().st_size > 0)
+
+    @patch.object(SimulDiagram, "build", SimulDiagram._build)
     def test_main_simul_with_diagram(self):
         """Test main_simul() triggers diagram generation when enabled."""
         with open(self.yml_path, "w") as f:
@@ -119,6 +137,7 @@ class TestDiagrams(unittest.TestCase):
 
         mock_write_png.assert_called()
 
+    @patch.object(SimulDiagram, "build", SimulDiagram._build)
     def test_main_simul_with_diagram_and_filename(self):
         """Test main_simul() triggers diagram generation when enabled."""
         yml_path = Path(self.tmp_png_path).with_suffix(".yml")
