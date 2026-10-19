@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import inspect
 import itertools
+import multiprocessing
 from copy import deepcopy
 from pathlib import Path
 import specula
@@ -973,6 +974,14 @@ class Simul():
                     raise ValueError(f"Invalid number of parts detected in override: {parts}. Did you add/forget a '.'?")
     
     def run(self, start_time=0, end_time=None):
+        # With the 'spawn' start method (default on macOS and Windows), child processes
+        # like the display server re-import the main script: an unguarded call would
+        # build the whole simulation again inside the child and then fail anyway.
+        if getattr(multiprocessing.current_process(), '_inheriting', False):
+            raise RuntimeError('A SPECULA simulation was started while a child process was being '
+                               'initialized. On macOS and Windows, a script that runs a simulation '
+                               'must protect it with:  if __name__ == "__main__":')
+
         # Forget the display windows of a previous simulation in the same process
         from specula.display.base_display import BaseDisplay
         BaseDisplay.reset_windows()

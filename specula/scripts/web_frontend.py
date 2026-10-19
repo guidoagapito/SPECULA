@@ -36,10 +36,16 @@ def index():
 
 def start():
     print(f'Starting SPECULA frontend server on port {port}')
-    daemonize()
-    socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)    
+    if hasattr(os, 'fork'):
+        daemonize()
+    else:
+        print('Warning: cannot run in background on this platform, running in foreground. Press Ctrl-C to stop.')
+    socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
 
 def stop():
+    if not hasattr(os, 'fork'):
+        print('Not supported on this platform: stop the frontend with Ctrl-C in its terminal.')
+        return
     killProcessByName('specula_frontend_start')
    
 if __name__ == '__main__':
