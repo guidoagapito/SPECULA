@@ -21,7 +21,7 @@ def broad_spot(amp=40.0, core=4.0, halo=14.0, frac=0.8):
 
 def make(**kw):
     return SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1, presence=True, z_thr=0.0,
-                          block_frames=4, **kw)
+                          cmd_latency=1, z_thr_local=0.0, flux_thr=0.0, block_frames=4, **kw)
 
 
 class TestPresenceTemplate(unittest.TestCase):
@@ -63,9 +63,9 @@ class TestPresenceTemplate(unittest.TestCase):
         f = broad_spot() + rng.standard_normal((N, N))
         kw = dict(presence_tpl_fwhm=4.0, presence_halo_fwhm=14.0, presence_halo_fraction=0.8)
         s1 = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1, presence=True, z_thr=0.0,
-                            block_frames=1, **kw)
+                            cmd_latency=1, z_thr_local=0.0, flux_thr=0.0, block_frames=1, **kw)
         s4 = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1, presence=True, z_thr=0.0,
-                            block_frames=4, **kw)
+                            cmd_latency=1, z_thr_local=0.0, flux_thr=0.0, block_frames=4, **kw)
         s1.process_frame(f, np.zeros(2))
         for _ in range(4):
             s4.process_frame(f, np.zeros(2))                       # same frame four times: same block mean

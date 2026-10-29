@@ -14,55 +14,33 @@ NM_TO_PX = (4e-9 / 38.5 * 3600 * 180 / np.pi * 1e3) / 7.5
 
 class SpotSupervisor(BaseProcessingObj):
     """
-    Step-1 supervisor for spot (re)acquisition of a single-subaperture WCoG tip/tilt sensor.
+    Step-1 supervisor for spot (re)acquisition of a single-subaperture WCoG tip/tilt sensor (E-MAO-PC0-INA-TNO-009).
 
-    A matched filter (core + halo) runs on every frame; each peak position is registered with the
-    applied tip/tilt command (disturbance coordinates), so that the spot motion caused by our own
-    correction does not spoil the consensus. When the last ``n_cons`` estimates agree (within
-    ``delta_factor`` * sigma_w) and lie farther than that from the WCoG window, the spot is lost:
+    Looks: each look is the mean of ``look_frames`` frames registered (Fourier shift) with the applied tip/tilt
+    command, correlated over the whole frame with a core + halo matched filter; its peak, registered with the
+    command (disturbance coordinates), is one consensus estimate, so that the spot motion caused by our own
+    correction does not spoil the consensus. When the last ``n_cons`` estimates agree (within ``delta_factor`` *
+    sigma_w of their median), the latest one lies farther than that from the WCoG window, and guard C passes (the
+    correlation peak within ``r_loc_sigma`` sigma_w of the window is below ``q_thr`` of the global peak), the spot
+    is lost and the window (the slope zero of :class:`ShSlopecMovable`) is put on the estimated spot position: the
+    loop stabilises the spot where it is. The move is then confirmed: a block of ``confirm_frames`` frames
+    (default ``block_frames``) at the new window must show local z > ``z_thr_local`` or window flux > ``flux_thr``,
+    otherwise the move is aborted and the window restored. After the confirmation, and at least ``k_hold`` frames
+    after the move, a feedforward tip/tilt command equal to the window offset is issued and the window returns to
+    the reference when the feedforward reaches the pixels.
 
-    * ``hold`` (default): the window (and the slope zero of :class:`ShSlopecMovable`) is put on the
-      estimated spot position, so the loop stabilises the spot where it is; after ``k_hold`` frames
-      a feedforward tip/tilt command equal to the window centre is issued and the window returns to
-      the reference (one shot);
-    * ``one``: window to the reference and feedforward by the estimate at once;
-    * ``n3``: as ``hold`` but the return is done in three steps, 2 frames apart.
+    Presence (``presence``, default on): blocks of ``block_frames`` frames, not registered (the tracked spot is
+    stationary on the detector). A block is present if ANY of the global z (peak - mean) / std of the correlation
+    map > ``z_thr``, the local z (same normalisation, peak within ``r_loc_sigma`` sigma_w of the window) >
+    ``z_thr_local``, or the window flux (Gaussian WCoG mask on the window, per-frame clip at 0) > ``flux_thr``. A
+    dropout is declared after ``k_absent`` absent blocks: the hold flag of ``out_window`` is set
+    (:class:`ShSlopecMovable` then outputs zero slopes), no look is taken and nothing is moved until ``k_present``
+    present blocks. The thresholds are noise-only quantiles calibrated with the presence template.
 
-    With ``look_frames`` = M > 1 each consensus estimate is the peak of the mean of M frames registered
-    with the applied command (needed when a single frame is too faint: the matched-filter peak of one
-    frame is pure noise at the faint end). ``search_radius`` > 0 restricts the peak search (and the
-    guard) to a disk of that radius (px) around the reference; 0 = whole frame.
-
-    Guard C vetoes a move if the correlation-map peak near the window is at least ``q_thr`` of the
-    global peak (the window already captures the spot). Optional presence detection (registered
-    blocks of ``block_frames`` frames, threshold ``z_thr`` on (peak - mean) / std of the correlation
-    map) declares a dropout after ``k_absent`` absent blocks: the ``hold`` flag of ``out_window`` is
-    set (:class:`ShSlopecMovable` then outputs zero slopes) and nothing is moved until ``k_present``
-    present blocks.
-
-    Combined presence (optional, ``z_thr_local`` and/or ``flux_thr`` set): a block counts as "present"
-    if ANY of the global z > ``z_thr``, the local z (correlation peak within ``r_loc_sigma`` sigma_w of the
-    window, same normalisation) > ``z_thr_local``, or the window flux (Gaussian WCoG mask on the window,
-    per-frame clip at 0 -- ShSlopec's ``subap_tot`` for ``thr_value = 0``) > ``flux_thr``. A dropout is
-    therefore declared only when all three evidences are absent (a faint star still in the window keeps
-    the loop closed; a spot lost elsewhere keeps the global z up). The global z alone has a high
-    noise floor (maximum over the whole field) and made faint-but-present stars look absent.
-    ``presence_register`` (default True, the original behaviour) registers presence blocks on the
-    command; during normal tracking the spot is stationary on the detector, so False is preferable.
-
-    ``confirm`` (``hold``/``n3`` only): after the window move, a block of ``confirm_frames`` frames at the
-    new window must show local z > ``z_thr_local`` or window flux > ``flux_thr`` before the feedforward is
-    applied; otherwise the move is aborted and the window restored (a wrong consensus then costs nothing
-    more than the hold). Thresholds are shared with presence, so ``confirm_frames`` defaults to
-    ``block_frames``.
-
-    ``presence_tpl_fwhm`` / ``presence_halo_fwhm`` / ``presence_halo_fraction`` (default: the template above) give
+    ``presence_tpl_fwhm`` / ``presence_halo_fwhm`` / ``presence_halo_fraction`` (default: the look template) give
     presence and confirmation their own core + halo template, e.g. fitted to the measured long-exposure PSF: for a
     broad PSF the fixed template makes the z statistics miss a present star, while a halo-dominated template used for
-    the looks would smooth the correlation map (imprecise peaks, guard C vetoing lost spots). Thresholds must be
-    calibrated with the same presence template. The gain is mostly a lower noise-only threshold (fewer extreme
-    maxima on a smoother map); for a bright star the self-normalised z of a broad template saturates, which does
-    not matter since such a star is present by a wide margin.
+    the looks would smooth the correlation map (imprecise peaks, guard C vetoing lost spots).
 
     ``ref_offset`` is the offset of the matched-filter peak from the WCoG centroid for a spot at the
     reference (peak/centroid asymmetry, integer-pixel quantisation): the estimates are the centroid
@@ -72,17 +50,15 @@ class SpotSupervisor(BaseProcessingObj):
     tip/tilt command (nm) to the spot shift produced by the correction (px per nm, sign and axes to be
     calibrated on the system).
 
-    ``cmd_latency`` sets what ``in_command`` is. None (legacy): the command on the mirror during the frame,
-    and the feedforward reaches the mirror one frame after it is issued. An integer L >= 1: the command as
-    issued by the controller, which, like the feedforward, reaches the mirror L frames after the step it is
-    read/issued (transport latency and actuator response lumped into a pure delay). Frames are then
-    registered with the command L frames old, and the window returns from the hold only when the
-    feedforward is expected on the mirror; no new move starts while a return is in flight. A wrong L
-    shows up as a registration error (command change over the error) and a window/feedforward mismatch.
+    ``cmd_latency`` = L (frames, required): ``in_command`` is the command as issued by the controller, which,
+    like the feedforward, reaches the pixels L frames after the step it is read/issued. Frames are registered
+    with the command L frames old, and the window returns only when the feedforward is expected on the pixels;
+    no new move starts while a return is in flight.
 
     Outputs: ``out_window`` = [wx, wy, hold] (feed it to ShSlopecMovable, delayed by one step),
     ``out_feedforward`` = accumulated feedforward command (nm, feed it to an extra tip/tilt DM),
-    ``out_state`` = telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, z_local, window_flux, n_aborts],
+    ``out_state`` = telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, z_local, window_flux, n_aborts]
+    (z, z_local, window_flux: last completed presence block, NaN if presence is off),
     ``out_look`` = image of the last complete look (mean of ``look_frames`` frames registered to the command of the
     first one, i.e. in the detector frame of that first frame; the frame itself with ``look_frames`` = 1), held
     until the next look is complete. Optional input ``in_enable`` (> 0.5 = enabled, default enabled when not
@@ -93,16 +69,19 @@ class SpotSupervisor(BaseProcessingObj):
     The supervisor works on detector frames: it processes a step only if ``in_pixels`` was refreshed in it (an
     input refreshed at every simulation step, such as ``in_enable`` from a generator, would otherwise make it
     count a frame of a longer detector integration more than once), and only then refreshes its outputs.
-    (z, z_local, window_flux: last completed presence block, NaN if presence is off).
+
+    Earlier options (return modes 'one' and 'n3', a restricted search radius, registered presence blocks, the
+    legacy command semantics cmd_latency = None, global-z-only presence, moves without confirmation) are in the
+    git tag ``spot-supervisor-legacy``, needed to reproduce the campaigns that used them.
     """
 
     def __init__(self,
                  weighted_pix_rad: float,
+                 cmd_latency: int,
                  np_sub: int = 240,
                  cmd_to_px: list = None,
                  ref_offset: list = None,
-                 ff_mode: str = 'hold',
-                 n_cons: int = 5,
+                 n_cons: int = 2,
                  delta_factor: float = 1.5,
                  q_thr: float = 0.6,
                  r_loc_sigma: float = 3.0,
@@ -110,19 +89,15 @@ class SpotSupervisor(BaseProcessingObj):
                  tpl_fwhm: float = 2.0,
                  halo_fwhm: float = 15.0,
                  halo_fraction: float = 0.3,
-                 presence: bool = False,
+                 presence: bool = True,
                  z_thr: float = None,
                  block_frames: int = 1,
                  k_absent: int = 8,
                  k_present: int = 3,
                  look_frames: int = 1,
-                 search_radius: float = 0.0,
                  z_thr_local: float = None,
                  flux_thr: float = None,
-                 presence_register: bool = True,
-                 confirm: bool = False,
                  confirm_frames: int = None,
-                 cmd_latency: int = None,
                  presence_tpl_fwhm: float = None,
                  presence_halo_fwhm: float = None,
                  presence_halo_fraction: float = None,
@@ -131,13 +106,14 @@ class SpotSupervisor(BaseProcessingObj):
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        if ff_mode not in ('hold', 'one', 'n3'):
-            raise ValueError(f"ff_mode must be 'hold', 'one' or 'n3', got {ff_mode!r}")
+        if z_thr_local is None or flux_thr is None:
+            raise ValueError('z_thr_local and flux_thr are needed (presence and confirmation of a move)')
         if presence and z_thr is None:
             raise ValueError('presence detection needs z_thr (noise-only quantile of the correlation z-score)')
+        if int(cmd_latency) < 1:
+            raise ValueError('cmd_latency must be >= 1 frame')
         self.n = int(np_sub)
         self.sigma_w = 2.0 * weighted_pix_rad / (2.0 * np.sqrt(2.0 * np.log(2.0)))
-        self.ff_mode = ff_mode
         self.n_cons = int(n_cons)
         self.delta = delta_factor * self.sigma_w
         self.q_thr = q_thr
@@ -151,19 +127,10 @@ class SpotSupervisor(BaseProcessingObj):
         self.look_frames = int(look_frames)
         self.hold_when_disabled = bool(hold_when_disabled)
         self._processed = False
-        self.search_radius = float(search_radius)
         self.z_thr_local = z_thr_local
         self.flux_thr = flux_thr
-        self.presence_register = bool(presence_register)
-        self.confirm = bool(confirm)
         self.confirm_frames = self.block_frames if confirm_frames is None else int(confirm_frames)
-        if self.confirm and z_thr_local is None and flux_thr is None:
-            raise ValueError('confirm needs z_thr_local and/or flux_thr (local evidence at the new window)')
-        if self.confirm and ff_mode == 'one':
-            raise ValueError("confirm needs a hold phase: use ff_mode 'hold' or 'n3'")
-        if cmd_latency is not None and int(cmd_latency) < 1:
-            raise ValueError('cmd_latency must be None (legacy) or >= 1 frame')
-        self.cmd_latency = None if cmd_latency is None else int(cmd_latency)
+        self.cmd_latency = int(cmd_latency)
 
         cmd = np.asarray(cmd_to_px if cmd_to_px is not None else np.eye(2) * NM_TO_PX, dtype=float)
         self.cmd_to_px = cmd.reshape(2, 2)
@@ -223,13 +190,10 @@ class SpotSupervisor(BaseProcessingObj):
         self.u_ff = np.zeros(2)                    # accumulated feedforward, px (spot shift)
         self.hist, self.ratios = [], []
         self.hold_until = None
-        self.ff_pending = None
-        self.n3_left, self.n3_next, self.n3_w0 = 0, 0, np.zeros(2)
         self.dropout = False
         self.hit = self.miss = 0
         self.acc = None
         self.acc_count = 0
-        self.u_block0 = np.zeros(2)
         self.look_acc = None
         self.look_count = 0
         self.u_look0 = np.zeros(2)
@@ -242,7 +206,7 @@ class SpotSupervisor(BaseProcessingObj):
         self.conf_flux = 0.0
         self.confirmed = None
         self.frame = 0
-        L = self.cmd_latency or 1
+        L = self.cmd_latency
         self.cmd_hist = deque(maxlen=L + 1)       # loop command (px) read at steps j-L .. j
         self.uff_hist = deque(maxlen=L)           # feedforward total at the end of steps j-L .. j-1
         self.w_queue = []                         # [(step, window)] returns waiting for the feedforward
@@ -250,8 +214,7 @@ class SpotSupervisor(BaseProcessingObj):
     @classmethod
     def input_names(cls):
         return {'in_pixels': InputDesc(Pixels, 'Detector pixels'),
-                'in_command': InputDesc(BaseValue, 'Tip/tilt command [nm]: on the mirror during the frame '
-                                                   '(cmd_latency None) or as issued by the controller'),
+                'in_command': InputDesc(BaseValue, 'Tip/tilt command [nm] as issued by the controller'),
                 'in_enable': InputDesc(BaseValue, 'Optional enable flag (> 0.5 = enabled); while disabled the '
                                                   'supervisor only forms the looks')}
 
@@ -270,14 +233,6 @@ class SpotSupervisor(BaseProcessingObj):
 
     def _correlate_presence(self, spectrum):
         return self.xp.real(self.xp.fft.ifft2(spectrum * self.pres_tpl_conj))
-
-    def _restrict(self, corr):
-        if self.search_radius <= 0:
-            return corr
-        if not hasattr(self, '_search_mask'):
-            g = (self.coord - self.ref_offset[0]) ** 2, (self.coord - self.ref_offset[1]) ** 2
-            self._search_mask = self.xp.asarray((g[1][:, None] + g[0][None, :]) <= self.search_radius ** 2)
-        return self.xp.where(self._search_mask, corr, corr.min())
 
     def _peak(self, corr):
         i = int(self.xp.argmax(corr))
@@ -320,20 +275,13 @@ class SpotSupervisor(BaseProcessingObj):
         return float((corr.max() - m) / sd), z_loc
 
     def _is_present(self, z, z_loc, flux):
-        return (z > self.z_thr or (self.z_thr_local is not None and z_loc > self.z_thr_local)
-                or (self.flux_thr is not None and flux > self.flux_thr))
+        return z > self.z_thr or z_loc > self.z_thr_local or flux > self.flux_thr
 
-    def _update_presence(self, spectrum, corr, u, flux):
+    def _update_presence(self, spectrum, corr, flux):
         if self.acc_count == 0:
-            self.u_block0 = u.copy()
             self.acc = self.xp.zeros_like(spectrum)
             self.acc_flux = 0.0
-        if self.presence_register:
-            du = u - self.u_block0
-            phase = np.exp(-2j * np.pi * (self.fx * du[0] + self.fy * du[1]))
-            self.acc += spectrum * self.xp.asarray(phase.astype(self.complex_dtype))
-        else:
-            self.acc += spectrum
+        self.acc += spectrum
         self.acc_flux += flux
         self.acc_count += 1
         if self.acc_count < self.block_frames:
@@ -370,22 +318,19 @@ class SpotSupervisor(BaseProcessingObj):
         corr = self._correlate(spectrum)
         if not self.enabled:                                 # passive: looks only, no decision
             look = self._look(spectrum, corr, u)
-            est = self._peak(self._restrict(look[0])) if look is not None else np.full(2, np.nan)
-            if self.cmd_latency is not None:
-                self.uff_hist.append(self.u_ff.copy())
+            est = self._peak(look[0]) if look is not None else np.full(2, np.nan)
+            self.uff_hist.append(self.u_ff.copy())
             self.frame += 1
             return dict(est=est, z=None, ratio=np.nan, dropout=False)
-        need_flux = (self.presence and self.flux_thr is not None) or (self.conf_active and self.flux_thr is not None)
-        flux = self._window_flux(frame) if need_flux else 0.0
+        flux = self._window_flux(frame) if (self.presence or self.conf_active) else 0.0
         if self.conf_active and not self.dropout:            # no evidence is collected while blind
             self._update_confirmation(spectrum, flux)
-        z = self._update_presence(spectrum, corr, u, flux) if self.presence else None
+        z = self._update_presence(spectrum, corr, flux) if self.presence else None
         est = np.full(2, np.nan)
         ratio = np.nan
         look = self._look(spectrum, corr, u) if not self.dropout else None
         if look is not None:
             corr_l, u0 = look
-            corr_l = self._restrict(corr_l)
             est = self._peak(corr_l)
             self.hist.append(est + u0)
             ratio = self._guard_ratio(corr_l)
@@ -403,15 +348,12 @@ class SpotSupervisor(BaseProcessingObj):
         self._schedule_feedforward()
         while self.w_queue and self.w_queue[0][0] <= self.frame:
             self._set_window(self.w_queue.pop(0)[1])
-        if self.cmd_latency is not None:
-            self.uff_hist.append(self.u_ff.copy())
+        self.uff_hist.append(self.u_ff.copy())
         self.frame += 1
         return dict(est=est, z=z, ratio=ratio, dropout=self.dropout)
 
     def _mirror_command(self, u_loop):
         """Spot shift (px) produced by what is on the mirror during this frame: loop command + feedforward."""
-        if self.cmd_latency is None:
-            return u_loop + self.u_ff
         self.cmd_hist.append(u_loop)
         L = self.cmd_latency
         cmd = self.cmd_hist[0] if len(self.cmd_hist) == L + 1 else np.zeros(2)
@@ -427,7 +369,7 @@ class SpotSupervisor(BaseProcessingObj):
     def _return_window(self, w_new):
         """Window change caused by a feedforward issued now: applied when the feedforward reaches the mirror
         (a window set at step k acts on frame k+1, the feedforward issued at step k lands on frame k+L)."""
-        if self.cmd_latency is None or self.cmd_latency == 1:
+        if self.cmd_latency == 1:
             self._set_window(w_new)
         else:
             self.w_queue.append((self.frame + self.cmd_latency - 1, w_new))
@@ -464,50 +406,32 @@ class SpotSupervisor(BaseProcessingObj):
         corr = self._correlate_presence(self.conf_acc / self.conf_count)
         _, z_loc = self._block_stats(corr)
         f = self.conf_flux / self.conf_count
-        self.confirmed = ((self.z_thr_local is not None and z_loc > self.z_thr_local)
-                          or (self.flux_thr is not None and f > self.flux_thr))
+        self.confirmed = z_loc > self.z_thr_local or f > self.flux_thr
 
     def _start_move(self, xhat):
         """Consensus accepted; ``xhat``: spot position in the detector frame (px)."""
         self.n_moves += 1
         self.hist, self.ratios = [], []
-        self.n3_left = 0
-        if self.ff_mode == 'one':
-            self.ff_pending, self.w = xhat.copy(), np.zeros(2)
-        else:
-            if not self.conf_active:                  # a new move during a hold keeps the original fallback
-                self.w_prev = self.w.copy()
-            self.w, self.hold_until = xhat.copy(), self.frame + self.k_hold
-            if self.confirm:                           # evidence collected from the next frame on
-                self.conf_active, self.conf_count, self.conf_acc = True, 0, None
-                self.conf_flux, self.confirmed = 0.0, None
+        if not self.conf_active:                      # a new move during a hold keeps the original fallback
+            self.w_prev = self.w.copy()
+        self.w, self.hold_until = xhat.copy(), self.frame + self.k_hold
+        self.conf_active, self.conf_count, self.conf_acc = True, 0, None   # evidence from the next frame on
+        self.conf_flux, self.confirmed = 0.0, None
 
     def _schedule_feedforward(self):
-        if self.ff_pending is not None:
-            self.u_ff = self.u_ff + self.ff_pending
-            self.ff_pending = None
-        elif self.hold_until is not None and self.frame >= self.hold_until and not self.dropout:
-            if self.conf_active and self.n3_left == 0:
-                if self.confirmed is None:            # confirmation block not complete yet: keep holding
-                    return
-                self.conf_active = False
-                if not self.confirmed:                # wrong consensus: undo the window move, no feedforward
-                    self.n_aborts += 1
-                    self.w, self.hold_until = self.w_prev.copy(), None
-                    return
-            if self.ff_mode == 'hold':
-                self.u_ff = self.u_ff + self.w
-                self._return_window(np.zeros(2))
-                self.hold_until = None
-            else:
-                if self.n3_left == 0:
-                    self.n3_left, self.n3_next, self.n3_w0 = 3, self.frame, self.w.copy()
-                if self.frame >= self.n3_next:
-                    self.u_ff = self.u_ff + self.n3_w0 / 3
-                    self.n3_left, self.n3_next = self.n3_left - 1, self.frame + 2
-                    self._return_window(self.n3_w0 * self.n3_left / 3)   # exactly 0 after the last step
-                    if self.n3_left == 0:
-                        self.hold_until = None
+        if self.hold_until is None or self.frame < self.hold_until or self.dropout:
+            return
+        if self.conf_active:
+            if self.confirmed is None:                # confirmation block not complete yet: keep holding
+                return
+            self.conf_active = False
+            if not self.confirmed:                    # wrong consensus: undo the window move, no feedforward
+                self.n_aborts += 1
+                self.w, self.hold_until = self.w_prev.copy(), None
+                return
+        self.u_ff = self.u_ff + self.w
+        self._return_window(np.zeros(2))
+        self.hold_until = None
 
     def set_enabled(self, enabled):
         """Enable or disable the decisions; on re-enabling restart from the initial state."""

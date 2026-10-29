@@ -19,6 +19,15 @@ def spot(sx, sy, amp=300.0, sigma=1.5):
     return amp * np.outer(rows, cols)
 
 
+def make(target_device_idx=-1, **kw):
+    """Presence off and confirmation thresholds that always pass: tests of the other mechanisms."""
+    kw.setdefault('presence', False)
+    kw.setdefault('cmd_latency', 1)
+    kw.setdefault('z_thr_local', -np.inf)
+    kw.setdefault('flux_thr', -np.inf)
+    return SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=target_device_idx, **kw)
+
+
 class TestSpotSupervisorLookOutput(unittest.TestCase):
 
     def setUp(self):
@@ -27,7 +36,7 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
     @cpu_and_gpu
     def test_look_image_is_the_mean_of_its_frames(self, target_device_idx, xp):
         """No command: the registration is the identity, so the look image is the plain mean of its frames."""
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=3, target_device_idx=target_device_idx)
+        sup = make(target_device_idx, look_frames=3)
         frames = [spot(7.0, -3.0) + 2.0 * self.rng.standard_normal((N, N)) for _ in range(3)]
         for f in frames:
             sup.process_frame(f, np.zeros(2))
@@ -37,11 +46,12 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
     def test_look_image_is_registered_with_the_command(self, target_device_idx, xp):
         """Spot fixed in disturbance coordinates while the own command shifts it by 2 px per frame: the look image
         is in the detector frame of the first frame, so its peak is where the spot was in that frame."""
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=4, target_device_idx=target_device_idx)
+        sup = make(target_device_idx, look_frames=4)
         d, step = np.array([8.0, 4.0]), np.array([2.0, 0.0])
         for k in range(4):
-            u = k * step                                   # spot shift compensated by the command
-            sup.process_frame(spot(*(d - u)), u)
+            u = k * step                                   # command passed at step k ...
+            applied = (k - 1) * step if k >= 1 else np.zeros(2)   # ... reaches the pixels at step k + 1 (L = 1)
+            sup.process_frame(spot(*(d - applied)), u)
         img = cpuArray(sup.last_look)
         iy, ix = np.unravel_index(np.argmax(img), img.shape)
         c = (N - 1) / 2.0
@@ -52,8 +62,7 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
     def test_disabled_supervisor_forms_looks_but_takes_no_decision(self, target_device_idx, xp):
         """A spot far from the window: disabled, no move and no feedforward (looks still find it); enabled, the
         consensus moves the window onto it."""
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=2, n_cons=2, ff_mode='one',
-                             target_device_idx=target_device_idx)
+        sup = make(target_device_idx, look_frames=2, n_cons=2)
         sup.set_enabled(False)
         for _ in range(20):
             info = sup.process_frame(spot(-12.0, 9.0) + 2.0 * self.rng.standard_normal((N, N)), np.zeros(2))
@@ -64,13 +73,16 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
         for _ in range(4):
             sup.process_frame(spot(-12.0, 9.0) + 2.0 * self.rng.standard_normal((N, N)), np.zeros(2))
         self.assertEqual(sup.n_moves, 1)
+        np.testing.assert_allclose(sup.w, [-12.0, 9.0], atol=1.0)
+        for _ in range(sup.k_hold + 1):                               # hold, then the feedforward
+            sup.process_frame(spot(-12.0, 9.0) + 2.0 * self.rng.standard_normal((N, N)), np.zeros(2))
         np.testing.assert_allclose(sup.u_ff, [-12.0, 9.0], atol=1.0)
 
     def test_hold_flag_while_disabled_only_if_requested(self):
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1)
+        sup = make()
         sup.set_enabled(False)
         self.assertEqual(sup.window_value()[2], 0.0)
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, hold_when_disabled=True, target_device_idx=-1)
+        sup = make(hold_when_disabled=True)
         sup.set_enabled(False)
         self.assertEqual(sup.window_value()[2], 1.0)          # loop open while disabled
         sup.set_enabled(True)
@@ -80,7 +92,7 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
         """Detector integrating two simulation steps: the supervisor must process each frame once, also when
         another input (here in_enable) is refreshed at every step."""
         from types import SimpleNamespace
-        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=2, target_device_idx=-1)
+        sup = make(look_frames=2)
         pixels = SimpleNamespace(pixels=spot(5.0, 0.0), generation_time=0)
         sup.local_inputs = {'in_pixels': pixels, 'in_command': SimpleNamespace(value=np.zeros(2), generation_time=0),
                             'in_enable': SimpleNamespace(value=np.ones(1), generation_time=0)}

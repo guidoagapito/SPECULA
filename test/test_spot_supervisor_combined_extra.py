@@ -23,6 +23,11 @@ def spot(sx, sy, amp=300.0, sigma=1.5):
 
 
 def make(target_device_idx=-1, **kw):
+    """Presence off and confirmation thresholds that always pass, unless a test overrides them."""
+    kw.setdefault('presence', False)
+    kw.setdefault('cmd_latency', 1)
+    kw.setdefault('z_thr_local', -np.inf)
+    kw.setdefault('flux_thr', -np.inf)
     return SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=target_device_idx, **kw)
 
 
@@ -40,7 +45,7 @@ class TestConfirmationEdgeCases(unittest.TestCase):
         return NOISE * self.rng.standard_normal((N, N))
 
     def make_conf(self, **kw):
-        base = dict(ff_mode='hold', confirm=True, z_thr_local=6.0, flux_thr=200.0,
+        base = dict(z_thr_local=6.0, flux_thr=200.0,
                     block_frames=1, confirm_frames=3, k_hold=3, n_cons=5, q_thr=1.1)
         base.update(kw)
         return make(**base)
@@ -70,7 +75,7 @@ class TestConfirmationEdgeCases(unittest.TestCase):
         """Presence goes absent right after a move. A confirmation verdict formed on the dark frames is
         discarded when the dropout starts, nothing is collected while blind, and after release the
         confirmation restarts on fresh frames: no spurious abort, the pending move completes."""
-        sup = make(ff_mode='hold', confirm=True, presence=True, z_thr=6.0, z_thr_local=6.0,
+        sup = make(presence=True, z_thr=6.0, z_thr_local=6.0,
                    flux_thr=200.0, block_frames=1, confirm_frames=3, k_hold=3, n_cons=5,
                    k_absent=3, k_present=2, q_thr=1.1)
         pos = (12.0, -9.0)
@@ -123,9 +128,9 @@ class TestConfirmationEdgeCases(unittest.TestCase):
             self.assertEqual(sup.n_moves, i)
             np.testing.assert_array_equal(sup.u_ff, [0.0, 0.0])    # never any spurious feedforward
 
-    def test_abort_clears_hold_and_n3_state(self):
-        """ff_mode='n3': an abort must leave no dangling n3 sequence (n3_left = 0, hold_until = None)."""
-        sup = make(ff_mode='n3', confirm=True, z_thr_local=6.0, flux_thr=200.0,
+    def test_abort_clears_the_hold_state(self):
+        """An abort must leave no dangling hold (hold_until = None, confirmation inactive)."""
+        sup = make(z_thr_local=6.0, flux_thr=200.0,
                    confirm_frames=3, k_hold=2, n_cons=5, q_thr=1.1)
         pos = (12.0, 6.0)
         for _ in range(sup.n_cons):
@@ -136,14 +141,13 @@ class TestConfirmationEdgeCases(unittest.TestCase):
         self.assertFalse(sup.confirmed)
         self.assertEqual(sup.n_aborts, 1)
         self.assertIsNone(sup.hold_until)
-        self.assertEqual(sup.n3_left, 0)
         self.assertFalse(sup.conf_active)
         np.testing.assert_array_equal(sup.w, [0.0, 0.0])
         np.testing.assert_array_equal(sup.u_ff, [0.0, 0.0])
 
     def test_confirm_frames_independent_of_block_frames(self):
         """confirm_frames can be shorter than block_frames (presence's own block length)."""
-        sup = make(ff_mode='hold', confirm=True, presence=True, z_thr=6.0, z_thr_local=6.0,
+        sup = make(presence=True, z_thr=6.0, z_thr_local=6.0,
                    flux_thr=200.0, block_frames=5, confirm_frames=2, k_hold=2, n_cons=5, q_thr=1.1)
         pos = (10.0, 5.0)
         for _ in range(sup.n_cons):
@@ -180,19 +184,11 @@ class TestIsPresent(unittest.TestCase):
         self.assertTrue(sup._is_present(0.0, 0.0, 150.0))   # flux only
         self.assertFalse(sup._is_present(0.0, 0.0, 0.0))    # none
 
-    def test_disabled_evidences_are_ignored(self):
-        """z_thr_local / flux_thr = None (not set): the corresponding evidence never counts,
-        however large the value passed in (guards against a None-threshold comparison bug)."""
-        sup = make(presence=True, z_thr=10.0)               # local and flux disabled
-        self.assertFalse(sup._is_present(0.0, 999.0, 0.0))
-        self.assertFalse(sup._is_present(0.0, 0.0, 999.0))
-        self.assertTrue(sup._is_present(11.0, 0.0, 0.0))
 
-
-class TestPresenceRegisterFalseWithMovingCommand(unittest.TestCase):
+class TestPresenceWithMovingCommand(unittest.TestCase):
 
     def test_dropout_and_release_track_correctly_while_the_command_ramps(self):
-        """presence_register=False (recommended for tracking): a stationary-on-detector spot with a
+        """Presence blocks are not registered (tracking): a stationary-on-detector spot with a
         ramping own command must still show a normal dropout -> release cycle. n_cons is set far out
         of reach so the ramp cannot accidentally trigger a spurious window move."""
         rng = np.random.default_rng(3)
@@ -200,7 +196,7 @@ class TestPresenceRegisterFalseWithMovingCommand(unittest.TestCase):
         def noise():
             return NOISE * rng.standard_normal((N, N))
 
-        sup = make(presence=True, presence_register=False, z_thr=6.0, k_absent=3, k_present=2,
+        sup = make(presence=True, z_thr=6.0, z_thr_local=6.0, flux_thr=200.0, k_absent=3, k_present=2,
                    block_frames=3, n_cons=1000, q_thr=1.1)
         k = 0
 

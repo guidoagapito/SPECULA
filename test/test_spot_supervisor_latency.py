@@ -20,7 +20,9 @@ def spot(sx, sy, amp=300.0, sigma=1.5):
 
 
 def make(**kw):
-    base = dict(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1, ff_mode='hold', n_cons=2, k_hold=1)
+    # presence off and confirmation thresholds that always pass: these tests are about the latency
+    base = dict(weighted_pix_rad=RADIUS, cmd_latency=1, np_sub=N, target_device_idx=-1, n_cons=2, k_hold=1,
+                presence=False, z_thr_local=-np.inf, flux_thr=-np.inf)
     base.update(kw)
     return SpotSupervisor(**base)
 
@@ -91,18 +93,6 @@ class TestCmdLatency(unittest.TestCase):
         while sup.w_queue:
             sup.process_frame(spot(0.0, 0.0), np.zeros(2))
             self.assertEqual(sup.n_moves, moves)
-
-    def test_n3_window_follows_each_feedforward_step(self):
-        L = 2
-        sup = make(cmd_latency=L, ff_mode='n3')
-        log = self.run_plant(sup, 20, np.array([9.0, -6.0]), lambda j: np.zeros(2), latency=L)
-        steps = [i for i in range(1, len(log)) if np.any(log[i][0] != log[i - 1][0])]
-        self.assertEqual(len(steps), 3)
-        for i in steps:
-            # the window changes L-1 steps after each feedforward increment, never before
-            self.assertTrue(np.array_equal(log[i][1], log[i - 1][1]))
-            self.assertFalse(np.array_equal(log[i + L - 1][1], log[i + L - 2][1]))
-        np.testing.assert_array_equal(sup.w, [0.0, 0.0])
 
     def test_latency_one_matches_immediate_return(self):
         """L = 1: the feedforward lands on the next frame, like the window: no queueing."""

@@ -23,7 +23,9 @@ def spot(sx, sy, amp=300.0, sigma=1.5):
 
 
 def make(**kw):
-    base = dict(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1, ff_mode='hold', n_cons=2, k_hold=1)
+    # presence off and confirmation thresholds that always pass, unless a test overrides them
+    base = dict(weighted_pix_rad=RADIUS, cmd_latency=1, np_sub=N, target_device_idx=-1, n_cons=2, k_hold=1,
+                presence=False, z_thr_local=-np.inf, flux_thr=-np.inf)
     base.update(kw)
     return SpotSupervisor(**base)
 
@@ -42,29 +44,6 @@ def trigger_once(sup, frame, cmd, t):
     sup.post_trigger()
 
 
-class TestCmdLatencyNoneEquivalence(unittest.TestCase):
-    """cmd_latency=None must be byte-for-byte identical to not passing the argument at all."""
-
-    def test_none_matches_the_legacy_default_on_a_scenario_with_a_move(self):
-        rng = np.random.default_rng(9)
-        pos = np.array([11.0, -6.0])
-        frames = [spot(*pos) + NOISE * rng.standard_normal((N, N)) for _ in range(20)]
-        cmd = np.zeros(2)
-        sup_default = make()
-        sup_none = make(cmd_latency=None)
-        self.assertIsNone(sup_default.cmd_latency)
-        self.assertIsNone(sup_none.cmd_latency)
-        for i, frame in enumerate(frames):
-            info_d = sup_default.process_frame(frame.copy(), cmd)
-            info_n = sup_none.process_frame(frame.copy(), cmd)
-            np.testing.assert_array_equal(sup_default.w, sup_none.w, err_msg=f'w mismatch at frame {i}')
-            np.testing.assert_array_equal(sup_default.u_ff, sup_none.u_ff, err_msg=f'u_ff mismatch at frame {i}')
-            np.testing.assert_array_equal(info_d['est'], info_n['est'], err_msg=f'est mismatch at frame {i}')
-            self.assertEqual(info_d['ratio'], info_n['ratio'])
-        self.assertEqual(sup_default.n_moves, sup_none.n_moves)
-        self.assertGreater(sup_default.n_moves, 0)          # make sure the scenario actually exercised a move
-
-
 class TestDropoutDuringFlight(unittest.TestCase):
     """A presence dropout can start while a delayed return is queued; the mirror must still get the
     feedforward regardless (dropout only zeroes the slopes downstream, it does not touch the queue)."""
@@ -77,7 +56,7 @@ class TestDropoutDuringFlight(unittest.TestCase):
 
     def test_dropout_starting_mid_flight_does_not_cancel_the_queued_return(self):
         L = 6
-        sup = make(cmd_latency=L, presence=True, z_thr=6.0, k_absent=1, k_present=2, block_frames=1)
+        sup = make(cmd_latency=L, presence=True, z_thr=6.0, z_thr_local=6.0, flux_thr=200.0, k_absent=1, k_present=2, block_frames=1)
         pos = np.array([12.0, 8.0])
         for _ in range(sup.n_cons):
             sup.process_frame(spot(*pos) + self.noise(), np.zeros(2))
@@ -107,7 +86,7 @@ class TestDropoutDuringFlight(unittest.TestCase):
 
 
 class TestConfirmWithLatency(unittest.TestCase):
-    """confirm=True gates the feedforward on evidence at the new window; with cmd_latency the
+    """The confirmation gates the feedforward on evidence at the new window; with cmd_latency the
     feedforward (and its window return) additionally waits for the transport delay."""
 
     def setUp(self):
@@ -117,7 +96,7 @@ class TestConfirmWithLatency(unittest.TestCase):
         return NOISE * self.rng.standard_normal((N, N))
 
     def make_conf(self, **kw):
-        base = dict(cmd_latency=4, ff_mode='hold', confirm=True, z_thr_local=6.0, flux_thr=200.0,
+        base = dict(cmd_latency=4, z_thr_local=6.0, flux_thr=200.0,
                     block_frames=1, confirm_frames=3, k_hold=3, n_cons=5, q_thr=1.1)
         base.update(kw)
         return make(**base)

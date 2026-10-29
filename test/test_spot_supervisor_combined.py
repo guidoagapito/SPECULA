@@ -26,6 +26,11 @@ def spot(sx, sy, amp=300.0, sigma=1.5):
 
 
 def make(target_device_idx=-1, **kw):
+    """Presence off and confirmation thresholds that always pass, unless a test overrides them."""
+    kw.setdefault('presence', False)
+    kw.setdefault('cmd_latency', 1)
+    kw.setdefault('z_thr_local', -np.inf)
+    kw.setdefault('flux_thr', -np.inf)
     return SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=target_device_idx, **kw)
 
 
@@ -47,8 +52,9 @@ class TestCombinedPresence(unittest.TestCase):
 
     def test_faint_star_in_window_is_not_a_dropout_with_flux(self):
         faint = [spot(0.0, 0.0, amp=60.0) + self.noise() for _ in range(20)]
-        only_g = make(presence=True, z_thr=self.z_thr, k_absent=3)
-        comb = make(presence=True, z_thr=self.z_thr, flux_thr=self.f_thr, k_absent=3)
+        # local z and flux thresholds that never pass: only the global z can say "present"
+        only_g = make(presence=True, z_thr=self.z_thr, z_thr_local=np.inf, flux_thr=np.inf, k_absent=3)
+        comb = make(presence=True, z_thr=self.z_thr, z_thr_local=self.z_loc, flux_thr=self.f_thr, k_absent=3)
         self.run_frames(only_g, faint)
         self.run_frames(comb, faint)
         self.assertTrue(only_g.dropout)                   # the global statistic alone calls it absent
@@ -65,7 +71,7 @@ class TestCombinedPresence(unittest.TestCase):
         self.assertTrue(sup.dropout)
 
     def test_release_on_any_single_evidence(self):
-        sup = make(presence=True, z_thr=self.z_thr, flux_thr=self.f_thr, k_absent=2, k_present=3)
+        sup = make(presence=True, z_thr=self.z_thr, z_thr_local=self.z_loc, flux_thr=self.f_thr, k_absent=2, k_present=3)
         self.run_frames(sup, [self.noise() for _ in range(3)])
         self.assertTrue(sup.dropout)
         self.run_frames(sup, [spot(0.0, 0.0, amp=60.0) + self.noise() for _ in range(3)])
@@ -81,32 +87,34 @@ class TestCombinedPresence(unittest.TestCase):
         self.assertLess(f, self.f_thr)
 
     def test_local_z_follows_the_window(self):
-        sup = make(presence=True, z_thr=1e9, z_thr_local=4.0, k_absent=2)
+        sup = make(presence=True, z_thr=1e9, z_thr_local=4.0, flux_thr=np.inf, k_absent=2)
         sup.w = np.array([10.0, 5.0])
         self.run_frames(sup, [spot(10.0, 5.0, amp=120.0) + self.noise() for _ in range(4)])
         self.assertFalse(sup.dropout)                    # only the local statistic can see it (global disabled)
-        sup2 = make(presence=True, z_thr=1e9, z_thr_local=4.0, k_absent=2)
+        sup2 = make(presence=True, z_thr=1e9, z_thr_local=4.0, flux_thr=np.inf, k_absent=2)
         self.run_frames(sup2, [spot(10.0, 5.0, amp=120.0) + self.noise() for _ in range(4)])
         self.assertTrue(sup2.dropout)                    # window at the reference: the spot is outside the disk
 
-    def test_unregistered_blocks_do_not_smear_a_tracked_spot(self):
-        """Tracking: spot stationary on the detector while the command follows the disturbance."""
-        zs = {}
-        for reg in (True, False):
-            sup = make(presence=True, z_thr=0.0, block_frames=8, presence_register=reg)
+    def test_blocks_are_not_registered_with_the_command(self):
+        """Tracking: spot stationary on the detector while the command follows the disturbance. The presence
+        statistics ignore the command: same frames, same block statistics whatever the command."""
+        lb = {}
+        for name, ramp in (('ramp', True), ('zero', False)):
+            sup = make(presence=True, z_thr=0.0, z_thr_local=0.0, flux_thr=0.0, block_frames=8)
             rng = np.random.default_rng(5)
             for k in range(8):
-                sup.process_frame(spot(0.0, 0.0, amp=40.0) + NOISE * rng.standard_normal((N, N)),
-                                  np.array([1.5 * k, -1.0 * k]))
-            zs[reg] = sup.last_block[0]
-        self.assertGreater(zs[False], zs[True] + 1.0)
+                u = np.array([1.5 * k, -1.0 * k]) if ramp else np.zeros(2)
+                sup.process_frame(spot(0.0, 0.0, amp=40.0) + NOISE * rng.standard_normal((N, N)), u)
+            lb[name] = sup.last_block
+        np.testing.assert_allclose(lb['ramp'], lb['zero'], rtol=1e-12)
+        self.assertGreater(lb['ramp'][0], 6.0)                # the stationary spot is not smeared
 
     @cpu_and_gpu
     def test_window_flux_matches_sh_slopec_movable(self, target_device_idx, xp):
         """The supervisor's window flux is ShSlopecMovable's windowed flux (thr_value = 0)."""
         w = (6.0, -4.0)
         frame = spot(6.3, -3.8) + NOISE * np.random.default_rng(2).standard_normal((N, N))
-        sup = make(target_device_idx, presence=True, z_thr=0.0, flux_thr=0.0)
+        sup = make(target_device_idx, presence=True, z_thr=0.0, z_thr_local=0.0, flux_thr=0.0)
         sup.w = np.array(w)
         sup.process_frame(frame, np.zeros(2))
         idx = np.where(np.ones((N, N)) == 1)
@@ -154,7 +162,8 @@ class TestConfirmedHold(unittest.TestCase):
         return NOISE * self.rng.standard_normal((N, N))
 
     def make_conf(self, **kw):
-        base = dict(ff_mode='hold', confirm=True, z_thr_local=6.0, flux_thr=200.0, block_frames=4)
+        base = dict(z_thr_local=6.0, flux_thr=200.0, block_frames=4,
+                    n_cons=5)           # static frames: no second move before the checks
         base.update(kw)
         return make(**base)
 
@@ -196,25 +205,6 @@ class TestConfirmedHold(unittest.TestCase):
         sup.process_frame(spot(10.0, 4.0) + self.noise(), np.zeros(2))
         sup.process_frame(spot(10.0, 4.0) + self.noise(), np.zeros(2))
         self.assertTrue(np.any(sup.u_ff != 0.0))
-
-    def test_confirm_needs_local_thresholds(self):
-        with self.assertRaises(ValueError):
-            make(ff_mode='hold', confirm=True)
-
-    def test_confirm_rejects_one_shot_mode(self):
-        with self.assertRaises(ValueError):
-            make(ff_mode='one', confirm=True, flux_thr=1.0)
-
-    def test_n3_with_confirmation_starts_after_confirming(self):
-        sup = self.make_conf(ff_mode='n3')
-        pos = (9.0, 6.0)
-        for _ in range(sup.n_cons):
-            sup.process_frame(spot(*pos) + self.noise(), np.zeros(2))
-        w0 = sup.w.copy()
-        for _ in range(max(sup.k_hold, sup.confirm_frames) + 8):
-            sup.process_frame(spot(*pos) + self.noise(), np.zeros(2))
-        np.testing.assert_allclose(sup.u_ff, w0)
-        self.assertEqual(sup.n_aborts, 0)
 
 
 if __name__ == '__main__':
