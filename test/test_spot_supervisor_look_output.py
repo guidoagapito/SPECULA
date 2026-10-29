@@ -1,0 +1,71 @@
+import specula
+specula.init(0)  # Default target device
+
+import unittest
+
+from specula import np, cpuArray
+
+from specula.processing_objects.spot_supervisor import SpotSupervisor
+from test.specula_testlib import cpu_and_gpu
+
+N = 64
+RADIUS = 2.0
+
+
+def spot(sx, sy, amp=300.0, sigma=1.5):
+    c = (N - 1) / 2.0
+    cols = np.exp(-0.5 * ((np.arange(N) - c - sx) / sigma) ** 2)
+    rows = np.exp(-0.5 * ((np.arange(N) - c - sy) / sigma) ** 2)
+    return amp * np.outer(rows, cols)
+
+
+class TestSpotSupervisorLookOutput(unittest.TestCase):
+
+    def setUp(self):
+        self.rng = np.random.default_rng(11)
+
+    @cpu_and_gpu
+    def test_look_image_is_the_mean_of_its_frames(self, target_device_idx, xp):
+        """No command: the registration is the identity, so the look image is the plain mean of its frames."""
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=3, target_device_idx=target_device_idx)
+        frames = [spot(7.0, -3.0) + 2.0 * self.rng.standard_normal((N, N)) for _ in range(3)]
+        for f in frames:
+            sup.process_frame(f, np.zeros(2))
+        np.testing.assert_allclose(cpuArray(sup.last_look), np.mean(frames, axis=0), atol=1e-3)
+
+    @cpu_and_gpu
+    def test_look_image_is_registered_with_the_command(self, target_device_idx, xp):
+        """Spot fixed in disturbance coordinates while the own command shifts it by 2 px per frame: the look image
+        is in the detector frame of the first frame, so its peak is where the spot was in that frame."""
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=4, target_device_idx=target_device_idx)
+        d, step = np.array([8.0, 4.0]), np.array([2.0, 0.0])
+        for k in range(4):
+            u = k * step                                   # spot shift compensated by the command
+            sup.process_frame(spot(*(d - u)), u)
+        img = cpuArray(sup.last_look)
+        iy, ix = np.unravel_index(np.argmax(img), img.shape)
+        c = (N - 1) / 2.0
+        self.assertAlmostEqual(ix - c, d[0], delta=0.6)
+        self.assertAlmostEqual(iy - c, d[1], delta=0.6)
+
+    @cpu_and_gpu
+    def test_disabled_supervisor_forms_looks_but_takes_no_decision(self, target_device_idx, xp):
+        """A spot far from the window: disabled, no move and no feedforward (looks still find it); enabled, the
+        consensus moves the window onto it."""
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=2, n_cons=2, ff_mode='one',
+                             target_device_idx=target_device_idx)
+        sup.set_enabled(False)
+        for _ in range(20):
+            info = sup.process_frame(spot(-12.0, 9.0) + 2.0 * self.rng.standard_normal((N, N)), np.zeros(2))
+        self.assertEqual(sup.n_moves, 0)
+        np.testing.assert_allclose(sup.u_ff, [0.0, 0.0])
+        np.testing.assert_allclose(info['est'], [-12.0, 9.0], atol=1.0)
+        sup.set_enabled(True)
+        for _ in range(4):
+            sup.process_frame(spot(-12.0, 9.0) + 2.0 * self.rng.standard_normal((N, N)), np.zeros(2))
+        self.assertEqual(sup.n_moves, 1)
+        np.testing.assert_allclose(sup.u_ff, [-12.0, 9.0], atol=1.0)
+
+
+if __name__ == '__main__':
+    unittest.main()

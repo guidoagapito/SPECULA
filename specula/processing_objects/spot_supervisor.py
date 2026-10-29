@@ -82,7 +82,13 @@ class SpotSupervisor(BaseProcessingObj):
 
     Outputs: ``out_window`` = [wx, wy, hold] (feed it to ShSlopecMovable, delayed by one step),
     ``out_feedforward`` = accumulated feedforward command (nm, feed it to an extra tip/tilt DM),
-    ``out_state`` = telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, z_local, window_flux, n_aborts]
+    ``out_state`` = telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, z_local, window_flux, n_aborts],
+    ``out_look`` = image of the last complete look (mean of ``look_frames`` frames registered to the command of the
+    first one, i.e. in the detector frame of that first frame; the frame itself with ``look_frames`` = 1), held
+    until the next look is complete. Optional input ``in_enable`` (> 0.5 = enabled, default enabled when not
+    connected): while disabled the supervisor only registers the frames and forms the looks (``out_look`` keeps
+    updating), with no presence logic, consensus, move or feedforward; on re-enabling it restarts from its initial
+    state (window at the reference, no feedforward). Used to keep the supervisor passive in open loop.
     (z, z_local, window_flux: last completed presence block, NaN if presence is off).
     """
 
@@ -188,16 +194,22 @@ class SpotSupervisor(BaseProcessingObj):
         self.n_moves = 0
         self.n_aborts = 0
         self._mask_w = None
+        self.enabled = True
+        self.last_look = self.xp.zeros((self.n, self.n), dtype=self.dtype)
         self.reset_state()
 
         self.inputs['in_pixels'] = InputValue(type=Pixels)
         self.inputs['in_command'] = InputValue(type=BaseValue)
+        self.inputs['in_enable'] = InputValue(type=BaseValue, optional=True)
         self.window = BaseValue(value=self.xp.zeros(3, dtype=self.dtype), target_device_idx=self.target_device_idx)
         self.feedforward = BaseValue(value=self.xp.zeros(2, dtype=self.dtype), target_device_idx=self.target_device_idx)
         self.state_out = BaseValue(value=self.xp.zeros(9, dtype=self.dtype), target_device_idx=self.target_device_idx)
         self.outputs['out_window'] = self.window
         self.outputs['out_feedforward'] = self.feedforward
         self.outputs['out_state'] = self.state_out
+        self.look_out = BaseValue(value=self.xp.zeros((self.n, self.n), dtype=self.dtype),
+                                  target_device_idx=self.target_device_idx)
+        self.outputs['out_look'] = self.look_out
 
     def reset_state(self):
         self.w = np.zeros(2)                       # window centre, px
@@ -232,12 +244,15 @@ class SpotSupervisor(BaseProcessingObj):
     def input_names(cls):
         return {'in_pixels': InputDesc(Pixels, 'Detector pixels'),
                 'in_command': InputDesc(BaseValue, 'Tip/tilt command [nm]: on the mirror during the frame '
-                                                   '(cmd_latency None) or as issued by the controller')}
+                                                   '(cmd_latency None) or as issued by the controller'),
+                'in_enable': InputDesc(BaseValue, 'Optional enable flag (> 0.5 = enabled); while disabled the '
+                                                  'supervisor only forms the looks')}
 
     @classmethod
     def output_names(cls):
         return {'out_window': OutputDesc(BaseValue, 'Window centre [wx, wy] px and hold flag'),
                 'out_feedforward': OutputDesc(BaseValue, 'Accumulated feedforward tip/tilt command [nm]'),
+                'out_look': OutputDesc(BaseValue, 'Image of the last complete look (registered mean) [e-]'),
                 'out_state': OutputDesc(BaseValue, 'Telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, '
                                                    'z_local, window_flux, n_aborts]')}
 
@@ -346,6 +361,13 @@ class SpotSupervisor(BaseProcessingObj):
         frame = self.xp.asarray(frame, dtype=self.dtype)
         spectrum = self.xp.fft.fft2(frame)
         corr = self._correlate(spectrum)
+        if not self.enabled:                                 # passive: looks only, no decision
+            look = self._look(spectrum, corr, u)
+            est = self._peak(self._restrict(look[0])) if look is not None else np.full(2, np.nan)
+            if self.cmd_latency is not None:
+                self.uff_hist.append(self.u_ff.copy())
+            self.frame += 1
+            return dict(est=est, z=None, ratio=np.nan, dropout=False)
         need_flux = (self.presence and self.flux_thr is not None) or (self.conf_active and self.flux_thr is not None)
         flux = self._window_flux(frame) if need_flux else 0.0
         if self.conf_active and not self.dropout:            # no evidence is collected while blind
@@ -407,6 +429,7 @@ class SpotSupervisor(BaseProcessingObj):
         """Correlation map of one look: the frame itself (look_frames = 1) or the mean of look_frames
         frames registered to the command of the first one; None while the look is incomplete."""
         if self.look_frames == 1:
+            self.last_look = self.xp.real(self.xp.fft.ifft2(spectrum)).astype(self.dtype)
             return corr, u
         if self.look_count == 0:
             self.u_look0 = u.copy()
@@ -418,7 +441,9 @@ class SpotSupervisor(BaseProcessingObj):
         if self.look_count < self.look_frames:
             return None
         self.look_count = 0
-        return self._correlate(self.look_acc / self.look_frames), self.u_look0
+        mean_spectrum = self.look_acc / self.look_frames
+        self.last_look = self.xp.real(self.xp.fft.ifft2(mean_spectrum)).astype(self.dtype)
+        return self._correlate(mean_spectrum), self.u_look0
 
     def _update_confirmation(self, spectrum, flux):
         """Accumulate frames at the new window during the hold; decide once confirm_frames are in."""
@@ -477,7 +502,16 @@ class SpotSupervisor(BaseProcessingObj):
                     if self.n3_left == 0:
                         self.hold_until = None
 
+    def set_enabled(self, enabled):
+        """Enable or disable the decisions; on re-enabling restart from the initial state."""
+        enabled = bool(enabled)
+        if enabled and not self.enabled:
+            self.reset_state()
+        self.enabled = enabled
+
     def trigger_code(self):
+        if self.local_inputs['in_enable'] is not None:
+            self.set_enabled(float(cpuArray(self.local_inputs['in_enable'].value).ravel()[0]) > 0.5)
         frame = self.local_inputs['in_pixels'].pixels
         cmd = np.asarray(cpuArray(self.local_inputs['in_command'].value), dtype=float)
         info = self.process_frame(frame, self.cmd_to_px @ cmd[:2])
@@ -487,8 +521,9 @@ class SpotSupervisor(BaseProcessingObj):
         z, z_loc, f = self.last_block if self.presence else (np.nan, np.nan, np.nan)
         self.state_out.value[:] = self.xp.asarray([*info['est'], z, info['ratio'], float(self.dropout), self.n_moves,
                                                    z_loc, f, self.n_aborts], dtype=self.dtype)
+        self.look_out.value[:] = self.last_look
 
     def post_trigger(self):
         super().post_trigger()
-        for name in ('out_window', 'out_feedforward', 'out_state'):
+        for name in ('out_window', 'out_feedforward', 'out_state', 'out_look'):
             self.outputs[name].generation_time = self.current_time

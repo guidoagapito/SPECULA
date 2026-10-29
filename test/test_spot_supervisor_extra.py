@@ -117,8 +117,8 @@ class TestSpotSupervisorExtra(unittest.TestCase):
             sup.process_frame(np.zeros((N // 2, N // 2)), np.zeros(2))
 
     def test_input_and_output_names(self):
-        self.assertEqual(set(SpotSupervisor.input_names()), {'in_pixels', 'in_command'})
-        self.assertEqual(set(SpotSupervisor.output_names()), {'out_window', 'out_feedforward', 'out_state'})
+        self.assertEqual(set(SpotSupervisor.input_names()), {'in_pixels', 'in_command', 'in_enable'})
+        self.assertEqual(set(SpotSupervisor.output_names()), {'out_window', 'out_feedforward', 'out_state', 'out_look'})
 
     # ---- process_frame contract ----
 
