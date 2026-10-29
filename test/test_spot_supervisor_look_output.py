@@ -66,6 +66,30 @@ class TestSpotSupervisorLookOutput(unittest.TestCase):
         self.assertEqual(sup.n_moves, 1)
         np.testing.assert_allclose(sup.u_ff, [-12.0, 9.0], atol=1.0)
 
+    def test_hold_flag_while_disabled_only_if_requested(self):
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, target_device_idx=-1)
+        sup.set_enabled(False)
+        self.assertEqual(sup.window_value()[2], 0.0)
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, hold_when_disabled=True, target_device_idx=-1)
+        sup.set_enabled(False)
+        self.assertEqual(sup.window_value()[2], 1.0)          # loop open while disabled
+        sup.set_enabled(True)
+        self.assertEqual(sup.window_value()[2], 0.0)
+
+    def test_a_step_without_new_pixels_is_not_processed(self):
+        """Detector integrating two simulation steps: the supervisor must process each frame once, also when
+        another input (here in_enable) is refreshed at every step."""
+        from types import SimpleNamespace
+        sup = SpotSupervisor(weighted_pix_rad=RADIUS, np_sub=N, look_frames=2, target_device_idx=-1)
+        pixels = SimpleNamespace(pixels=spot(5.0, 0.0), generation_time=0)
+        sup.local_inputs = {'in_pixels': pixels, 'in_command': SimpleNamespace(value=np.zeros(2), generation_time=0),
+                            'in_enable': SimpleNamespace(value=np.ones(1), generation_time=0)}
+        for step in range(6):
+            sup.current_time = step
+            pixels.generation_time = step - step % 2           # a new frame every two steps
+            sup.trigger_code()
+        self.assertEqual(sup.frame, 3)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -88,7 +88,11 @@ class SpotSupervisor(BaseProcessingObj):
     until the next look is complete. Optional input ``in_enable`` (> 0.5 = enabled, default enabled when not
     connected): while disabled the supervisor only registers the frames and forms the looks (``out_look`` keeps
     updating), with no presence logic, consensus, move or feedforward; on re-enabling it restarts from its initial
-    state (window at the reference, no feedforward). Used to keep the supervisor passive in open loop.
+    state (window at the reference, no feedforward). Used to keep the supervisor passive in open loop; with
+    ``hold_when_disabled`` the hold flag is also set while disabled, so the loop is open (zero slopes).
+    The supervisor works on detector frames: it processes a step only if ``in_pixels`` was refreshed in it (an
+    input refreshed at every simulation step, such as ``in_enable`` from a generator, would otherwise make it
+    count a frame of a longer detector integration more than once), and only then refreshes its outputs.
     (z, z_local, window_flux: last completed presence block, NaN if presence is off).
     """
 
@@ -122,6 +126,7 @@ class SpotSupervisor(BaseProcessingObj):
                  presence_tpl_fwhm: float = None,
                  presence_halo_fwhm: float = None,
                  presence_halo_fraction: float = None,
+                 hold_when_disabled: bool = False,
                  target_device_idx: int = None,
                  precision: int = None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -144,6 +149,8 @@ class SpotSupervisor(BaseProcessingObj):
         self.k_absent = int(k_absent)
         self.k_present = int(k_present)
         self.look_frames = int(look_frames)
+        self.hold_when_disabled = bool(hold_when_disabled)
+        self._processed = False
         self.search_radius = float(search_radius)
         self.z_thr_local = z_thr_local
         self.flux_thr = flux_thr
@@ -509,14 +516,23 @@ class SpotSupervisor(BaseProcessingObj):
             self.reset_state()
         self.enabled = enabled
 
+    def window_value(self):
+        """[wx, wy, hold]: hold during a dropout, and while disabled if hold_when_disabled."""
+        hold = self.dropout or (self.hold_when_disabled and not self.enabled)
+        return [self.w[0], self.w[1], float(hold)]
+
     def trigger_code(self):
         if self.local_inputs['in_enable'] is not None:
             self.set_enabled(float(cpuArray(self.local_inputs['in_enable'].value).ravel()[0]) > 0.5)
+        # frames only: a step without new pixels (another input refreshed) is not processed
+        self._processed = self.local_inputs['in_pixels'].generation_time >= self.current_time
+        if not self._processed:
+            return
         frame = self.local_inputs['in_pixels'].pixels
         cmd = np.asarray(cpuArray(self.local_inputs['in_command'].value), dtype=float)
         info = self.process_frame(frame, self.cmd_to_px @ cmd[:2])
         ff_nm = self.px_to_cmd @ self.u_ff
-        self.window.value[:] = self.xp.asarray([self.w[0], self.w[1], float(self.dropout)], dtype=self.dtype)
+        self.window.value[:] = self.xp.asarray(self.window_value(), dtype=self.dtype)
         self.feedforward.value[:] = self.xp.asarray(ff_nm, dtype=self.dtype)
         z, z_loc, f = self.last_block if self.presence else (np.nan, np.nan, np.nan)
         self.state_out.value[:] = self.xp.asarray([*info['est'], z, info['ratio'], float(self.dropout), self.n_moves,
@@ -525,5 +541,7 @@ class SpotSupervisor(BaseProcessingObj):
 
     def post_trigger(self):
         super().post_trigger()
+        if not self._processed:                     # no new frame in this step: outputs not refreshed
+            return
         for name in ('out_window', 'out_feedforward', 'out_state', 'out_look'):
             self.outputs[name].generation_time = self.current_time
