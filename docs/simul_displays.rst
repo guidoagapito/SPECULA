@@ -44,7 +44,8 @@ Displays for scalar values, vectors, and temporal evolution of quantities.
 
 * ``PlotDisplay`` - Scalar or curve plotting
 * ``PlotVectorDisplay`` - Vector and time-history visualization
-* ``ModesDisplay`` - Modal coefficient plotting
+* ``VectorValuesDisplay`` - Current values of a vector, as a function of their index (input ``value``)
+* ``ModesDisplay`` - Modal coefficient plotting: a ``VectorValuesDisplay`` with the input ``modes``
 
 Typical applications include:
 
@@ -96,7 +97,7 @@ simulation time. The ``--async-displays`` command line flag moves all displays t
     specula params.yml --async-displays
 
 When embedding SPECULA in a Python program, the same behavior is selected with the
-``async_displays=True`` argument of :class:`specula.simul.Simul` or :func:`specula.main_simul`.
+``async_displays=True`` argument of :class:`iteras.simul.Simul` or :func:`specula.main_simul`.
 The display process is started with the multiprocessing *spawn* method, which imports the main
 script again in the new process, so the script must protect its top-level code with the usual guard:
 

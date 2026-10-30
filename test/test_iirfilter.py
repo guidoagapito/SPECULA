@@ -470,7 +470,7 @@ class TestIirFilterData(unittest.TestCase):
 
         # Test poles extraction
         extracted_poles = cpuArray(original_filter.get_poles())
-        expected_poles = np.array([[1/ff[0]], [1/ff[1]]])
+        expected_poles = np.array([[ff[0]], [ff[1]]])
         np.testing.assert_allclose(extracted_poles, expected_poles, rtol=1e-7, atol=1e-7,
                                  err_msg="Poles extraction failed")
 
@@ -893,3 +893,22 @@ class TestIirFilterData(unittest.TestCase):
         plt.tight_layout()
 
         plt.show()
+
+
+class TestIirFilterDataZerosPoles(unittest.TestCase):
+
+    def test_zeros_and_poles_of_known_filter(self):
+        """H(z) = (z - 0.5) / (z - 0.8): coefficients lowest order first"""
+        data = IirFilterData(ordnum=[2], ordden=[2], num=[[-0.5, 1.0]], den=[[-0.8, 1.0]],
+                             target_device_idx=-1)
+        np.testing.assert_allclose(cpuArray(data.get_zeros()), [[0.5]], atol=1e-12)
+        np.testing.assert_allclose(cpuArray(data.get_poles()), [[0.8]], atol=1e-12)
+
+    def test_set_zeros_and_poles(self):
+        """set_zeros()/set_poles() give the coefficients of (z - 0.3) / (z - 0.9)"""
+        data = IirFilterData(ordnum=[2], ordden=[2], num=[[0.0, 1.0]], den=[[-1.0, 1.0]],
+                             target_device_idx=-1)
+        data.set_zeros(np.array([[0.3]]))
+        data.set_poles(np.array([[0.9]]))
+        np.testing.assert_allclose(cpuArray(data.num), [[-0.3, 1.0]], atol=1e-12)
+        np.testing.assert_allclose(cpuArray(data.den), [[-0.9, 1.0]], atol=1e-12)

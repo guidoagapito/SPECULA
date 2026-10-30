@@ -45,6 +45,38 @@ MOVED_MODULES = {
     'specula.display.plot_vector_display': 'iteras.display.plot_vector_display',
     'specula.display.display_recorder': 'iteras.display.display_recorder',
     'specula.lib.display_server_api': 'iteras.lib.display_server_api',
+    'specula.lib.fits_io': 'iteras.lib.fits_io',
+    'specula.scripts.web_frontend': 'iteras.scripts.web_frontend',
+    'specula.processing_objects.mvm': 'iteras.processing_objects.mvm',
+    'specula.processing_objects.soft_limiter': 'iteras.processing_objects.soft_limiter',
+    'specula.data_objects.iir_filter_data': 'iteras.data_objects.iir_filter_data',
+    'specula.data_objects.ssr_filter_data': 'iteras.data_objects.ssr_filter_data',
+    'specula.data_objects.time_history': 'iteras.data_objects.time_history',
+    'specula.processing_objects.base_filter': 'iteras.processing_objects.base_filter',
+    'specula.processing_objects.base_generator': 'iteras.processing_objects.base_generator',
+    'specula.processing_objects.base_inserter': 'iteras.processing_objects.base_inserter',
+    'specula.processing_objects.base_operation': 'iteras.processing_objects.base_operation',
+    'specula.processing_objects.base_slicer': 'iteras.processing_objects.base_slicer',
+    'specula.processing_objects.demodulator': 'iteras.processing_objects.demodulator',
+    'specula.processing_objects.dynamic_iir_filter': 'iteras.processing_objects.dynamic_iir_filter',
+    'specula.processing_objects.dynamic_integrator': 'iteras.processing_objects.dynamic_integrator',
+    'specula.processing_objects.iir_filter': 'iteras.processing_objects.iir_filter',
+    'specula.processing_objects.integrator': 'iteras.processing_objects.integrator',
+    'specula.processing_objects.low_pass_filter': 'iteras.processing_objects.low_pass_filter',
+    'specula.processing_objects.multirate_complementary_filter': 'iteras.processing_objects.multirate_complementary_filter',
+    'specula.processing_objects.random_generator': 'iteras.processing_objects.random_generator',
+    'specula.processing_objects.round_to_multiple': 'iteras.processing_objects.round_to_multiple',
+    'specula.processing_objects.schedule_generator': 'iteras.processing_objects.schedule_generator',
+    'specula.processing_objects.ssr_filter': 'iteras.processing_objects.ssr_filter',
+    'specula.processing_objects.time_history_generator': 'iteras.processing_objects.time_history_generator',
+    'specula.processing_objects.vibration_generator': 'iteras.processing_objects.vibration_generator',
+    'specula.processing_objects.wave_generator': 'iteras.processing_objects.wave_generator',
+    'specula.processing_objects.windowed_integration': 'iteras.processing_objects.windowed_integration',
+    'specula.lib.demodulate_signal': 'iteras.lib.demodulate_signal',
+    'specula.lib.fast_pinv': 'iteras.lib.fast_pinv',
+    'specula.lib.interp2d': 'iteras.lib.interp2d',
+    'specula.lib.process_utils': 'iteras.lib.process_utils',
+    'specula.lib.rebin': 'iteras.lib.rebin',
 }
 
 
@@ -79,7 +111,7 @@ class TestMovedModules(unittest.TestCase):
         from specula.lib import utils as specula_utils
         from iteras.lib import utils as iteras_utils
         for name in ['camelcase_to_snakecase', 'import_class', 'get_type_hints',
-                     'make_tn', 'flatten', 'resolve_type']:
+                     'make_tn', 'flatten', 'resolve_type', 'psd_to_signal']:
             self.assertIs(getattr(specula_utils, name), getattr(iteras_utils, name))
 
 
@@ -138,6 +170,9 @@ class TestSpeculaPlugin(unittest.TestCase):
         self.assertEqual(import_class('SimParams').__module__, 'iteras.data_objects.sim_params')
         self.assertEqual(import_class('SimulParams').__module__, 'specula.data_objects.simul_params')
         self.assertIs(import_class('SpeculaInput'), import_class('InteractiveInput'))
+        # Classes moved to iteras, also found through their old specula modules
+        self.assertEqual(import_class('IirFilter').__module__, 'iteras.processing_objects.iir_filter')
+        self.assertEqual(import_class('TimeHistory').__module__, 'iteras.data_objects.time_history')
 
     def test_import_class_unknown(self):
         with self.assertRaises(ImportError):
@@ -162,6 +197,7 @@ class TestSpeculaPlugin(unittest.TestCase):
         cm = CalibManager('/root')
         self.assertEqual(cm.filename('data', 'x'), os.path.join('/root', 'data/', 'x.fits'))
         self.assertEqual(cm.filename('Recmat', 'x'), os.path.join('/root', 'rec/', 'x.fits'))
+        self.assertEqual(cm.filename('IirFilterData', 'x'), os.path.join('/root', 'filter/', 'x.fits'))
 
     def test_env_aliases(self):
         env = {k: v for k, v in os.environ.items()

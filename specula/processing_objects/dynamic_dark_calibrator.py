@@ -64,7 +64,7 @@ class DynamicDarkCalibrator(BaseProcessingObj):
         Dark frames are stored in FITS format.
 
     .. seealso::
-        :class:`~specula.base_processing_obj.BaseProcessingObj`,
+        :class:`~iteras.base_processing_obj.BaseProcessingObj`,
         :class:`~specula.data_objects.pixels.Pixels`
 
     """

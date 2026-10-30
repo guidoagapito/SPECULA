@@ -2,7 +2,6 @@ from specula.log import get_specula_logger
 import specula
 specula.init(0)  # Default target device
 
-import os
 import sys
 import pickle
 import queue as _queue_module
@@ -260,7 +259,10 @@ class TestDisplayServerTrigger(unittest.TestCase):
             with patch('specula.processing_objects.display_server.start_server'):
                 server = DisplayServer.__new__(DisplayServer)
                 server.mode = mode
-                server.qin = mp.Queue()
+                # A thread queue for the requests: an item put in a multiprocessing.Queue
+                # reaches it through a feeder thread, so that trigger(), reading it with
+                # get(block=False) right after put(), could miss it
+                server.qin = queue.Queue()
                 server.qout = mp.Queue()
                 server.params_dict = {}
                 server.counter = 0
@@ -279,7 +281,6 @@ class TestDisplayServerTrigger(unittest.TestCase):
         server.data_obj_getter = lambda name: None
         server.trigger()   # should not raise
 
-    @unittest.skipIf(os.environ.get('CI') == 'true', "Disabled for CI issues with multiprocessing.Queue")
     def test_trigger_image_mode_processes_request(self):
         from specula.base_value import BaseValue
         server = self._make_server('image')
@@ -320,7 +321,6 @@ class TestDisplayServerTrigger(unittest.TestCase):
         server.data_obj_getter = lambda name: None
         server.trigger()   # should not raise
 
-    @unittest.skipIf(os.environ.get('CI') == 'true', "Disabled for CI issues with multiprocessing.Queue")
     def test_trigger_data_mode_processes_request(self):
         server = self._make_server('data')
 

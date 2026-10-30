@@ -1,15 +1,15 @@
-
-from astropy.io import fits
-
-from specula.base_data_obj import BaseDataObj
+from iteras.data_objects.matrix import Matrix, matrix_array_name
 from iteras.lib import storage
 
 
-class Recmat(BaseDataObj):
+class Recmat(Matrix):
     """
     Reconstruction matrix data object.
     This class holds the information about the reconstruction matrix,
     which maps slopes to modes. The reconstruction matrix axes are [modes, slopes].
+
+    It is a :class:`~iteras.data_objects.matrix.Matrix`, whose matrix is also
+    available as the ``recmat`` attribute.
     """
     def __init__(self,
                  recmat,
@@ -20,27 +20,20 @@ class Recmat(BaseDataObj):
         """
         Initialize a :class:`~specula.data_objects.recmat.Recmat` object.
         """
-        super().__init__(target_device_idx=target_device_idx, precision=precision)
-        self.recmat = self.to_xp(recmat, dtype=self.dtype)
+        super().__init__(recmat, target_device_idx=target_device_idx, precision=precision)
         self.norm_factor = norm_factor
         self.proj_list = []
         self.modes2recLayer = None
 #        self.set_modes2recLayer(modes2recLayer) # TODO
 
-    def get_value(self):
-        '''
-        Get the recmat as a numpy/cupy array
-        '''
-        return self.recmat
+    @property
+    def recmat(self):
+        '''The reconstruction matrix, same as ``matrix``'''
+        return self.matrix
 
-    def set_value(self, v):
-        '''
-        Set new values for the recmat
-        Arrays are not reallocated
-        '''
-        assert v.shape == self.recmat.shape, \
-            f"Error: input array shape {v.shape} does not match recmat shape {self.recmat.shape}"
-        self.recmat[:]= self.to_xp(v)
+    @recmat.setter
+    def recmat(self, value):
+        self.matrix = value
 
     def set_modes2recLayer(self, modes2recLayer):
         if modes2recLayer is not None:
@@ -59,24 +52,16 @@ class Recmat(BaseDataObj):
         self.recmat = self.recmat[:self.nmodes - nModesToBeDiscarded, :]
 
     def get_fits_header(self):
-        hdr = fits.Header()
-        hdr['VERSION'] = 1
+        hdr = super().get_fits_header()
         hdr['NORMFACT'] = self.norm_factor
         return hdr
 
     @property
     def nmodes(self):
-        return self.recmat.shape[0]
+        return self.nrows
 
-    def save(self, filename, overwrite=False):
-        filename = storage.object_filename(filename)
-        storage.write_object(filename, self.get_fits_header(),
-                             {'recmat': self.recmat, 'modes2reclayer': self.modes2recLayer},
-                             layout='placeholder', overwrite=overwrite)
-
-    @staticmethod
-    def from_header(filename, target_device_idx=None):
-        raise NotImplementedError
+    def _arrays_to_save(self):
+        return {'matrix': self.matrix, 'modes2reclayer': self.modes2recLayer}
 
     @staticmethod
     def restore(filename, target_device_idx=None):
@@ -90,7 +75,5 @@ class Recmat(BaseDataObj):
                 mode2reLayer = f.read('modes2reclayer', 2)
             else:
                 mode2reLayer = None
-            recmat = f.load('recmat', 1, target_device_idx=target_device_idx)
+            recmat = f.load(matrix_array_name(f), 1, target_device_idx=target_device_idx)
         return Recmat(recmat, mode2reLayer, norm_factor, target_device_idx=target_device_idx)
-
-

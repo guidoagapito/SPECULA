@@ -2,7 +2,6 @@
 from pathlib import Path
 from typing import Optional
 import yaml
-from astropy.io import fits
 import iteras
 
 from iteras.simul import Simul
@@ -29,8 +28,13 @@ class BaseReplayAnalyser:
                  end_time: Optional[float] = None,
                  display: bool = False,
                  log_level: Optional[str] = None,
-                 on_missing_downstream_consumers: str = 'error'):
-
+                 on_missing_downstream_consumers: str = 'error',
+                 data_format: Optional[str] = None):
+        '''
+        *data_format* is the format of the results saved by the replays: one of
+        the data object formats (see iteras.lib.storage). By default, the format
+        of the data objects (ITERAS_DATA_FORMAT, or fits).
+        '''
         self.data_dir = Path(data_dir)
         self.tracking_number = tracking_number
         self.start_time = start_time
@@ -42,6 +46,12 @@ class BaseReplayAnalyser:
                 f"got {on_missing_downstream_consumers!r}"
             )
         self.on_missing_downstream_consumers = on_missing_downstream_consumers
+        if data_format is None:
+            data_format = storage.default_object_format()
+        if data_format not in storage.OBJECT_FORMATS:
+            raise ValueError(f"data_format must be one of {', '.join(storage.OBJECT_FORMATS)}, "
+                             f"got {data_format!r}")
+        self.data_format = data_format
         self.logger = get_iteras_logger(__name__)
         if log_level is not None:
             self.logger.setLevel(log_level)
@@ -217,12 +227,16 @@ class BaseReplayAnalyser:
             except:
                 pass  # File cleanup failure is not critical
 
-    def _read_fits_primary_and_times(self, path: Path):
+    def _output_path(self, directory: Path, name: str) -> Path:
+        """Path of the result *name* saved by a replay DataStore in *directory*, in data_format"""
+        return Path(storage.filename(directory, name, self.data_format))
+
+    def _read_data_and_times(self, path: Path):
         """
-        Read a FITS file's primary HDU data, plus an optional second HDU
-        holding a time vector (as saved by DataStore), if present.
+        Read the data and the optional time vector of a file saved by DataStore,
+        in any data object format.
         """
-        with fits.open(path) as hdul:
-            data = hdul[0].data   # pylint: disable=no-member
-            times = hdul[1].data if len(hdul) > 1 else None   # pylint: disable=no-member
+        with storage.read_object(path) as f:
+            data = f.read('data', 0)
+            times = f.read('times', 1) if f.has('times', 1) else None
         return data, times

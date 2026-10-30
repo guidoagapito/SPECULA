@@ -99,7 +99,7 @@ class TestAllClasses(unittest.TestCase):
                 if not str(filename).endswith('.fits'):
                     obj.recmat[0, 0] = -1
                 return obj
-        with self.assertRaisesRegex(AssertionError, 'recmat'):
+        with self.assertRaisesRegex(AssertionError, 'restored from npz.matrix'):
             save(LosesData(recmat.recmat, target_device_idx=-1), os.path.join(tmpdir.name, 'l.fits'))
 
         # Field by field comparison
@@ -166,26 +166,26 @@ class TestFiles(unittest.TestCase):
         self.recmat.save(path)
         from astropy.io import fits
         with fits.open(path) as hdul:
-            self.assertEqual(hdul[1].name, 'RECMAT')
+            self.assertEqual(hdul[1].name, 'MATRIX')
             np.testing.assert_array_equal(hdul[1].data, expected)
             self.assertEqual(hdul[0].header['NORMFACT'], self.recmat.norm_factor)
         # npz
         path = os.path.join(self.tmp.name, 'rec.npz')
         self.recmat.save(path)
         with np.load(path, allow_pickle=False) as f:
-            np.testing.assert_array_equal(f['recmat'], expected)
+            np.testing.assert_array_equal(f['matrix'], expected)
             self.assertIn('NORMFACT', str(f['__header__']))
         # npy: a directory with one file per array and the header
         path = os.path.join(self.tmp.name, 'rec.npy')
         self.recmat.save(path)
-        np.testing.assert_array_equal(np.load(os.path.join(path, 'recmat.npy')), expected)
+        np.testing.assert_array_equal(np.load(os.path.join(path, 'matrix.npy')), expected)
         self.assertTrue(os.path.exists(os.path.join(path, 'header.json')))
         # HDF5
         import h5py
         path = os.path.join(self.tmp.name, 'rec.h5')
         self.recmat.save(path)
         with h5py.File(path, 'r') as f:
-            np.testing.assert_array_equal(f['recmat'][()], expected)
+            np.testing.assert_array_equal(f['matrix'][()], expected)
             self.assertEqual(f.attrs['NORMFACT'], self.recmat.norm_factor)
 
     def test_overwrite(self):

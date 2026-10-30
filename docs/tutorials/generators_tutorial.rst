@@ -74,8 +74,8 @@ Alternatively, you can generate the vibration time history offline (e.g., using 
     import specula
     import numpy as np
     specula.init(0)
-    from specula.processing_objects.vibration_generator import get_vibrations_time_hist
-    from specula.data_objects.time_history import TimeHistory
+    from iteras.processing_objects.vibration_generator import get_vibrations_time_hist
+    from iteras.data_objects.time_history import TimeHistory
 
     # TODO: define nmodes, psd, freq, seed, samp_freq, niter, start_from_zero
     # psd unit: [nm^2/Hz], freq unit: [Hz]

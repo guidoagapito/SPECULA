@@ -9,7 +9,7 @@ The main way to run a simulation is to use the ``specula`` command line tool, in
 with the SPECULA package, giving the configuration file as an argument, in addition to several
 optional arguments (visible with the ``specula -h`` command).
 
-When embedding in another Python program, it is possible to use the :class:`specula.simul.Simul` class directly:
+When embedding in another Python program, it is possible to use the :class:`iteras.simul.Simul` class directly:
 
 .. code-block:: python
 
@@ -42,7 +42,7 @@ To find out where the simulation time is spent, see the :doc:`profiling` page.
 Listing simulation runs
 =======================
 
-Each run saved by a :class:`~specula.processing_objects.data_store.DataStore` gets its own TN folder
+Each run saved by a :class:`~iteras.processing_objects.data_store.DataStore` gets its own TN folder
 (e.g. ``20260805_080019``, or ``20260805_080019.0`` for a second run started in the same second),
 containing a ``params.yml`` with the full simulation parameters, overrides included.
 When many runs accumulate in the same folder, the ``specula_list_runs`` command line tool shows what
@@ -374,7 +374,7 @@ The ``--nsimul`` parameter automatically runs multiple simulations in sequence, 
 Python API
 ~~~~~~~~~~
 
-Using the :class:`specula.simul.Simul` class directly with explicit ``simul_idx``:
+Using the :class:`iteras.simul.Simul` class directly with explicit ``simul_idx``:
 
 .. code-block:: python
 

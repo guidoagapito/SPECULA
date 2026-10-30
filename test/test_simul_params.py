@@ -79,4 +79,30 @@ class TestSimulParams(unittest.TestCase):
             self.assertFalse(simul.is_main_params(params, 'other'))
             self.assertFalse(simul.is_main_params(params, 'broken'))
             simul.setSimulParams(params)
-            self.assertIs(simul.mainParams, params['main'])
+            self.assertEqual(simul.mainParams['root_dir'], 'dummy')
+
+    def test_main_params_defaults(self):
+        """
+        The main parameters not in the parameter file have the default values of
+        their class, except time_step and total_time, which are required
+        """
+        params = {'main': {'class': 'SimParams', 'time_step': 0.01}}
+        simul = Simul('dummy.yml')
+        simul.setSimulParams(params)
+        self.assertEqual(simul.mainParams['time_step'], 0.01)
+        self.assertEqual(simul.mainParams['root_dir'], '.')
+        self.assertEqual(simul.mainParams['add_modules'], [])
+        self.assertNotIn('total_time', simul.mainParams)
+        # The parameters are not modified
+        self.assertEqual(params['main'], {'class': 'SimParams', 'time_step': 0.01})
+
+    def test_time_base_is_required(self):
+        """A parameter file without time_step or total_time is an error"""
+        for main in ({'class': 'SimParams', 'time_step': 0.01},
+                     {'class': 'SimulParams', 'total_time': 1.0, 'time_stpe': 0.01}):
+            with self.subTest(main=main):
+                simul = Simul('dummy.yml')
+                with self.assertRaisesRegex(ValueError, "'main' section.*(total_time|time_step)"):
+                    simul.check_time_base({'main': main})
+                main = dict(main, time_step=0.01, total_time=1.0)
+                simul.check_time_base({'main': main})
