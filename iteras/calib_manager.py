@@ -1,8 +1,8 @@
 
 import os
-from astropy.io import fits
 
 from iteras import registry
+from iteras.lib import storage
 from iteras.log import get_iteras_logger
 
 
@@ -42,19 +42,24 @@ class CalibManager():
 
         Parameters:
             subdir (str): The key representing the calibration data type or subdirectory.
-            name (str): The base name of the file (without extension).
+            name (str): The base name of the file, usually without extension.
 
         Returns:
-            str: The absolute path to the FITS file, ensuring the '.fits' extension is present.
+            str: The path of the file. If *name* has no FITS, npz or HDF5 extension,
+            the existing file with that name and one of these extensions (see
+            iteras.lib.storage.find_object_file()), or, if there is none, the
+            name with the extension of the default format ('.fits' unless
+            ITERAS_DATA_FORMAT says otherwise).
         """
         fname = os.path.join(self.root_dir, self._subdirs[subdir], name)
-        if not fname.endswith('.fits'):
-            fname += '.fits'
+        if storage.object_format(fname) is None:
+            fname = storage.find_object_file(fname) or storage.object_filename(fname)
         return fname
 
     def writefits(self, subdir, name, data):
         """
-        Write data to a FITS file.
+        Write data to a file, in FITS format unless the file name has the
+        extension of another format (see filename()).
 
         Parameters:
             subdir (str): The key representing the calibration data type or subdirectory.
@@ -62,11 +67,12 @@ class CalibManager():
             data (array-like): The data to be written to the file.
         """
         filename = self.filename(subdir, name)
-        fits.writeto(filename, data, overwrite=True)
+        # In FITS files, the data is in the primary HDU
+        storage.write_object(filename, {}, {'data': data}, layout='primary', overwrite=True)
 
     def readfits(self, subdir, name):
         """
-        Read data from a FITS file.
+        Read data from a file in any of the formats of filename().
 
         Parameters:
             subdir (str): The key representing the calibration data type or subdirectory.
@@ -79,11 +85,12 @@ class CalibManager():
         self.logger.info(f'Reading: {filename}')
         if not os.path.exists(filename):
             raise FileNotFoundError(filename)
-        return fits.getdata(filename)
+        with storage.read_object(filename) as f:
+            return f.read('data', 0)
 
     def write_data(self, name, data):
         """
-        Write data to a FITS file in the 'data' subdirectory.
+        Write data to a file in the 'data' subdirectory (see writefits()).
 
         Parameters:
             name (str): The base name of the file (without extension).
@@ -93,7 +100,7 @@ class CalibManager():
 
     def read_data(self, name):
         """
-        Read data from a FITS file in the 'data' subdirectory.
+        Read data from a file in the 'data' subdirectory (see readfits()).
 
         Parameters:
             name (str): The base name of the file (without extension).

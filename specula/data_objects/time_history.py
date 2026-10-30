@@ -1,8 +1,8 @@
 
 from astropy.io import fits
-from specula import cpuArray
 
 from specula.base_data_obj import BaseDataObj
+from iteras.lib import storage
 
 
 class TimeHistory(BaseDataObj):
@@ -30,17 +30,17 @@ class TimeHistory(BaseDataObj):
 
     def save(self, filename):
         """Saves the :class:`~specula.data_objects.time_history.TimeHistory` data to a file."""
-        hdr = self.get_fits_header()
-        fits.writeto(filename, cpuArray(self.time_history), hdr)
+        storage.write_object(filename, self.get_fits_header(), {'time_history': self.time_history},
+                             layout='primary', overwrite=False)
 
     @staticmethod
     def restore(filename, target_device_idx=None):
         """Restores the :class:`~specula.data_objects.time_history.TimeHistory` data from a file."""
-        hdr = fits.getheader(filename)
-        version = hdr.get('VERSION')
-        if version != 1:
-            raise ValueError(f"Unknown version {version} in file {filename}")
-        data = fits.getdata(filename).copy()
+        with storage.read_object(filename) as f:
+            version = f.header.get('VERSION')
+            if version != 1:
+                raise ValueError(f"Unknown version {version} in file {filename}")
+            data = f.read('time_history', 0)
         return TimeHistory(data, target_device_idx=target_device_idx)
 
     def array_for_display(self):

@@ -49,6 +49,12 @@ Helper methods: ``to_xp(v, dtype=None, force_copy=False)`` converts an array to
 the device of the object, ``seconds_to_t()`` and ``t_to_seconds()`` convert
 between seconds and the integer time used by the framework.
 
+Some scipy functions are available for the device of the object, from
+``scipy`` on the CPU and from ``cupyx.scipy`` on the GPU: ``ndimage_shift``,
+``ndimage_rotate``, ``ndimage_center_of_mass``, ``dct`` and ``idct``. They are
+read-only attributes, imported the first time they are used, and they follow
+the device of the object (for example after ``copyTo()``).
+
 Processing objects
 ------------------
 
@@ -211,7 +217,12 @@ corresponding feature.
        ``DataSource``.
    * - ``save(filename)``, ``restore(filename, target_device_idx=None)``
      - Saving and loading: ``restore()`` is used for the ``_object`` and
-       ``tag`` parameters, through the calibration manager.
+       ``tag`` parameters, through the calibration manager. Implement them
+       with ``iteras.lib.storage.write_object()`` and ``read_object()``, which
+       store the header keywords and named arrays in any of the supported
+       formats (FITS, npz, npy, HDF5), chosen by the extension of
+       ``filename``. ``read_object().load()`` puts an array on the device of
+       the object, streaming large FITS and npy arrays to the GPU.
    * - ``array_for_display()``
      - The array shown by the generic displays and the display server.
    * - ``debug_summary()``

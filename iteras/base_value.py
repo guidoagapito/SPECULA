@@ -1,8 +1,9 @@
 
 import iteras
-from iteras import np, cpuArray
+from iteras import np
 from astropy.io import fits
 from iteras.base_data_obj import BaseDataObj
+from iteras.lib import storage
 
 
 class BaseValue(BaseDataObj):
@@ -39,34 +40,33 @@ class BaseValue(BaseDataObj):
 
     def save(self, filename, overwrite=False):
         hdr = self.get_fits_header()
-
         if type(self.value) in iteras.array_types:
-            data = cpuArray(self.value)
             hdr['NDARRAY'] = 1
+            storage.write_object(filename, hdr, {'value': self.value}, layout='primary',
+                                 overwrite=overwrite)
         else:
-            data = np.zeros(2)
             hdr['NDARRAY'] = 0
             if self.value is not None:
                 hdr['VALUE'] = str(self.value)  # Store as string for simplicity
-        fits.writeto(filename, data, hdr, overwrite=overwrite)
+            storage.write_object(filename, hdr, {}, layout='placeholder', overwrite=overwrite)
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        hdr = fits.getheader(filename)
-        data = fits.getdata(filename)
         v = BaseValue(target_device_idx=target_device_idx)
-
-        if hdr['NDARRAY']:
-            # Float arrays follow the object precision; other types and the
-            # (host) location are left unchanged
-            if np.issubdtype(data.dtype, np.floating):
-                v.value = data.astype(v.dtype)
+        with storage.read_object(filename) as f:
+            hdr = f.header
+            if hdr['NDARRAY']:
+                data = f.read('value', 0)
+                # Float arrays follow the object precision; other types and the
+                # (host) location are left unchanged
+                if np.issubdtype(data.dtype, np.floating):
+                    v.value = data.astype(v.dtype)
+                else:
+                    v.value = data.copy()
             else:
-                v.value = data.copy()
-        else:
-            value_str = hdr.get('VALUE', None)
-            if value_str is not None:
-                v.value = eval(value_str)  # Convert back from string to original type
+                value_str = hdr.get('VALUE', None)
+                if value_str is not None:
+                    v.value = eval(value_str)  # Convert back from string to original type
         return v
 
     def array_for_display(self):

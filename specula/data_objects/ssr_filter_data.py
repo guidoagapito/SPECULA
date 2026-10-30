@@ -3,6 +3,7 @@ from specula.base_data_obj import BaseDataObj
 from scipy.linalg import block_diag
 from astropy.io import fits
 import numpy as np
+from iteras.lib import storage
 
 class SsrFilterData(BaseDataObj):
     """
@@ -312,35 +313,22 @@ class SsrFilterData(BaseDataObj):
         hdr['VERSION'] = 1
         hdr['NFILTER'] = self.nfilter
         hdr['NSTATES'] = self.total_states
-
-        hdu = fits.PrimaryHDU(header=hdr)
-        hdul = fits.HDUList([hdu])
-
-        # Save block matrices
-        hdul.append(fits.ImageHDU(data=cpuArray(self.A), name='A'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.B), name='B'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.C), name='C'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.D), name='D'))
-
-        hdul.writeto(filename, overwrite=True)
-        hdul.close()
+        # Block matrices
+        storage.write_object(filename, hdr, {'a': self.A, 'b': self.B, 'c': self.C, 'd': self.D})
 
     @staticmethod
     def restore(filename, target_device_idx=None):
         """Restore filter data from FITS file."""
-        with fits.open(filename) as hdul:
-            version = hdul[0].header.get('VERSION', 1)
+        with storage.read_object(filename) as f:
+            version = f.header.get('VERSION', 1)
             if version != 1:
                 raise ValueError(f"Unsupported SSR filter data version: {version}")
-
-            # New block-diagonal format
-            A = hdul['A'].data.copy()
-            B = hdul['B'].data.copy()
-            C = hdul['C'].data.copy()
-            D = hdul['D'].data.copy()
-
-            return SsrFilterData(A, B, C, D,
-                                    target_device_idx=target_device_idx)
+            # Block-diagonal format
+            A = f.read('a', 1)
+            B = f.read('b', 2)
+            C = f.read('c', 3)
+            D = f.read('d', 4)
+        return SsrFilterData(A, B, C, D, target_device_idx=target_device_idx)
 
     def get_fits_header(self):
         # TODO

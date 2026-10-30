@@ -7,6 +7,7 @@ import iteras
 
 from iteras.simul import Simul
 from iteras.log import get_iteras_logger
+from iteras.lib import storage
 
 
 class BaseReplayAnalyser:
@@ -135,23 +136,16 @@ class BaseReplayAnalyser:
         if not data_source:
             return
 
-        data_format = data_source.get('data_format', 'fits')
-        if data_format not in ('fits', 'pickle'):
-            return
-
         store_dir = Path(data_source.get('store_dir', self.tn_dir))
-        extension = '.fits' if data_format == 'fits' else '.pickle'
 
         for output_name in data_source.get('outputs', []):
-            file_path = store_dir / f'{output_name}{extension}'
-            if data_format == 'fits':
-                with fits.open(file_path) as hdul:
-                    header = hdul[0].header
-            else:
-                import pickle
-                with open(file_path, 'rb') as handle:
-                    payload = pickle.load(handle)
-                header = payload.get('hdr', {})
+            # Format of the replay parameters, or detected from the stored file
+            data_format = data_source.get('data_format') or \
+                storage.find_format(store_dir, output_name) or 'fits'
+            if data_format not in storage.FORMATS:
+                return
+            file_path = Path(storage.filename(store_dir, output_name, data_format))
+            header = storage.read_header(file_path, data_format)
 
             downsampling = int(header.get('DOWNSAMP', 1))
             if downsampling > 1:

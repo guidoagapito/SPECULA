@@ -1,14 +1,13 @@
 
 import numpy as np
 from astropy.io import fits
-from specula import cpuArray
 
 from specula.lib.modal_base_generator import compute_ifs_covmat
 from specula.lib.mmse_reconstructor import compute_mmse_reconstructor
 from specula.base_data_obj import BaseDataObj
-from specula.lib.fits_io import load_fits_array
 from specula.data_objects.recmat import Recmat
 from specula.data_objects.ifunc import IFunc
+from iteras.lib import storage
 
 
 class _ColsView:
@@ -150,16 +149,10 @@ class Intmat(BaseDataObj):
         return hdr
 
     def save(self, filename, overwrite=True):
-        hdr = self.get_fits_header()
-        hdu = fits.PrimaryHDU(header=hdr)  # main HDU, empty, only header
-        hdul = fits.HDUList([hdu])
-        hdul.append(fits.ImageHDU(data=cpuArray(self.intmat), name='INTMAT'))
-        if self.slope_mm is not None:
-            hdul.append(fits.ImageHDU(data=cpuArray(self.slope_mm), name='SLOPEMM'))
-        if self.slope_rms is not None:
-            hdul.append(fits.ImageHDU(data=cpuArray(self.slope_rms), name='SLOPERMS'))
-        hdul.writeto(filename, overwrite=overwrite)
-        hdul.close()  # Force close for Windows
+        storage.write_object(filename, self.get_fits_header(),
+                             {'intmat': self.intmat, 'slopemm': self.slope_mm,
+                              'sloperms': self.slope_rms},
+                             overwrite=overwrite)
 
     @staticmethod
     def from_header(hdr, target_device_idx=None):
@@ -167,19 +160,21 @@ class Intmat(BaseDataObj):
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        with fits.open(filename) as hdul:
-            hdr = hdul[0].header
+        with storage.read_object(filename) as f:
+            hdr = f.header
             norm_factor = float(hdr.get('NORMFACT', 0.0))
             pupdata_tag = hdr.get('PUP_TAG', '')
             subapdata_tag = hdr.get('SA_TAG', '')
-            # Reading additional fits extensions
-            if len(hdul) >= 4:
-                slope_mm = hdul[2].data.copy()
-                slope_rms = hdul[3].data.copy()
+            # Optional arrays, read only if both are present
+            if f.has('slopemm', 2) and f.has('sloperms', 3):
+                slope_mm = f.read('slopemm', 2)
+                slope_rms = f.read('sloperms', 3)
             else:
                 slope_mm = slope_rms = None
-        intmat = load_fits_array(filename, ext=1, target_device_idx=target_device_idx)
-        return Intmat(intmat, slope_mm, slope_rms, pupdata_tag, subapdata_tag, norm_factor, target_device_idx=target_device_idx)
+            intmat = f.load('intmat', 1, target_device_idx=target_device_idx)
+        return Intmat(intmat, slope_mm=slope_mm, slope_rms=slope_rms, pupdata_tag=pupdata_tag,
+                      subapdata_tag=subapdata_tag, norm_factor=norm_factor,
+                      target_device_idx=target_device_idx)
 
     def generate_rec(self, nmodes=None, cut_modes=0, w_vec=None, interactive=False):
         if nmodes is not None:

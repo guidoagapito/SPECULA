@@ -133,6 +133,54 @@ class TestBaseValue(unittest.TestCase):
         self.assertAlmostEqual(float(yc), 1.0)
         self.assertAlmostEqual(float(xc), 3.0)
 
+    @cpu_and_gpu
+    def test_scipy_helpers_follow_device(self, target_device_idx, xp):
+        """The scipy helpers come from scipy on CPU and from cupyx on GPU"""
+        obj = BaseTimeObj(target_device_idx=target_device_idx)
+        if target_device_idx >= 0:  # pragma: gpu
+            import cupyx.scipy.ndimage, cupyx.scipy.fft, cupyx.scipy.linalg
+            expected = {'ndimage_rotate': cupyx.scipy.ndimage.rotate,
+                        'ndimage_shift': cupyx.scipy.ndimage.shift,
+                        'ndimage_center_of_mass': cupyx.scipy.ndimage.center_of_mass,
+                        '_scipy_ifft2': cupyx.scipy.fft.ifft2,
+                        'dct': cupyx.scipy.fft.dct, 'idct': cupyx.scipy.fft.idct,
+                        '_lu_factor': cupyx.scipy.linalg.lu_factor,
+                        '_lu_solve': cupyx.scipy.linalg.lu_solve}
+        else:
+            import scipy.ndimage, scipy.fft, scipy.fftpack, scipy.linalg
+            expected = {'ndimage_rotate': scipy.ndimage.rotate,
+                        'ndimage_shift': scipy.ndimage.shift,
+                        'ndimage_center_of_mass': scipy.ndimage.center_of_mass,
+                        '_scipy_ifft2': scipy.fft.ifft2,
+                        'dct': scipy.fftpack.dct, 'idct': scipy.fftpack.idct,
+                        '_lu_factor': scipy.linalg.lu_factor,
+                        '_lu_solve': scipy.linalg.lu_solve}
+        for name, func in expected.items():
+            with self.subTest(name=name):
+                self.assertIs(getattr(obj, name), func)
+        # Not stored in the object (e.g. when it is pickled)
+        self.assertFalse(set(expected) & set(vars(obj)))
+
+    @unittest.skipIf(specula.cp is None, "needs a GPU to copy to")
+    def test_scipy_helpers_after_copy_to(self):
+        """A data object copied to another device gets the helpers of that device"""
+        from specula.base_value import BaseValue
+        import scipy.ndimage
+        import cupyx.scipy.ndimage
+        gpu_value = BaseValue(value=specula.cp.zeros(3), target_device_idx=0)
+        cpu_value = gpu_value.copyTo(-1)
+        self.assertIs(gpu_value.ndimage_shift, cupyx.scipy.ndimage.shift)
+        self.assertIs(cpu_value.ndimage_shift, scipy.ndimage.shift)
+
+    def test_scipy_helpers_not_imported_at_creation(self):
+        """Creating objects does not import the scipy helper modules"""
+        r = self._run_python('import sys; import iteras; iteras.init(-1); '
+                             'from iteras.base_value import BaseValue; BaseValue(); '
+                             'loaded = [m for m in ("scipy.ndimage", "scipy.linalg", "scipy.fftpack") '
+                             'if m in sys.modules]; '
+                             'assert not loaded, loaded')
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     # ------ Time resolution tests
 
     @cpu_and_gpu

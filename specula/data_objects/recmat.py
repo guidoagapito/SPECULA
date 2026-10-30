@@ -1,10 +1,8 @@
 
-import numpy as np
 from astropy.io import fits
 
-from specula import cpuArray
 from specula.base_data_obj import BaseDataObj
-from specula.lib.fits_io import load_fits_array
+from iteras.lib import storage
 
 
 class Recmat(BaseDataObj):
@@ -71,13 +69,10 @@ class Recmat(BaseDataObj):
         return self.recmat.shape[0]
 
     def save(self, filename, overwrite=False):
-        if not filename.endswith('.fits'):
-            filename += '.fits'
-        hdr = self.get_fits_header()
-        fits.writeto(filename, np.zeros(2), hdr, overwrite=overwrite)
-        fits.append(filename, cpuArray(self.recmat))
-        if self.modes2recLayer is not None:
-            fits.append(filename, cpuArray(self.modes2recLayer))
+        filename = storage.object_filename(filename)
+        storage.write_object(filename, self.get_fits_header(),
+                             {'recmat': self.recmat, 'modes2reclayer': self.modes2recLayer},
+                             layout='placeholder', overwrite=overwrite)
 
     @staticmethod
     def from_header(filename, target_device_idx=None):
@@ -85,19 +80,17 @@ class Recmat(BaseDataObj):
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        with fits.open(filename) as hdul:
-            hdr = hdul[0].header
+        with storage.read_object(filename) as f:
+            hdr = f.header
             version = int(hdr['VERSION'])
             if version != 1:
                 raise ValueError(f"Error: unknown version {version} in file {filename}")
-
             norm_factor = float(hdr['NORMFACT'])
-            num_ext = len(hdul)
-            if num_ext >= 3:
-                mode2reLayer = hdul[2].data.copy()
+            if f.has('modes2reclayer', 2):
+                mode2reLayer = f.read('modes2reclayer', 2)
             else:
                 mode2reLayer = None
-        recmat = load_fits_array(filename, ext=1, target_device_idx=target_device_idx)
+            recmat = f.load('recmat', 1, target_device_idx=target_device_idx)
         return Recmat(recmat, mode2reLayer, norm_factor, target_device_idx=target_device_idx)
 
 

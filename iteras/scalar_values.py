@@ -1,7 +1,7 @@
 
-from iteras import np 
 from astropy.io import fits
 from iteras.base_data_obj import BaseDataObj
+from iteras.lib import storage
 
 
 class _BaseScalarValue(BaseDataObj):
@@ -73,10 +73,9 @@ class _BaseScalarValue(BaseDataObj):
             Whether to overwrite an existing file.
         """
         hdr = self.get_fits_header()
-        data = np.zeros(2)
         hdr['VALUE'] = str(self.value)      # Store as string for simplicity
         hdr['DESC'] = self.description
-        fits.writeto(filename, data, hdr, overwrite=overwrite)
+        storage.write_object(filename, hdr, {}, layout='placeholder', overwrite=overwrite)
 
     @classmethod
     def restore(cls, filename):
@@ -98,14 +97,14 @@ class _BaseScalarValue(BaseDataObj):
         ValueError
             If required FITS header keywords are missing.
         """
-        hdr = fits.getheader(filename)
+        with storage.read_object(filename) as f:
+            hdr = f.header
         value_str = hdr.get('VALUE', None)
         desc_str = hdr.get('DESC', None)
         if value_str is None:
             raise ValueError('FITS header does not contain a valid VALUE keyword')
         if desc_str is None:
             raise ValueError('FITS header does not contain a valid DESC keyword')
-
         value = cls.__init__.__annotations__['value'](value_str)
         return cls(value=value, description=desc_str)
 

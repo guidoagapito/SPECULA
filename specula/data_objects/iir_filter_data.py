@@ -5,6 +5,7 @@ from specula import cpuArray
 from specula.base_data_obj import BaseDataObj
 
 from astropy.io import fits
+from iteras.lib import storage
 
 # Try to import control library, but make it optional
 try:
@@ -733,29 +734,20 @@ class IirFilterData(BaseDataObj):
     def save(self, filename):
         hdr = fits.Header()
         hdr['VERSION'] = 1
-
-        hdu = fits.PrimaryHDU(header=hdr)
-        hdul = fits.HDUList([hdu])
-        hdul.append(fits.ImageHDU(data=cpuArray(self.ordnum), name='ORDNUM'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.ordden), name='ORDDEN'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.num), name='NUM'))
-        hdul.append(fits.ImageHDU(data=cpuArray(self.den), name='DEN'))
-        hdul.writeto(filename, overwrite=True)
-        hdul.close()  # Force close for Windows
+        storage.write_object(filename, hdr, {'ordnum': self.ordnum, 'ordden': self.ordden,
+                                             'num': self.num, 'den': self.den})
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        # pylint: disable=no-member # members of HDUList[i] are created dynamically by pyfits
-        with fits.open(filename) as hdul:
-            hdr = hdul[0].header     
-            version = hdr['VERSION']
+        with storage.read_object(filename) as f:
+            version = f.header['VERSION']
             if version != 1:
                 raise ValueError(f"Error: unknown version {version} in file {filename}")
-            ordnum = hdul[1].data.copy()
-            ordden = hdul[2].data.copy()
-            num = hdul[3].data.copy()
-            den = hdul[4].data.copy()
-            return IirFilterData(ordnum, ordden, num, den, target_device_idx=target_device_idx)
+            ordnum = f.read('ordnum', 1)
+            ordden = f.read('ordden', 2)
+            num = f.read('num', 3)
+            den = f.read('den', 4)
+        return IirFilterData(ordnum, ordden, num, den, target_device_idx=target_device_idx)
 
     def get_fits_header(self):
         # TODO
