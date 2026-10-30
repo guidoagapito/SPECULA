@@ -5,6 +5,9 @@ Tutorials
 
 A comprehensive collection of tutorials to help you get started with SPECULA and explore its advanced features. Each tutorial includes practical examples and step-by-step instructions.
 
+The step response and control stability tutorials use only the generic objects of iteras, the simulation
+framework of SPECULA: they do not need any AO object, and run with the ``iteras`` command too.
+
 .. toctree::
    :maxdepth: 1
 

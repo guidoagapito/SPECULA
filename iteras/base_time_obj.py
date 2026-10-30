@@ -1,5 +1,6 @@
 
 import weakref
+import functools
 from functools import wraps
 from inspect import signature
 
@@ -86,73 +87,27 @@ def gpu_mem_report(objs, names=None):
     return '\n'.join(lines)
 
 
-# GPU memory tracking (see BaseTimeObj.startMemUsageCount()).
-_mem_count_stack = []
-_top_level_objs = weakref.WeakValueDictionary()
-_top_level_counter = 0
-_used_devices = set()
-
-MB = 1024 * 1024
-
-
-def _pool_used_bytes(device_idx):
-    '''Bytes used in the cupy memory pool of a device, whatever the current device.'''
-    with iteras.cp.cuda.Device(device_idx):
-        return iteras.cp.get_default_memory_pool().used_bytes()
-
-
-def mem_registry_mark():
-    '''Current position in the registry of top-level objects, see top_level_objs().'''
-    return _top_level_counter
-
-
-def top_level_objs(since=0):
-    '''Live top-level objects registered after mem_registry_mark() returned *since*.'''
-    return [obj for idx, obj in list(_top_level_objs.items()) if idx >= since]
-
-
-def _owner(obj):
-    ref = obj.__dict__.get('_mem_owner')
-    return ref() if ref is not None else None
-
-
-def _top_owner(obj):
-    while (owner := _owner(obj)) is not None:
-        obj = owner
-    return obj
-
-
-def gpu_mem_report(objs, names=None):
+@functools.cache
+def _scipy_helpers(gpu):
     '''
-    Table of the GPU memory of *objs* (top-level objects), grouped by device.
-
-    For each object: its own memory, the total including nested objects, and
-    the memory held in its arrays. The pool difference is unattributed memory.
-    Arrays shared between objects are credited to the first one listed.
+    scipy functions offered to all objects as attributes (ndimage_shift, dct...),
+    from scipy or, if *gpu* is True, from cupyx.scipy. Imported at the first call
+    for each backend, so that creating objects does not import them.
     '''
-    names = names or {}
-    by_device = {}
-    for obj in objs:
-        if getattr(obj, 'target_device_idx', -1) >= 0:
-            by_device.setdefault(obj.target_device_idx, []).append(obj)
+    if gpu:  # pragma: gpu
+        from cupyx.scipy.ndimage import rotate, shift, center_of_mass
+        from cupyx.scipy.fft import ifft2, idct, dct
+        from cupyx.scipy.linalg import lu_factor, lu_solve
+    else:
+        from scipy.ndimage import rotate, shift, center_of_mass
+        from scipy.fft import ifft2
+        # The legacy fftpack versions, as before on CPU
+        from scipy.fftpack import idct, dct
+        from scipy.linalg import lu_factor, lu_solve
+    return {'ndimage_rotate': rotate, 'ndimage_shift': shift,
+            'ndimage_center_of_mass': center_of_mass, 'ifft2': ifft2,
+            'dct': dct, 'idct': idct, 'lu_factor': lu_factor, 'lu_solve': lu_solve}
 
-    seen = set()
-    lines = []
-    for dev in sorted(by_device):
-        lines.append(f'  GPU {dev}:')
-        lines.append(f'    {"object":30s} {"class":26s} {"own MB":>10s} {"total MB":>10s} {"held MB":>10s}')
-        tot = 0
-        for obj in by_device[dev]:
-            name = names.get(id(obj)) or getattr(obj, 'name', None) or \
-                   f'{type(obj).__name__}({getattr(obj, "tag", "")})'
-            held = obj.gpu_bytes_held(seen)
-            tot += obj.gpu_bytes_used
-            lines.append(f'    {name:30.30s} {type(obj).__name__:26.26s} {obj.gpu_bytes_own/MB:10.2f}'
-                         f' {obj.gpu_bytes_used/MB:10.2f} {held/MB:10.2f}')
-        pool = _pool_used_bytes(dev)
-        lines.append(f'    sum of totals {tot/MB:.2f} MB, memory pool {pool/MB:.2f} MB,'
-                     f' unattributed {(pool-tot)/MB:.2f} MB')
-    return '\n'.join(lines)
 
 def _check_initialized():
     # init() is the same function whether it is called as iteras.init()
@@ -223,13 +178,6 @@ class BaseTimeObj:
             self.xp_str = 'np'
 
         if self.target_device_idx >= 0:
-            from cupyx.scipy.ndimage import rotate as ndimage_rotate
-            from cupyx.scipy.ndimage import shift as ndimage_shift
-            from cupyx.scipy.ndimage import center_of_mass as ndimage_center_of_mass
-            from cupyx.scipy.fft import ifft2 as scipy_ifft2
-            from cupyx.scipy.fft import idct, dct
-            from cupyx.scipy.linalg import lu_factor, lu_solve
-
             self._target_device.use()
             _used_devices.add(self.target_device_idx)
             # If the count started before the device was known and could not
@@ -241,22 +189,42 @@ class BaseTimeObj:
             from cupy._util import PerformanceWarning
             self.PerformanceWarning = PerformanceWarning
         else:
-            from scipy.ndimage import rotate as ndimage_rotate
-            from scipy.ndimage import shift as ndimage_shift
-            from scipy.ndimage import center_of_mass as ndimage_center_of_mass
-            from scipy.fft import ifft2 as scipy_ifft2
-            from scipy.fftpack import idct, dct
-            from scipy.linalg import lu_factor, lu_solve
             self.PerformanceWarning = None
 
-        self.ndimage_rotate = ndimage_rotate
-        self.ndimage_shift = ndimage_shift
-        self.ndimage_center_of_mass = ndimage_center_of_mass
-        self._lu_factor = lu_factor
-        self._lu_solve = lu_solve
-        self._scipy_ifft2 = scipy_ifft2
-        self.dct = dct
-        self.idct = idct
+    # scipy (CPU) or cupyx (GPU) functions for the device of the object,
+    # imported the first time they are used (see _scipy_helpers())
+
+    @property
+    def ndimage_rotate(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_rotate']
+
+    @property
+    def ndimage_shift(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_shift']
+
+    @property
+    def ndimage_center_of_mass(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ndimage_center_of_mass']
+
+    @property
+    def dct(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['dct']
+
+    @property
+    def idct(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['idct']
+
+    @property
+    def _lu_factor(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['lu_factor']
+
+    @property
+    def _lu_solve(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['lu_solve']
+
+    @property
+    def _scipy_ifft2(self):
+        return _scipy_helpers(self.target_device_idx >= 0)['ifft2']
 
     def init_logging(self, level=None):
         name = getattr(self, 'name', None)

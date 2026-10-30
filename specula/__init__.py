@@ -25,7 +25,8 @@ _registry.register_plugin(
               'specula.display'],
     calib_subdirs=_CALIB_SUBDIRS,
     env_aliases={'ITERAS_DISABLE_GPU': 'SPECULA_DISABLE_GPU',
-                 'ITERAS_PORT': 'SPECULA_PORT'},
+                 'ITERAS_PORT': 'SPECULA_PORT',
+                 'ITERAS_DATA_FORMAT': 'SPECULA_DATA_FORMAT'},
 )
 
 # Values set by init(): they are read from iteras when accessed,

@@ -234,3 +234,41 @@ def resolve_type(tp, require_list=False, require_dict=False):
         typ = tp
 
     return typ
+
+
+def psd_to_signal(psd, fs, xp, dtype, complex_dtype, seed=1):
+    """
+    Generate a random signal with a given PSD and sampling frequency.
+    
+    Parameters:
+    -----------
+    psd : 1D array
+        Power spectral density (PSD) of the signal
+        Note: unit [X^2/Hz], where X is the unit of the signal.
+    fs : float
+        Sampling frequency (unit [Hz]).
+    xp : module
+        Array processing module (numpy or cupy) to use for array operations.
+    dtype : data type
+        Data type for the output signal.
+    complex_dtype : data type
+        Data type for the complex spectrum.
+    seed : int, optional
+        Random seed for reproducibility (default is 1).
+    """
+    n = len(psd)
+    df = fs / n / 2.
+    rng = xp.random.default_rng(seed)
+    # Spectrum vector (complex)
+    pspectrum = xp.zeros(2 * n, dtype=complex_dtype)
+    # Symmetric spectrum
+    pspectrum[1:n+1] = xp.sqrt(psd * df)
+    pspectrum[n+1:] = xp.sqrt(psd[:-1] * df)[::-1]
+    # Random phase
+    ph = rng.uniform(0, 2 * xp.pi, 2 * n)
+    pspectrum *= xp.exp(1j * ph, dtype=complex_dtype)
+    # Inverse FFT
+    temp = xp.fft.ifft(pspectrum) * 2 * n
+    out = xp.real(temp).astype(dtype)
+    im = xp.imag(temp).astype(dtype)
+    return out, im

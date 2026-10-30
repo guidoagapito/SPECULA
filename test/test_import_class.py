@@ -235,13 +235,17 @@ class TestClassLookup(unittest.TestCase):
 
     def test_qualified_name_with_plugin_root(self):
         # specula registers specula.processing_objects, specula.data_objects, ...
-        from specula.processing_objects.integrator import Integrator
+        from specula.processing_objects.modalrec import Modalrec
         from iteras.data_objects.sim_params import SimParams
-        self.assertIs(import_class('specula.Integrator'), Integrator)
+        from iteras.processing_objects.integrator import Integrator
+        self.assertIs(import_class('specula.Modalrec'), Modalrec)
         self.assertIs(import_class('iteras.SimParams'), SimParams)
+        # Classes moved to iteras are also found through their old specula modules
+        self.assertIs(import_class('iteras.Integrator'), Integrator)
+        self.assertIs(import_class('specula.Integrator'), Integrator)
         # A qualified name restricts the search to that plugin
         with self.assertRaises(ImportError):
-            import_class('iteras.Integrator')
+            import_class('iteras.Modalrec')
         # Registered plugins can be used as prefix too
         __import__('lookup_plugin')
         self.assertEqual(import_class('lookup_plugin.Sprocket').__module__, 'lookup_plugin.sprocket')

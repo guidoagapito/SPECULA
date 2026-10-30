@@ -32,6 +32,14 @@ _plugin_roots = ['iteras']
 # Calibration subdirectories, by data type or class name
 _calib_subdirs = {
     'data': 'data/',
+    'filter': 'filter/',
+    'Matrix': 'matrix/',
+    'iir_filter_data': 'filter/',
+    'IirFilterData': 'filter/',
+    'ssr_filter_data': 'filter/',
+    'SsrFilterData': 'filter/',
+    'TimeHistory': 'data/',
+    'time_hist': 'data/',
 }
 
 # Alternative names of iteras's environment variables, {iteras name: [alias, ...]}

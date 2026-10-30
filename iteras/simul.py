@@ -294,10 +294,36 @@ class Simul():
         '''
         return self.param_is(params, key, SimParams)
 
+    # Main parameters that set the time base of the simulation, on which delays,
+    # gains, filters and generators depend: they must be in the parameter file,
+    # so that a missing or misspelled one is an error instead of a default value
+    REQUIRED_MAIN_PARAMS = ('time_step', 'total_time')
+
     def setSimulParams(self, params):
+        '''
+        Set mainParams: the main parameters, completed with the default values
+        of the constructor of their class for the parameters not given, except
+        those of REQUIRED_MAIN_PARAMS.
+        '''
         for key in params:
             if self.is_main_params(params, key):
-                self.mainParams = params[key]
+                signature = inspect.signature(self.param_class(params, key).__init__)
+                defaults = {name: p.default for name, p in signature.parameters.items()
+                            if p.default is not inspect.Parameter.empty
+                            and name not in self.REQUIRED_MAIN_PARAMS}
+                self.mainParams = {**defaults, **params[key]}
+                self.mainParamsKey = key
+
+    def check_time_base(self, params):
+        '''Raise ValueError if the main parameters do not set REQUIRED_MAIN_PARAMS'''
+        self.setSimulParams(params)
+        if self.mainParams is None:
+            return      # reported by build_objects()
+        missing = [name for name in self.REQUIRED_MAIN_PARAMS if name not in self.mainParams]
+        if missing:
+            raise ValueError(f"The main parameters ('{self.mainParamsKey}' section) must set "
+                             f"{' and '.join(missing)}: they set the time base of the simulation, "
+                             f"and have no default value")
 
     def build_order(self, params):
         '''
@@ -1048,6 +1074,7 @@ class Simul():
         self.apply_overrides(params)
 
         self.validate_section_names(params)
+        self.check_time_base(params)
 
         self.trigger_order, self.trigger_order_idx = self.build_trigger_order(params)
         self.logger.info(f'{self.trigger_order=}')

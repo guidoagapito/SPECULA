@@ -29,6 +29,8 @@ specula_frontend_stop = "specula.scripts.web_frontend:stop"
 specula = "specula.scripts.specula_main:main"
 specula_list_runs = "specula.scripts.list_runs:main"
 iteras = "iteras.scripts.iteras_main:main"
+iteras_frontend_start = "iteras.scripts.web_frontend:start"
+iteras_frontend_stop = "iteras.scripts.web_frontend:stop"
 
 [project.entry-points."iteras.plugins"]
 specula = "specula"
