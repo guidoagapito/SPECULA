@@ -15,6 +15,27 @@ except ImportError:
     CONTROL_AVAILABLE = False
     control = None
 
+
+def _real_poly(roots, what):
+    """
+    Coefficients, lowest order first, of the monic polynomial with the given
+    roots. The coefficients of a filter are real, so complex roots must come
+    in conjugate pairs: a ValueError is raised otherwise.
+    """
+    coeffs = np.poly(roots)[::-1]     # np.poly: highest order first
+    if np.iscomplexobj(coeffs):
+        if np.max(np.abs(coeffs.imag)) > 1e-9 * np.max(np.abs(coeffs)):
+            raise ValueError(f'IirFilterData: complex {what} must come in conjugate pairs, '
+                             f'got {roots}')
+        coeffs = coeffs.real
+    return coeffs
+
+
+def _sampling_time(dt):
+    """Sampling time of a python-control discrete system: 1 if dt is True (unspecified)"""
+    return 1.0 if dt is True else dt
+
+
 class IirFilterData(BaseDataObj):
     """
     Infinite Impulse Response (IIR) Filter Data object.
@@ -80,7 +101,7 @@ class IirFilterData(BaseDataObj):
             num_cpu = cpuArray(self.num)
             ordnum_cpu = cpuArray(self.ordnum)
             snum1 = num_cpu.shape[1]
-            zeros_cpu = np.zeros((self.nfilter, snum1 - 1))
+            zeros_cpu = np.zeros((self.nfilter, snum1 - 1), dtype=complex)
             for i in range(self.nfilter):
                 oi = int(ordnum_cpu[i])
                 if oi > 1:
@@ -88,7 +109,7 @@ class IirFilterData(BaseDataObj):
                     roots = np.roots(num_cpu[i, snum1 - oi:][::-1])
                     if np.sum(np.abs(roots)) > 0:
                         zeros_cpu[i, :len(roots)] = roots
-            self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
+            self.zeros = self.to_xp(zeros_cpu, dtype=self.complex_dtype)
         return self.zeros
 
     def get_poles(self):
@@ -96,13 +117,13 @@ class IirFilterData(BaseDataObj):
             den_cpu = cpuArray(self.den)
             ordden_cpu = cpuArray(self.ordden)
             sden1 = den_cpu.shape[1]
-            poles_cpu = np.zeros((self.nfilter, sden1 - 1))
+            poles_cpu = np.zeros((self.nfilter, sden1 - 1), dtype=complex)
             for i in range(self.nfilter):
                 oi = int(ordden_cpu[i])
                 if oi > 1:
                     roots = np.roots(den_cpu[i, sden1 - oi:][::-1])
                     poles_cpu[i, :len(roots)] = roots
-            self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
+            self.poles = self.to_xp(poles_cpu, dtype=self.complex_dtype)
         return self.poles
 
     def set_num(self, num):
@@ -122,6 +143,7 @@ class IirFilterData(BaseDataObj):
         self._num_normalized = self.to_xp(num_normalized, dtype=self.dtype)
         self.zeros = None
         self.num = self.to_xp(mynum, dtype=self.dtype)
+        self._match_widths()
 
     def set_den(self, den):
         myden = cpuArray(den).copy()
@@ -134,6 +156,24 @@ class IirFilterData(BaseDataObj):
 
         self.den = self.to_xp(myden, dtype=self.dtype)
         self.poles = None
+        self._match_widths()
+
+    def _match_widths(self):
+        '''
+        Give num and den the same number of columns, adding zeros on the
+        lowest order side of the shorter one. IirFilter aligns the two arrays
+        on their last (highest order) coefficient, while the analysis methods
+        (frequency_response(), RTF(), stability...) align them on the first one:
+        with the same width the two conventions agree. Multiplying both by the
+        same power of z does not change the filter.
+        '''
+        if self.num is None or self.den is None:
+            return
+        wnum, wden = self.num.shape[1], self.den.shape[1]
+        if wnum < wden:
+            self.set_num(np.pad(cpuArray(self.num), ((0, 0), (wden - wnum, 0))))
+        elif wden < wnum:
+            self.set_den(np.pad(cpuArray(self.den), ((0, 0), (wnum - wden, 0))))
 
     def set_zeros(self, zeros):
         zeros_cpu = cpuArray(zeros)
@@ -143,10 +183,9 @@ class IirFilterData(BaseDataObj):
         for i in range(self.nfilter):
             oi = int(ordnum_cpu[i])
             if oi > 1:
-                # np.poly returns the coefficients highest order first
-                num_cpu[i, snum1 - oi:] = np.poly(zeros_cpu[i, :oi - 1])[::-1]
+                num_cpu[i, snum1 - oi:] = _real_poly(zeros_cpu[i, :oi - 1], 'zeros')
         self.set_num(num_cpu)  # resets self.zeros = None internally
-        self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
+        self.zeros = self.to_xp(zeros_cpu, dtype=self.complex_dtype)
 
     def set_poles(self, poles):
         poles_cpu = cpuArray(poles)
@@ -156,8 +195,8 @@ class IirFilterData(BaseDataObj):
         for i in range(self.nfilter):
             oi = int(ordden_cpu[i])
             if oi > 1:
-                den_cpu[i, sden1 - oi:] = np.poly(poles_cpu[i, :oi - 1])[::-1]
-        self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
+                den_cpu[i, sden1 - oi:] = _real_poly(poles_cpu[i, :oi - 1], 'poles')
+        self.poles = self.to_xp(poles_cpu, dtype=self.complex_dtype)
         self.den = self.to_xp(den_cpu, dtype=self.dtype)
 
     def set_gain(self, gain):
@@ -373,7 +412,8 @@ class IirFilterData(BaseDataObj):
         num_cpu = cpuArray(num)
         den_cpu = cpuArray(den)
 
-        # Remove initial zeros (coefficients are stored highest order first)
+        # Remove the zero lowest order coefficients common to num and den (a common factor
+        # z^k, which does not change the transfer function). Lowest order first.
         while len(num_cpu) > 1 and num_cpu[0] == 0 and len(den_cpu) > 1 and den_cpu[0] == 0:
             num_cpu = num_cpu[1:]
             den_cpu = den_cpu[1:]
@@ -863,12 +903,14 @@ class IirFilterData(BaseDataObj):
             omega = np.tan(np.pi * fr)
 
             if n_ord == 1:
-                # Butterworth filter of order 1
+                # Butterworth filter of order 1: bilinear transform of 1 / (1 + s / wc),
+                # with the prewarped wc, so that the -3 dB point is exactly at fc:
+                # H(z) = a0 (1 + z) / (z + b0)
                 a0 = omega / (1 + omega)
-                b1 = -(1 - a0)
+                b0 = (omega - 1) / (omega + 1)
 
-                num_total = np.asarray([0, a0.item()], dtype=float)
-                den_total = np.asarray([b1.item(), 1], dtype=float)
+                num_total = np.asarray([a0.item(), a0.item()], dtype=float)
+                den_total = np.asarray([b0.item(), 1], dtype=float)
             else:
                 #Butterworth filter of order >=2
                 num_total = np.array([1.0])
@@ -892,11 +934,11 @@ class IirFilterData(BaseDataObj):
                     num_total = np.convolve(num_total, num_k)
                     den_total = np.convolve(den_total, den_k)
 
-            # Assicurati che i coefficienti si adattino all'array pre-allocato
+            # The coefficients must fit in the preallocated array
             if len(num_total) > n_coeff:
                 raise ValueError(f"Filter coefficients longer than expected: {len(num_total)} > {n_coeff}")
 
-            # Pad with zeros at the beginning (highest order terms first)
+            # Right-aligned, i.e. zeros on the lowest order side, as IirFilter expects
             num[i, n_coeff - len(num_total):] = num_total
             den[i, n_coeff - len(den_total):] = den_total
             ord_num[i] = len(num_total)
@@ -971,12 +1013,13 @@ class IirFilterData(BaseDataObj):
         """Check if control library support is available."""
         return CONTROL_AVAILABLE
 
-    def to_control_tf(self, mode: int = 0, dt: float = None):
+    def to_control_tf(self, mode: int = 0, dt=True):
         """Convert a single filter to a control.TransferFunction object.
         
         Args:
             mode: Index of the filter to convert (default: 0)
-            dt: Sampling time for discrete-time system (default: None for continuous-time)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
 
         Returns:
             control.TransferFunction: The transfer function object
@@ -993,7 +1036,8 @@ class IirFilterData(BaseDataObj):
         num_coeffs = cpuArray(self.num[mode, ::-1])
         den_coeffs = cpuArray(self.den[mode, ::-1])
 
-        # Remove final zeros (highest order first because of reversed order)
+        # Remove the zero lowest order coefficients common to num and den (at the end,
+        # since the arrays are now highest order first): a common factor z^k
         while len(num_coeffs) > 1 and num_coeffs[-1] == 0 and len(den_coeffs) > 1 and den_coeffs[-1] == 0:
             num_coeffs = num_coeffs[:-1]
             den_coeffs = den_coeffs[:-1]
@@ -1006,11 +1050,12 @@ class IirFilterData(BaseDataObj):
 
         return control.TransferFunction(num_coeffs, den_coeffs, dt=dt)
 
-    def to_control_tf_list(self, dt: float = None):
+    def to_control_tf_list(self, dt=True):
         """Convert all filters to a list of control.TransferFunction objects.
 
         Args:
-            dt: Sampling time for discrete-time system (default: None for continuous-time)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
 
         Returns:
             list: List of control.TransferFunction objects
@@ -1070,19 +1115,21 @@ class IirFilterData(BaseDataObj):
             ord_num[i] = len(num_coeffs)
             ord_den[i] = len(den_coeffs)
 
-            # Pad with zeros at the beginning (highest order terms first)
+            # python-control is highest order first: reverse, and right-align (zeros on
+            # the lowest order side), as IirFilter expects
             num[i, max_len - len(num_coeffs):] = num_coeffs[::-1]
             den[i, max_len - len(den_coeffs):] = den_coeffs[::-1]
 
         return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
-    def bode_plot(self, mode: int = 0, dt: float = None, omega: np.ndarray = None,
+    def bode_plot(self, mode: int = 0, dt=True, omega: np.ndarray = None,
                   plot: bool = True, **kwargs):
         """Create Bode plot for a specific filter using control library.
 
         Args:
             mode: Index of the filter to plot (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
             omega: Frequency vector (default: auto-generated)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.bode_plot
@@ -1102,7 +1149,7 @@ class IirFilterData(BaseDataObj):
             # Auto-generate frequency vector
             if dt is not None:
                 # Discrete-time system
-                omega = np.logspace(-3, np.log10(np.pi/dt), 1000)
+                omega = np.logspace(-3, np.log10(np.pi/_sampling_time(dt)), 1000)
             else:
                 # Continuous-time system
                 omega = np.logspace(-2, 4, 1000)
@@ -1114,13 +1161,14 @@ class IirFilterData(BaseDataObj):
         else:
             return out
 
-    def nyquist_plot(self, mode: int = 0, dt: float = None, omega: np.ndarray = None,
+    def nyquist_plot(self, mode: int = 0, dt=True, omega: np.ndarray = None,
                      plot: bool = True, **kwargs):
         """Create Nyquist plot for a specific filter using control library.
 
         Args:
             mode: Index of the filter to plot (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
             omega: Frequency vector (default: auto-generated)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.nyquist_plot
@@ -1140,7 +1188,7 @@ class IirFilterData(BaseDataObj):
             # Auto-generate frequency vector
             if dt is not None:
                 # Discrete-time system
-                omega = np.logspace(-3, np.log10(np.pi/dt), 1000)
+                omega = np.logspace(-3, np.log10(np.pi/_sampling_time(dt)), 1000)
             else:
                 # Continuous-time system
                 omega = np.logspace(-2, 4, 1000)
@@ -1155,12 +1203,13 @@ class IirFilterData(BaseDataObj):
         else:
             return out
 
-    def step_response(self, mode: int = 0, dt: float = None, T: np.ndarray = None, **kwargs):
+    def step_response(self, mode: int = 0, dt=True, T: np.ndarray = None, **kwargs):
         """Compute step response for a specific filter using control library.
 
         Args:
             mode: Index of the filter (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
             T: Time vector (default: auto-generated)
             **kwargs: Additional arguments passed to control.step_response
 
@@ -1177,7 +1226,7 @@ class IirFilterData(BaseDataObj):
         if T is None:
             if dt is not None:
                 # Discrete-time system
-                T = np.arange(0, 100) * dt
+                T = np.arange(0, 100) * _sampling_time(dt)
             else:
                 # Continuous-time system
                 T = np.linspace(0, 10, 1000)
@@ -1185,12 +1234,13 @@ class IirFilterData(BaseDataObj):
         time, response = control.step_response(tf, T=T, **kwargs)
         return time, response
 
-    def impulse_response(self, mode: int = 0, dt: float = None, T: np.ndarray = None, **kwargs):
+    def impulse_response(self, mode: int = 0, dt=True, T: np.ndarray = None, **kwargs):
         """Compute impulse response for a specific filter using control library.
 
         Args:
             mode: Index of the filter (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
             T: Time vector (default: auto-generated)
             **kwargs: Additional arguments passed to control.impulse_response
 
@@ -1207,7 +1257,7 @@ class IirFilterData(BaseDataObj):
         if T is None:
             if dt is not None:
                 # Discrete-time system
-                T = np.arange(0, 100) * dt
+                T = np.arange(0, 100) * _sampling_time(dt)
             else:
                 # Continuous-time system
                 T = np.linspace(0, 10, 1000)
@@ -1215,12 +1265,13 @@ class IirFilterData(BaseDataObj):
         time, response = control.impulse_response(tf, T=T, **kwargs)
         return time, response
 
-    def stability_margins(self, mode: int = 0, dt: float = None):
+    def stability_margins(self, mode: int = 0, dt=True):
         """Compute stability margins for a specific filter using control library.
 
         Args:
             mode: Index of the filter (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
 
         Returns:
             tuple: (gain_margin, phase_margin, wg, wp) where:
@@ -1240,12 +1291,13 @@ class IirFilterData(BaseDataObj):
         gm_db = 20 * np.log10(gm) if (gm is not None and gm > 0) else np.inf
         return gm_db, pm, wg, wp
 
-    def pole_zero_map(self, mode: int = 0, dt: float = None, plot: bool = True, **kwargs):
+    def pole_zero_map(self, mode: int = 0, dt=True, plot: bool = True, **kwargs):
         """Create pole-zero map for a specific filter using control library.
 
         Args:
             mode: Index of the filter (default: 0)
-            dt: Sampling time for discrete-time system (default: None)
+            dt: Sampling time of the discrete-time system (default: True, discrete time
+                with an unspecified sampling time; None for continuous time)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.pzmap
 

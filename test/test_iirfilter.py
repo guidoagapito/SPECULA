@@ -912,3 +912,108 @@ class TestIirFilterDataZerosPoles(unittest.TestCase):
         data.set_poles(np.array([[0.9]]))
         np.testing.assert_allclose(cpuArray(data.num), [[-0.3, 1.0]], atol=1e-12)
         np.testing.assert_allclose(cpuArray(data.den), [[-0.9, 1.0]], atol=1e-12)
+
+    def test_complex_poles_of_second_order_filter(self):
+        """Poles 0.9 exp(+-i pi/4): den = z^2 - 2 r cos(theta) z + r^2"""
+        r, theta = 0.9, np.pi / 4
+        data = IirFilterData(ordnum=[3], ordden=[3], num=[[0.0, 0.0, 1.0]],
+                             den=[[r ** 2, -2 * r * np.cos(theta), 1.0]], target_device_idx=-1)
+        poles = cpuArray(data.get_poles())[0]
+        self.assertTrue(np.iscomplexobj(poles))
+        np.testing.assert_allclose(sorted(poles, key=lambda p: p.imag),
+                                   [r * np.exp(-1j * theta), r * np.exp(1j * theta)], atol=1e-12)
+
+    def test_set_complex_poles(self):
+        """set_poles() with a conjugate pair gives the real coefficients, and the poles back"""
+        r, theta = 0.9, np.pi / 4
+        pair = np.array([[r * np.exp(1j * theta), r * np.exp(-1j * theta)]])
+        data = IirFilterData(ordnum=[3], ordden=[3], num=[[0.0, 0.0, 1.0]],
+                             den=[[0.0, -1.0, 1.0]], target_device_idx=-1)
+        data.set_poles(pair)
+        np.testing.assert_allclose(cpuArray(data.den), [[r ** 2, -2 * r * np.cos(theta), 1.0]],
+                                   atol=1e-12)
+        self.assertFalse(np.iscomplexobj(cpuArray(data.den)))
+        data.poles = None   # recompute them from the coefficients
+        np.testing.assert_allclose(sorted(cpuArray(data.get_poles())[0], key=lambda p: p.imag),
+                                   sorted(pair[0], key=lambda p: p.imag), atol=1e-12)
+
+    def test_set_poles_rejects_unpaired_complex_roots(self):
+        data = IirFilterData(ordnum=[3], ordden=[3], num=[[0.0, 0.0, 1.0]],
+                             den=[[0.0, -1.0, 1.0]], target_device_idx=-1)
+        with self.assertRaises(ValueError):
+            data.set_poles(np.array([[0.5 + 0.5j, 0.2]]))
+
+
+class TestIirFilterDataWidths(unittest.TestCase):
+
+    def test_num_shorter_than_den_is_padded(self):
+        """num = [0.5], den = [-1, 1]: IirFilter runs y[n] = y[n-1] + 0.5 x[n], i.e.
+        H(z) = 0.5 z / (z - 1). num is padded to [0, 0.5], so that the analysis
+        methods give the same transfer function as the simulation."""
+        data = IirFilterData(ordnum=[1], ordden=[2], num=[[0.5]], den=[[-1.0, 1.0]],
+                             target_device_idx=-1)
+        np.testing.assert_array_equal(cpuArray(data.num), [[0.0, 0.5]])
+        np.testing.assert_array_equal(cpuArray(data.gain), [0.5])
+        fs, f = 1000.0, 300.0
+        z = np.exp(2j * np.pi * f / fs)
+        h = data.frequency_response(data.num[0], data.den[0], fs, freq=np.array([f]))[0]
+        np.testing.assert_allclose(h, 0.5 * z / (z - 1), rtol=1e-12)
+
+    def test_padding_does_not_change_the_simulation(self):
+        """Impulse response of IirFilter with num = [0.5] and with num = [0, 0.5]"""
+        from specula.base_value import BaseValue
+        from specula.processing_objects.iir_filter import IirFilter
+
+        def impulse_response(num):
+            data = IirFilterData(ordnum=[len(num[0])], ordden=[2], num=num, den=[[-1.0, 1.0]],
+                                 target_device_idx=-1)
+            flt = IirFilter(data, target_device_idx=-1)
+            inp = BaseValue(value=np.zeros(1), target_device_idx=-1)
+            flt.inputs['delta_comm'].set(inp)
+            flt.setup()
+            out = []
+            for t in range(1, 6):
+                inp.value[:] = 1.0 if t == 1 else 0.0
+                inp.generation_time = t
+                flt.check_ready(t)
+                flt.trigger()
+                flt.post_trigger()
+                out.append(float(cpuArray(flt.outputs['out_comm'].value)[0]))
+            return out
+
+        np.testing.assert_allclose(impulse_response([[0.5]]), [0.5] * 5)
+        np.testing.assert_allclose(impulse_response([[0.0, 0.5]]), [0.5] * 5)
+
+    def test_den_shorter_than_num_is_padded(self):
+        data = IirFilterData(ordnum=[3], ordden=[2], num=[[0.1, 0.2, 0.3]], den=[[-0.5, 1.0]],
+                             target_device_idx=-1)
+        np.testing.assert_array_equal(cpuArray(data.den), [[0.0, -0.5, 1.0]])
+
+
+class TestIirFilterDataLowPass(unittest.TestCase):
+
+    def test_butterworth_cutoff(self):
+        """Butterworth low-pass filters (bilinear transform with prewarping): unit DC gain,
+        |H| = 1/sqrt(2) exactly at fc, zero at the Nyquist frequency, for orders 1, 2, 4"""
+        fs, fc = 1000.0, 50.0
+        for n_ord in (1, 2, 4):
+            with self.subTest(n_ord=n_ord):
+                data = IirFilterData.lpf_from_fc(fc, fs, n_ord=n_ord, target_device_idx=-1)
+                h = np.abs(data.frequency_response(data.num[0], data.den[0], fs,
+                                                   freq=np.array([1e-6, fc, fs / 2])))
+                np.testing.assert_allclose(h, [1.0, 1 / np.sqrt(2), 0.0], atol=1e-9)
+
+
+class TestIirFilterDataControlTimebase(unittest.TestCase):
+
+    def test_default_is_discrete_time(self):
+        """The coefficients are in z: without dt, to_control_tf() gives a discrete-time
+        transfer function, equal to 0.5 z / (z - 1) for the integrator"""
+        data = IirFilterData.from_gain_and_ff([0.5], target_device_idx=-1)
+        if not data.has_control_support:
+            self.skipTest('control library not installed')
+        import control
+        tf = data.to_control_tf()
+        self.assertTrue(control.isdtime(tf, strict=True))
+        z = np.exp(0.3j)
+        np.testing.assert_allclose(complex(tf(z)), 0.5 * z / (z - 1), rtol=1e-12)
