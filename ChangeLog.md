@@ -5,7 +5,9 @@
 
 ### New processing and data objects
 
-- ...
+- `SpotSupervisor`: spot (re)acquisition for a single-subaperture WCoG tip/tilt sensor with a large field (e.g. the MORFEO LO NGS sensors). Outside the slope path, it correlates looks (means of frames registered with the tip/tilt command) with a matched filter over the whole field; when consecutive looks agree that the spot is far from the WCoG window, it moves the window onto the spot, confirms the move, then applies a feedforward tip/tilt command and returns the window to the reference. A presence logic (global z, local z, window flux) holds the loop when the star is absent. Outputs: window and hold flag (for `ShSlopecMovable`), feedforward command, telemetry, image of the last look.
+- `ShSlopecMovable`: `ShSlopec` whose WCoG window and slope zero follow an input window centre (`in_window`, e.g. from `SpotSupervisor`); with the hold flag set it outputs zero slopes.
+- `IntensityGate`: multiplies an intensity by a gain from a generator (e.g. to simulate a star dropout or fade).
 
 ### Interface changes
 

@@ -4,6 +4,7 @@ import numpy as np
 
 from specula import fuse
 from specula.base_processing_obj import InputDesc, OutputDesc
+from specula.base_value import BaseValue
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.slopes import Slopes
 from specula.data_objects.subap_data import SubapData
@@ -103,14 +104,22 @@ class ShSlopec(Slopec):
         self.set_xy_weights()
         self.outputs['out_subapdata'] = self.subapdata
 
+        # Windowed flux: subap_tot, the WCoG-weighted flux computed in calc_slopes_nofor() to normalise the slopes,
+        # exposed as telemetry. Unlike out_flux_per_subaperture (sum over the raw subaperture footprint), it is the flux
+        # local to the WCoG window, a local signal-to-noise proxy on a large acquisition field.
+        self.windowed_flux_value = BaseValue(value=self.xp.zeros(self.nsubaps(), dtype=self.dtype),
+                                              target_device_idx=self.target_device_idx)
+        self.outputs['out_windowed_flux'] = self.windowed_flux_value
+
         self.slopes.single_mask = self.subapdata.single_mask()
         self.slopes.display_map = self.subapdata.display_map
 
     @classmethod
     def output_names(cls):
         result =super().output_names()
-        result.update({ 
-            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information')         
+        result.update({
+            'out_subapdata': OutputDesc(SubapData, 'Subaperture data with geometry information'),
+            'out_windowed_flux': OutputDesc(BaseValue, 'WCoG-weighted flux per subaperture (telemetry only; local-SNR proxy, unlike out_flux_per_subaperture which sums the raw, unweighted subaperture footprint)'),
         })
         return result
 
@@ -323,6 +332,7 @@ class ShSlopec(Slopec):
         subap_tot, sx_raw, sy_raw = sum_product(pixels[None, :, :], self._weights[:, None, :],
                                                 xp=self.xp)
         mean_subap_tot = self.xp.mean(subap_tot)
+        self.windowed_flux_value.value[:] = subap_tot      # in place: graph-safe
 
         if self.mult_factor != 0:
             mult_factor = self.mult_factor
@@ -375,6 +385,7 @@ class ShSlopec(Slopec):
     def post_trigger(self):
         super().post_trigger()
         self.outputs['out_subapdata'].generation_time = self.current_time
+        self.outputs['out_windowed_flux'].generation_time = self.current_time
 
         # Here and not in trigger_code(), since it needs a CPU-GPU synchronization
         if self.logger.isEnabledFor(logging.DEBUG):
