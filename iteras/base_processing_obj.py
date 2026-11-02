@@ -189,11 +189,29 @@ class BaseProcessingObj(BaseTimeObj):
                 self.logger.mpi_send_debug(f'SEND with Buffe {dest_tag=}, {type(buffer)=}, {buffer=}')
                 self.logger.mpi_send_debug(f'SEND with Buffer type {dest_tag=} {buffer.dtype=}')
 
-            mpi_progress.isend(self._host_copy(buffer), dest_rank, dest_tag, self.current_time)
+            mpi_progress.isend(self._send_copy(buffer), dest_rank, dest_tag, self.current_time)
 
             iteras.process_comm.ibsend(item.generation_time, dest=dest_rank, tag=dest_tag+1)
         if item.get_value() is not None:
             self.sent_valid[dest_tag] = True
+
+    @classmethod
+    def _send_copy(cls, buffer):
+        '''
+        Copy of *buffer* that can be sent while the object goes on: in host
+        memory, or, for a GPU array with GPU-direct MPI (see
+        mpi_progress.gpu_direct()), in GPU memory, from where MPI sends it.
+        '''
+        if isinstance(buffer, np.ndarray) or not mpi_progress.gpu_direct() \
+                or mpi_progress.buffered_sends():
+            return cls._host_copy(buffer)
+        else:  # pragma: gpu
+            # MPI reads the copy outside of the CUDA streams: wait for it, keeping
+            # the sends in flight moving (see mpi_progress)
+            with buffer.device:
+                copy = buffer.copy()
+                mpi_progress.wait_stream(iteras.cp.cuda.get_current_stream())
+            return copy
 
     @staticmethod
     def _host_copy(buffer):
@@ -499,6 +517,31 @@ class BaseProcessingObj(BaseTimeObj):
         return params
 
     @classmethod
+    def split_options(cls, params, max_devices):
+        '''
+        Ways in which the allocator may split the work of an object built with
+        *params* over several devices of a node, when it is faster:
+        {number of devices: parameters of the split object}, for numbers from 2
+        to *max_devices*. The parameters may name another class ("class" key),
+        whose devices_used() and single_device_params() describe the split
+        object; the object is profiled as built with *params*. The default is
+        no option; classes whose work can be divided override it.
+        '''
+        return {}
+
+    @classmethod
+    def repeated_work_fraction(cls, params):
+        '''
+        For objects that split their work over devices_used(params) devices:
+        the fraction of the GPU work of the whole object that each part repeats
+        (e.g. a preparation of the input done by every part). The allocator
+        estimates the GPU time of each of k parts as g * (f + (1 - f) / k),
+        where g is the time of the whole object on one device. Default 0: the
+        work divides exactly.
+        '''
+        return 0.0
+
+    @classmethod
     def is_schedule_barrier(cls):
         '''
         Override to return True for classes whose position in the trigger order
@@ -622,8 +665,9 @@ class BaseProcessingObj(BaseTimeObj):
             if not isinstance(input_obj, (InputValue, InputList)):
                 raise TypeError(f"Input {input_name} must be an InputValue or an InputList")
 
+            # A class, or a tuple of classes accepted by the input
             expected_type = declared_desc[0]
-            if input_obj.type is not expected_type:
+            if input_obj.type != expected_type:
                 raise TypeError(
                     f"Input {input_name} must be of type {expected_type}, "
                     f"but got {input_obj.type}"
