@@ -31,16 +31,18 @@ class TestLeftMul(unittest.TestCase):
                     np.testing.assert_allclose(cpuArray(out), expected, rtol=tol, atol=tol)
 
     @cpu_and_gpu
-    def test_captured_in_cuda_graph(self, target_device_idx, xp):
+    def test_captured_in_cuda_graph(self, target_device_idx, xp):  # pragma: gpu
         """The reason for this module: the product can be captured in a CUDA graph"""
         if xp is np:
             self.skipTest('CUDA graphs are GPU only')
         rng = np.random.default_rng(6)
-        a = xp.asarray(rng.standard_normal((5, 40)))
-        x = xp.asarray(rng.standard_normal((4, 40, 30)))
-        out = xp.zeros((4, 5, 30))
         stream = xp.cuda.Stream(non_blocking=True)
+        # All the work on the same stream: a non-blocking stream is not ordered
+        # with the default one, where the arrays would otherwise be initialized
         with stream:
+            a = xp.asarray(rng.standard_normal((5, 40)))
+            x = xp.asarray(rng.standard_normal((4, 40, 30)))
+            out = xp.zeros((4, 5, 30))
             left_mul(a, x, out, xp)    # compiles the kernel outside the capture
             stream.begin_capture()
             left_mul(a, x, out, xp)
@@ -52,7 +54,7 @@ class TestLeftMul(unittest.TestCase):
         np.testing.assert_allclose(cpuArray(out), cpuArray(a[None] @ x), rtol=1e-12, atol=1e-12)
 
     @cpu_and_gpu
-    def test_raw_kernel_rejects_unsupported_layouts(self, target_device_idx, xp):
+    def test_raw_kernel_rejects_unsupported_layouts(self, target_device_idx, xp):  # pragma: gpu
         """The GPU kernel reads a row-major and uses the dtype of the output"""
         if xp is np:
             self.skipTest('the checks apply to the GPU kernel only')
@@ -117,21 +119,25 @@ class TestMatmul(unittest.TestCase):
                     np.testing.assert_allclose(cpuArray(matvec(a, v, xp)), cpuArray(expected), rtol=tol, atol=tol)
 
     @cpu_and_gpu
-    def test_captured_in_cuda_graph(self, target_device_idx, xp):
+    def test_captured_in_cuda_graph(self, target_device_idx, xp):  # pragma: gpu
         """Inside a capture, cuBLAS is replaced by kernels that can be captured"""
         if xp is np:
             self.skipTest('CUDA graphs are GPU only')
         stream = xp.cuda.Stream(non_blocking=True)
         for name, (a_shape, b_shape, transposed) in self.CASES.items():
-            with self.subTest(name):
+            # All the work on the same stream: a non-blocking stream is not ordered
+            # with the default one, so the graph could read a before it is doubled
+            with self.subTest(name), stream:
                 a, b = self.operands(xp, np.float32, a_shape, b_shape, transposed)
                 matmul(a, b, xp)    # compiles the kernels outside the capture
                 with stream:
                     stream.begin_capture()
                     out = matmul(a, b, xp)
                     graph = stream.end_capture()
-                a *= 2              # the graph uses the current values
-                graph.launch(stream=stream)
-                stream.synchronize()
+                    # On the same stream as the graph: the non-blocking stream
+                    # does not wait for work on the default stream
+                    a *= 2          # the graph uses the current values
+                    graph.launch(stream=stream)
+                    stream.synchronize()
                 np.testing.assert_allclose(cpuArray(out), cpuArray(a @ b), rtol=1e-4, atol=1e-4)
 
