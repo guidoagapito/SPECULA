@@ -27,31 +27,6 @@ def abs2(u_fp, out, xp):
     out[:] = xp.real(u_fp * xp.conj(u_fp))
 
 
-def kernel_sampling_factor(sample, band_edge, fwhm, tol=1e-6, max_factor=16):
-    """
-    Smallest integer factor r (up to max_factor) by which the sampling `sample`
-    [arcsec] of a Gaussian kernel of the given FWHM [arcsec] must be refined, so
-    that the Fourier coefficients of the sampled (and unit-sum normalized) kernel
-    differ from the true ones by less than tol at all frequencies up to
-    `band_edge` [1/arcsec], i.e. in the band of the PSF it is convolved with.
-
-    Sampling at s / r makes the spectrum periodic with period r / s: the error
-    is the sum of the aliased copies. It is small both for kernels much wider
-    than the sample (well sampled) and much narrower (close to a delta, whose
-    spectrum is flat in the band), and largest in between.
-    """
-    sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
-    khat = lambda f: np.exp(-2 * np.pi ** 2 * sigma ** 2 * f ** 2)
-    f = np.linspace(0, band_edge, 65)
-    m = np.arange(-64, 65)
-    for r in range(1, max_factor + 1):
-        period = r / sample
-        sampled = khat(f[:, None] - m[None, :] * period).sum(axis=1) / khat(m * period).sum()
-        if np.max(np.abs(sampled - khat(f))) < tol:
-            return r
-    return max_factor
-
-
 class SH(BaseProcessingObj):
     """
     Shack-Hartmann wavefront sensor processing object.
@@ -196,13 +171,11 @@ class SH(BaseProcessingObj):
         self._fft_size = 0
         self._mask_threshold = 1e-3  # threshold to consider a pixel inside the mask
 
-        self.ef_row = None
         self.ef_interpolator = None
         self._ovs_np_sub = None
         self._ovs_ef_size = None
         self._wf3 = None
-        self._wf3_view = None
-        self._subap_cube_view = None
+        self._wf3_rows_view = None
         self._kernelobj = None
         self._last_sodium_values = None
         self._fov_ovs = 1
@@ -297,17 +270,11 @@ class SH(BaseProcessingObj):
         self._fov_ovs = self._ovs_ef_size / ef_size
         self._ovs_np_sub = self._ovs_ef_size // n_lenses
 
-        # Zero padding by 2: enough for the band-limited PSF (see pixel_integration_matrix())
+        # Zero padding by 2: enough for the band-limited PSF (see pixel_integration_matrix()),
+        # and for the LGS convolution kernels, whose Fourier coefficients are computed in
+        # closed form (see lgs_kernel_spectrum()), so they are exact in the band of the PSF
         self._fft_size = 2 * self._ovs_np_sub
         self._fft_period_arcsec = native_period * self._fov_ovs
-        # The LGS convolution kernels are not band limited: sampled on the FFT grid,
-        # their Fourier coefficients in the PSF band can be wrong by aliasing. The FFT
-        # size is multiplied by the smallest integer factor that makes them accurate
-        # (any FFT size >= 2 * n is exact for the PSF itself).
-        if self._laser_launch_tel is not None and self._laser_launch_tel.spot_size > 0:
-            self._fft_size *= kernel_sampling_factor(self._fft_period_arcsec / self._fft_size,
-                                                     (self._ovs_np_sub - 1) / self._fft_period_arcsec,
-                                                     self._laser_launch_tel.spot_size)
         self._fov_resolution_arcsec = self._fft_period_arcsec / self._fft_size
 
         self.logger.info('-->     FFT pix. sc. [asec],   {}'.format(self._fov_resolution_arcsec))
@@ -371,16 +338,19 @@ class SH(BaseProcessingObj):
                                                             target_device_idx=self.target_device_idx,
                                                             precision=self.precision)
             else:
+                # launcher in the frame of this SH (rotated if it is given
+                # in the telescope frame, see LaserLaunchTelescope)
+                launcher_pos, beacon_tt = self._laser_launch_tel.wfs_frame(self._rotAnglePhInDeg)
                 self._kernelobj = ConvolutionKernel(dimx = self._lenslet.dimx,
                                                     dimy = self._lenslet.dimy,
                                                     pxscale = fp4_pixel_pitch * RAD2ASEC,
                                                     pupil_size_m = in_ef.pixel_pitch * in_ef.size[0],
                                                     dimension = fft_size,
-                                                    launcher_pos = self._laser_launch_tel.tel_pos,
+                                                    launcher_pos = launcher_pos,
                                                     seeing = 0.0,
                                                     launcher_size = self._laser_launch_tel.spot_size,
                                                     zfocus = self._laser_launch_tel.beacon_focus,
-                                                    theta = self._laser_launch_tel.beacon_tt,
+                                                    theta = beacon_tt,
                                                     oversampling = 1,
                                                     return_fft = True,
                                                     positive_shift_tt = True,
@@ -461,9 +431,10 @@ class SH(BaseProcessingObj):
         Then, for each row of dimx subapertures:
 
         1. the row of the oversampled electric field, viewed as a (dimx, n, n)
-           subap cube, is written into the top-left corner of the zero-padded
-           cube _wf3 (padding by 2, or more with a laser launch telescope);
-        2. a batched 2D FFT and |.|^2 give the PSF samples of each subap.
+           subap cube, is computed directly into the top-left corner of the
+           zero-padded cube _wf3 (padding by 2, or more with a laser launch
+           telescope), with a single kernel on GPU;
+        2. a batched 2D FFT and ``|.|^2`` give the PSF samples of each subap.
            With a convolution kernel (LGS), they are convolved with the subap
            kernels in Fourier space (rfft2/irfft2, the kernels are stored as
            half spectra);
@@ -488,12 +459,11 @@ class SH(BaseProcessingObj):
 
         for i, out_view in zip(range(rows.start, rows.stop), self._out_views):
 
-            # Extract 2D subap row and insert the subaps into the padded array
+            # Field of the 2D subap row, written directly into the padded array
             wf1.ef_at_lambda(self.wavelength_in_nm,
                              slicey=np.s_[i * n: (i + 1) * n],
                              slicex=np.s_[:],
-                             out=self.ef_row)
-            self._wf3_view[:] = self._subap_cube_view
+                             out=self._wf3_rows_view)
 
             fp4 = self.fft.fft2(self._wf3, axes=(1, 2))
             abs2(fp4, self._intensity, xp=xp)
@@ -504,7 +474,8 @@ class SH(BaseProcessingObj):
                 subap_kern_fft = self._kernelobj.kernels[i * dimx: (i + 1) * dimx]
                 psf_fft = self.fft.rfft2(self._intensity)
                 psf_fft *= subap_kern_fft
-                psf = self.fft.irfft2(psf_fft, s=(self._fft_size, self._fft_size), norm='forward')
+                psf = self.fft.irfft2(psf_fft, s=(self._fft_size, self._fft_size), norm='forward',
+                                      overwrite_x=True)
                 g = self._pix_int_matrix_kernel
 
             # Detector pixels: G @ PSF @ G.T for each subaperture
@@ -563,15 +534,12 @@ class SH(BaseProcessingObj):
         npx = self._subap_npx
         rows = range(self.subap_rows_slice.start, self.subap_rows_slice.stop)
 
-        # Electric field of a single row of subaps. Only one row at a time is
-        # computed, because the whole oversampled field can be very large (8k x 8k)
-        self.ef_row = self._zeros_common((n, self._ovs_ef_size), dtype=self.complex_dtype)
-
-        # Views used by trigger_code(), built once since the buffers never change
-        self._wf3_view = self._wf3[:, :n, :n]
-
-        # The field row, as a (dimx, n, n) subap cube
-        self._subap_cube_view = self.ef_row.reshape(n, dimx, n).swapaxes(0, 1)
+        # Views used by trigger_code(), built once since the buffers never change.
+        # Only one row of subaps is computed at a time, because the whole oversampled
+        # field can be very large (8k x 8k). The top-left corners of the padded cube,
+        # as (n, dimx, n): the row of the field, n x (dimx * n), reshaped to it gives
+        # the subap cube
+        self._wf3_rows_view = self._wf3[:, :n, :n].swapaxes(0, 1)
 
         # Each row of the output image, as a (dimx, npx, npx) subap cube
         self._out_views = [self._out_i.i[i * npx: (i + 1) * npx]
@@ -579,7 +547,7 @@ class SH(BaseProcessingObj):
                            for i in rows]
 
         # Assert that our views are actually views and not temporary allocations
-        for view in [self._wf3_view, self._subap_cube_view] + self._out_views:
+        for view in [self._wf3_rows_view] + self._out_views:
             assert view.base is not None
 
         # The CUDA graph is captured at the first trigger(), see prepare_trigger()
@@ -598,6 +566,13 @@ class SH(BaseProcessingObj):
         Parameters are the same as EFInterpolator.update_parameters();
         the ones set to None are left unchanged.
         '''
+        if (rotAnglePhInDeg is not None and rotAnglePhInDeg != self._rotAnglePhInDeg
+                and self._laser_launch_tel is not None
+                and self._laser_launch_tel.absolute_coordinates):
+            raise NotImplementedError(
+                'The rotation of an SH with a launcher in absolute coordinates cannot be'
+                ' changed during the simulation: the LGS kernels depend on it and are'
+                ' computed at setup')
         self.ef_interpolator.update_parameters(xShiftPhInPixel=xShiftPhInPixel,
                                                yShiftPhInPixel=yShiftPhInPixel,
                                                rotAnglePhInDeg=rotAnglePhInDeg,

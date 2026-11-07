@@ -168,9 +168,10 @@ class Simul():
     def build_trigger_order(self, params_orig):
         '''
         Work on a copy of the parameter file.
+
         1. Find leaves, add them to trigger
-        2. Remove leaves, remove their inputs from other objects
-          2a. Objects will become a leaf when all their inputs have been removed
+        2. Remove leaves, remove their inputs from other objects.
+           Objects will become a leaf when all their inputs have been removed
         3. Repeat from step 1. until there is no change
         4. Check if any objects have been skipped
         '''
@@ -579,8 +580,9 @@ class Simul():
                         pars2[parname] = None
                     elif parname in hints:
                         partype = resolve_type(hints[parname])
-
-                        pars2[parname] = self.restore_object(partype, value, target_device_idx)
+                        device_idx = -1 if parname in getattr(klass, 'host_data_objects', ()) \
+                            else target_device_idx
+                        pars2[parname] = self.restore_object(partype, value, device_idx)
                     else:
                         raise ValueError(f'No type hint for parameter {parname} of class {classname}')
 

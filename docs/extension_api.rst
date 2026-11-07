@@ -168,6 +168,14 @@ The default implementations do nothing; override them to change how
        (writing files, interacting with the user): the :doc:`allocator <allocator>`
        never places them on a GPU. Used by ``DataPrint``,
        ``DisplayServer`` and ``InteractiveInput``.
+   * - ``host_data_objects``
+     - Class attribute: a tuple of constructor parameter names. The data
+       objects given for them as ``<name>_object`` in the parameter file are
+       restored on the CPU instead of the device of the object. For large
+       inputs used only once in ``__init__``, e.g. to compute a smaller matrix,
+       which the class then builds on its device in blocks, so that the inputs
+       are never on the GPU all at once. Default: empty. Used by
+       ``ModalrecImplicitPolc`` for ``recmat``, ``projmat`` and ``intmat``.
    * - ``runs_on_main_process_only()``
      - Class method. Return ``True`` for classes that must run in the main
        process (MPI rank 0), like ``DisplayServer`` and ``InteractiveInput``.
@@ -272,6 +280,13 @@ corresponding feature.
      - Description of the data, stored with it by ``DataStore`` (``OBJ_TYPE``
        must be the class name), and creation of an empty object from it by
        ``DataSource``.
+   * - ``get_metadata_arrays()``, ``set_metadata_arrays(arrays)``
+     - Static metadata that does not fit in a header, as a dictionary of
+       numpy arrays by name (for example the 2d display layout of ``Slopes``).
+       ``DataStore`` writes it once per file, next to the time series, and
+       ``DataSource`` gives it back to the object created by ``from_header()``.
+       Names are case insensitive; ``data`` and ``times`` are reserved.
+       Default: no metadata.
    * - ``save(filename)``, ``restore(filename, target_device_idx=None)``
      - Saving and loading: ``restore()`` is used for the ``_object`` and
        ``tag`` parameters, through the calibration manager. Implement them
@@ -287,7 +302,10 @@ corresponding feature.
 
 All the arrays of a data object are copied by ``transferDataTo()`` and
 ``copyTo()``, which the framework uses to move data between devices: derived
-classes do not need to implement them.
+classes do not need to implement them. Attributes that are not arrays are not
+copied at each step: keep static data that never changes (such as the
+``SlopesLayout`` of ``Slopes``) in such an attribute, and share it in
+``transferDataTo()``.
 
 Class hooks
 ~~~~~~~~~~~
