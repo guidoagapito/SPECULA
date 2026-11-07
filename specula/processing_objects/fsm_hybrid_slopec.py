@@ -145,8 +145,7 @@ class FsmHybridSlopec(Slopec):
 
         # Output declarations
         self.outputs['out_subapdata'] = self.subapdata
-        self.slopes.single_mask = self.subapdata.single_mask()
-        self.slopes.display_map = self.subapdata.display_map
+        self.slopes.layout = self.subapdata.slopes_layout()
 
         # --- Memory Allocation for FSM, Kinematics, and Moving Average ---
         n_subaps = self.nsubaps()

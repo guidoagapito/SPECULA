@@ -425,8 +425,7 @@ class AdaptiveShrinkageSlopec(Slopec):
                                             gate_params=gate_params)
 
         self.outputs['out_subapdata'] = self.subapdata
-        self.slopes.single_mask = self.subapdata.single_mask()
-        self.slopes.display_map = self.subapdata.display_map
+        self.slopes.layout = self.subapdata.slopes_layout()
 
         # --- Coordinate grids ------------------------------------------------
         grid = xp.arange(np_sub, dtype=self.dtype)
