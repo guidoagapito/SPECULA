@@ -1,5 +1,6 @@
 import re
 import time
+import functools
 import types
 import typing
 import importlib
@@ -109,6 +110,7 @@ def import_class(classname, additional_modules=None):
 
     Given a class name in CamelCase, this function looks for the class
     in all the following packages:
+
         - iteras.processing_objects
         - iteras.data_objects
         - iteras.display
@@ -122,6 +124,7 @@ def import_class(classname, additional_modules=None):
 
     The class name can be qualified, to choose one of several classes with the same
     name or to avoid searching all packages:
+
         - "<prefix>.FooBar", where <prefix> is a plugin (e.g. "specula.FooBar") or
           one of the searched packages: the class is searched only in the packages
           equal to <prefix> or contained in it;
@@ -141,7 +144,7 @@ def import_class(classname, additional_modules=None):
 
     Returns
     -------
-    type
+    class
         The class object corresponding to `classname`.
 
     Raises
@@ -171,7 +174,7 @@ def get_type_hints(type):
 
     Parameters
     ----------
-    type : type
+    type : class
         The class whose __init__ type hints are to be collected.
 
     Returns
@@ -189,6 +192,29 @@ def get_type_hints(type):
 
 def make_tn():
     return time.strftime("%Y%m%d_%H%M%S")
+
+
+@functools.cache
+def _cupy_get_needs_blocking_false():
+    '''True if ndarray.get() has a *blocking* argument (CuPy >= 13), whose default
+    True makes the copy synchronous even when a stream is given'''
+    import cupy
+    return int(cupy.__version__.split('.')[0]) >= 13
+
+
+def get_async(value, out, stream):
+    '''
+    Start the copy of the GPU array *value* to the host array *out* (page-locked,
+    for the copy to be really asynchronous) on *stream*, without waiting for it.
+    The caller must wait for the copy (e.g. with an event recorded on *stream*)
+    before reading *out*.
+
+    CuPy 12 has no *blocking* argument: there, get() with a stream is already asynchronous.
+    '''
+    if _cupy_get_needs_blocking_false():
+        value.get(stream=stream, out=out, blocking=False)
+    else:
+        value.get(stream=stream, out=out)
 
 
 def flatten(x):
