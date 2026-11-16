@@ -107,11 +107,21 @@ class TestSpotSupervisorSnr(unittest.TestCase):
         self.assertEqual(sup_hi.n_moves, 0)
         self.assertEqual(sup_lo.n_moves, 1)
 
-    def test_local_veto_when_the_window_already_sees_a_spot(self):
+    def test_relative_local_veto(self):
+        """Same spot shape near and far: s_loc / s ~ amp_near / amp_far. The window keeps a spot that is at least
+        q_thr (0.7) of the far peak, and leaves one that is much fainter (a halo spur, not the star)."""
         far = (15.0, -10.0, 300.0)
-        for amp_near, expect_moves in [(60.0, 0), (0.0, 1)]:
+        for amp_near, expect_moves in [(250.0, 0), (60.0, 1), (0.0, 1)]:
             sup = make(look_frames=1)
             feed(sup, self.rng, [(0.0, 0.0, amp_near), far], 2)   # before the return at k_hold
+            self.assertEqual(sup.n_moves, expect_moves, msg=f'amp_near={amp_near}')
+
+    def test_absolute_local_veto_without_q_thr(self):
+        """q_thr None: the absolute veto of SimpleSpotSupervisor, any spot above snr_thr in the window vetoes."""
+        far = (15.0, -10.0, 300.0)
+        for amp_near, expect_moves in [(60.0, 0), (0.0, 1)]:
+            sup = make(look_frames=1, q_thr=None)
+            feed(sup, self.rng, [(0.0, 0.0, amp_near), far], 2)
             self.assertEqual(sup.n_moves, expect_moves, msg=f'amp_near={amp_near}')
 
     def test_look_restarts_at_a_window_change(self):

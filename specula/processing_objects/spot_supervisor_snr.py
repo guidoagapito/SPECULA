@@ -17,10 +17,17 @@ class SpotSupervisorSnr(SpotSupervisor):
 
     The global peak p (integer pixel, px from the frame centre) and its SNR s, and the SNR s_loc within
     ``capture_radius`` of the current window w are computed. The window is moved to p (then confirmed and returned as
-    in :class:`SpotSupervisor`) if s > ``snr_thr``, |p - w| > ``capture_radius`` and s_loc < ``snr_thr`` (the window
-    does not see the spot), and no window return is in flight. No look is taken during a dropout; the look restarts
-    at every window change. The consensus parameters (``n_cons``, ``delta_factor``, ``q_thr``, ``r_loc_sigma``) and
-    the look template (``tpl_fwhm``, ``halo_fwhm``, ``halo_fraction``) are not used by the looks.
+    in :class:`SpotSupervisor`) if s > ``snr_thr``, |p - w| > ``capture_radius``, the window does not see the spot,
+    and no window return is in flight. "The window does not see the spot" is the relative guard C of
+    :class:`SpotSupervisor` applied to the SNR map: s_loc < ``q_thr`` * s. A relative veto is used because in
+    halo-dominated PSFs the star's own speckle/halo peaks a few pixels from the tracked spot can exceed an absolute
+    threshold exactly when the local SNR dips (false moves), while the halo of a genuine spot nearby keeps s_loc
+    above an absolute threshold lowered to stop them (missed recoveries). With ``q_thr`` None the absolute veto of
+    :class:`SimpleSpotSupervisor` is used instead: s_loc < ``snr_thr``.
+
+    No look is taken during a dropout; the look restarts at every window change. The consensus parameters
+    (``n_cons``, ``delta_factor``, ``r_loc_sigma``) and the look template (``tpl_fwhm``, ``halo_fwhm``,
+    ``halo_fraction``) are not used by the looks.
 
     ``out_state`` keeps the layout of :class:`SpotSupervisor`; its guard-ratio slot holds the SNR s of the last look.
     """
@@ -37,7 +44,7 @@ class SpotSupervisorSnr(SpotSupervisor):
                  ref_offset: list = None,
                  n_cons: int = 2,
                  delta_factor: float = 1.5,
-                 q_thr: float = 0.6,
+                 q_thr: float | None = 0.7,
                  r_loc_sigma: float = 3.0,
                  k_hold: int = None,
                  tpl_fwhm: float = 2.0,
@@ -138,7 +145,8 @@ class SpotSupervisorSnr(SpotSupervisor):
         if img is not None:
             est, ratio, s_loc = self._snr_look(img)
             far = np.linalg.norm(est - self.w) > self.capture_radius
-            if ratio > self.snr_thr and far and s_loc < self.snr_thr and not self.w_queue:
+            veto = s_loc >= (self.snr_thr if self.q_thr is None else self.q_thr * ratio)
+            if ratio > self.snr_thr and far and not veto and not self.w_queue:
                 self._start_move(est)
         self._schedule_feedforward()
         while self.w_queue and self.w_queue[0][0] <= self.frame:
