@@ -57,6 +57,9 @@ class SpotSupervisor(BaseProcessingObj):
 
     Outputs: ``out_window`` = [wx, wy, hold] (feed it to ShSlopecMovable, delayed by one step),
     ``out_feedforward`` = accumulated feedforward command (nm, feed it to an extra tip/tilt DM),
+    ``out_hold`` = the hold flag alone (feed it to the controller's ``in_freeze``, delayed by one step, so that
+    the command does not keep moving with the controller memory while the loop is held; with
+    ``hold_when_disabled`` the command is also frozen while the supervisor is disabled),
     ``out_state`` = telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, z_local, window_flux, n_aborts]
     (z, z_local, window_flux: last completed presence block, NaN if presence is off),
     ``out_look`` = image of the last complete look (mean of ``look_frames`` frames registered to the command of the
@@ -184,6 +187,8 @@ class SpotSupervisor(BaseProcessingObj):
         self.look_out = BaseValue(value=self.xp.zeros((self.n, self.n), dtype=self.dtype),
                                   target_device_idx=self.target_device_idx)
         self.outputs['out_look'] = self.look_out
+        self.hold_out = BaseValue(value=self.xp.zeros(1, dtype=self.dtype), target_device_idx=self.target_device_idx)
+        self.outputs['out_hold'] = self.hold_out
 
     def reset_state(self):
         self.w = np.zeros(2)                       # window centre, px
@@ -222,6 +227,7 @@ class SpotSupervisor(BaseProcessingObj):
     def output_names(cls):
         return {'out_window': OutputDesc(BaseValue, 'Window centre [wx, wy] px and hold flag'),
                 'out_feedforward': OutputDesc(BaseValue, 'Accumulated feedforward tip/tilt command [nm]'),
+                'out_hold': OutputDesc(BaseValue, 'Hold flag of out_window (e.g. for IirFilter.in_freeze)'),
                 'out_look': OutputDesc(BaseValue, 'Image of the last complete look (registered mean) [e-]'),
                 'out_state': OutputDesc(BaseValue, 'Telemetry [est_x, est_y, z, guard_ratio, dropout, n_moves, '
                                                    'z_local, window_flux, n_aborts]')}
@@ -457,6 +463,7 @@ class SpotSupervisor(BaseProcessingObj):
         info = self.process_frame(frame, self.cmd_to_px @ cmd[:2])
         ff_nm = self.px_to_cmd @ self.u_ff
         self.window.value[:] = self.xp.asarray(self.window_value(), dtype=self.dtype)
+        self.hold_out.value[:] = self.window.value[2]
         self.feedforward.value[:] = self.xp.asarray(ff_nm, dtype=self.dtype)
         z, z_loc, f = self.last_block if self.presence else (np.nan, np.nan, np.nan)
         self.state_out.value[:] = self.xp.asarray([*info['est'], z, info['ratio'], float(self.dropout), self.n_moves,
@@ -467,5 +474,5 @@ class SpotSupervisor(BaseProcessingObj):
         super().post_trigger()
         if not self._processed:                     # no new frame in this step: outputs not refreshed
             return
-        for name in ('out_window', 'out_feedforward', 'out_state', 'out_look'):
+        for name in ('out_window', 'out_hold', 'out_feedforward', 'out_state', 'out_look'):
             self.outputs[name].generation_time = self.current_time
